@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { CronScheduler } from "./scheduler.js";
+import type { LoopStore } from "./store.js";
 import type { LoopEntry } from "./types.js";
 
 export class TriggerSystem {
@@ -10,6 +11,7 @@ export class TriggerSystem {
   constructor(
     private pi: ExtensionAPI,
     private scheduler: CronScheduler,
+    private store: LoopStore,
   ) {}
 
   start(): void {
@@ -99,6 +101,11 @@ export class TriggerSystem {
       trigger: entry.trigger,
       timestamp: Date.now(),
     });
+
+    if (!entry.recurring) {
+      this.remove(entry.id);
+      this.store.update(entry.id, { status: "expired" });
+    }
   }
 
   private matchesFilter(data: any, filter?: string): boolean {

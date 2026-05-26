@@ -69,7 +69,7 @@ export default function (pi: ExtensionAPI) {
 
   scheduler = new CronScheduler(store, onLoopFire);
   widget.setScheduler(scheduler);
-  triggerSystem = new TriggerSystem(pi, scheduler);
+  triggerSystem = new TriggerSystem(pi, scheduler, store);
 
   // ── pi-tasks integration ──
   let tasksAvailable = false;
@@ -148,7 +148,7 @@ export default function (pi: ExtensionAPI) {
       widget.setStore(store);
       scheduler = new CronScheduler(store, onLoopFire);
       widget.setScheduler(scheduler);
-      triggerSystem = new TriggerSystem(pi, scheduler);
+      triggerSystem = new TriggerSystem(pi, scheduler, store);
     }
     storeUpgraded = true;
   }

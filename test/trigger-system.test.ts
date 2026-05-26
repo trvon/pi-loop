@@ -38,7 +38,7 @@ describe("TriggerSystem", () => {
     pi = createMockPi();
     store = new LoopStore();
     scheduler = new CronScheduler(store, () => {});
-    system = new TriggerSystem(pi, scheduler);
+    system = new TriggerSystem(pi, scheduler, store);
   });
 
   afterEach(() => {
