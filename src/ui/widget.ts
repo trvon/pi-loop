@@ -106,7 +106,8 @@ export class LoopWidget {
     for (const m of monitors.slice(0, Math.max(0, MAX_VISIBLE - loops.length))) {
       const icon = "◉";
       const age = Date.now() - m.startedAt;
-      lines.push(trunc(`  ${icon} #${m.id} ${m.command.slice(0, 40)} ${m.outputLines} lines (${formatDuration(age)})`));
+      const label = m.description || m.command.replace(/\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 50);
+      lines.push(trunc(`  ${icon} #${m.id} ${label} ${m.outputLines} lines (${formatDuration(age)})`));
     }
 
     return lines;
