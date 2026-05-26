@@ -35,9 +35,6 @@ function textResult(msg: string) {
   return { content: [{ type: "text" as const, text: msg }], details: undefined as any };
 }
 
-const LOOP_TOOL_NAMES = new Set(["LoopCreate", "LoopList", "LoopDelete", "MonitorCreate", "MonitorList", "MonitorStop"]);
-const REMINDER_INTERVAL = 3;
-
 const SYSTEM_REMINDER_TEMPLATE = `<system-reminder>
 Scheduled loop "%propmpt%" fired. Trigger: %trigger_info%.
 [loop:%loop_id%]
@@ -197,9 +194,7 @@ export default function (pi: ExtensionAPI) {
 
   // ── System-reminder injection for loop fires ──
 
-  let currentTurn = 0;
-  let lastLoopToolUseTurn = 0;
-  let reminderInjectedThisCycle = false;
+  let canInjectReminder = true;
   const pendingReminders: string[] = [];
 
   pi.on("loop:fire" as any, (data: any) => {
@@ -219,25 +214,16 @@ export default function (pi: ExtensionAPI) {
     pendingReminders.push(reminder);
   });
 
+  // Allow one reminder injection per agent turn (at the first tool call),
+  // so the reminder arrives between batches of work, not mid-execution.
   pi.on("turn_start", async () => {
-    currentTurn++;
+    canInjectReminder = true;
   });
 
   pi.on("tool_result", async (event) => {
-    if (LOOP_TOOL_NAMES.has(event.toolName)) {
-      lastLoopToolUseTurn = currentTurn;
-      reminderInjectedThisCycle = false;
-      return {};
-    }
+    if (!canInjectReminder || pendingReminders.length === 0) return {};
 
-    if (currentTurn - lastLoopToolUseTurn < REMINDER_INTERVAL || reminderInjectedThisCycle) {
-      return {};
-    }
-
-    if (pendingReminders.length === 0) return {};
-
-    reminderInjectedThisCycle = true;
-    lastLoopToolUseTurn = currentTurn;
+    canInjectReminder = false;
     const reminder = pendingReminders.shift()!;
     return {
       content: [...event.content, { type: "text" as const, text: reminder }],
