@@ -159,6 +159,7 @@ export default function (pi: ExtensionAPI) {
     const loops = store.list();
     if (loops.length > 0) {
       store.clearExpired();
+      store.expireEventLoops();
       triggerSystem.start();
       widget.update();
     }

@@ -73,6 +73,9 @@ export class MonitorManager {
       });
       for (const resolve of bp.waiters) resolve();
       bp.waiters = [];
+      // Remove completed/errored monitors after a brief delay so tool
+      // consumers have time to read the final state via MonitorList.
+      setTimeout(() => { this.processes.delete(id); }, 30000);
     };
 
     child.on("close", (code) => {

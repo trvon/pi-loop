@@ -173,6 +173,20 @@ export class LoopStore {
     });
   }
 
+  expireEventLoops(): number {
+    return this.withLock(() => {
+      let count = 0;
+      for (const [_id, entry] of this.loops) {
+        if (entry.status !== "active") continue;
+        if (entry.trigger.type === "event" || entry.trigger.type === "hybrid") {
+          entry.status = "expired";
+          count++;
+        }
+      }
+      return count;
+    });
+  }
+
   clearAll(): number {
     return this.withLock(() => {
       const count = this.loops.size;

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LoopStore } from "../src/store.js";
-import { LoopWidget, type UICtx } from "../src/ui/widget.js";
+import { LoopWidget } from "../src/ui/widget.js";
 
 vi.mock("@earendil-works/pi-tui", () => ({
   truncateToWidth: (line: string, width: number) =>

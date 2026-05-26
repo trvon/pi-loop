@@ -114,6 +114,22 @@ describe("LoopStore (in-memory)", () => {
     expect(store.list()).toHaveLength(0);
   });
 
+  it("expires event-triggered loops on session start", () => {
+    const s = new LoopStore();
+    const eventTrigger = { type: "event" as const, source: "monitor:done" };
+    const cronT = { type: "cron" as const, schedule: "*/5 * * * *" };
+
+    s.create(eventTrigger, "event loop", { recurring: false });
+    s.create(cronT, "cron loop", { recurring: true });
+    s.create(eventTrigger, "another event", { recurring: true });
+
+    expect(s.expireEventLoops()).toBe(2);
+
+    expect(s.get("2")!.status).toBe("active"); // cron loop untouched
+    expect(s.get("1")!.status).toBe("expired");
+    expect(s.get("3")!.status).toBe("expired");
+  });
+
   it("enforces max loop limit", () => {
     for (let i = 0; i < 25; i++) {
       store.create(cronTrigger, `loop ${i}`, { recurring: true });
