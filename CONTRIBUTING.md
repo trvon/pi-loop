@@ -5,7 +5,7 @@ Thanks for contributing! This document covers local dev setup, conventions, and 
 ## Getting Started
 
 ```bash
-git clone https://github.com/trevonistrevon/pi-loop.git
+git clone https://github.com/trvon/pi-loop.git
 cd pi-loop
 npm install
 ```
