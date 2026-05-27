@@ -36,7 +36,7 @@ function textResult(msg: string) {
 }
 
 const SYSTEM_REMINDER_TEMPLATE = `<system-reminder>
-Scheduled loop "%propmpt%" fired. Trigger: %trigger_info%.
+Scheduled loop "%prompt%" fired. Trigger: %trigger_info%.
 [loop:%loop_id%]
 </system-reminder>`;
 
@@ -153,10 +153,11 @@ export default function (pi: ExtensionAPI) {
   function showPersistedLoops(_isResume = false) {
     if (persistedShown) return;
     persistedShown = true;
+    const sessionStartedAt = Date.now();
     const loops = store.list();
     if (loops.length > 0) {
       store.clearExpired();
-      store.expireEventLoops();
+      store.expireEventLoops(sessionStartedAt);
       triggerSystem.start();
       widget.update();
     }
@@ -197,7 +198,7 @@ export default function (pi: ExtensionAPI) {
   let canInjectReminder = true;
   const pendingReminders: string[] = [];
 
-  pi.on("loop:fire" as any, (data: any) => {
+  pi.events.on("loop:fire", (data: any) => {
     const triggerInfo = typeof data.trigger === "string"
       ? data.trigger
       : data.trigger?.type === "cron"

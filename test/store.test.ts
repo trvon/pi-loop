@@ -123,11 +123,30 @@ describe("LoopStore (in-memory)", () => {
     s.create(cronT, "cron loop", { recurring: true });
     s.create(eventTrigger, "another event", { recurring: true });
 
-    expect(s.expireEventLoops()).toBe(2);
+    // sessionStartedAt is set after creation — simulating loop persisted from prior session
+    const sessionStartedAt = Date.now() + 1;
+    expect(s.expireEventLoops(sessionStartedAt)).toBe(2);
 
     expect(s.get("2")!.status).toBe("active"); // cron loop untouched
     expect(s.get("1")!.status).toBe("expired");
     expect(s.get("3")!.status).toBe("expired");
+  });
+
+  it("does not expire event loops created in current session", () => {
+    const s = new LoopStore();
+    const eventTrigger = { type: "event" as const, source: "monitor:done" };
+    const hybridTrigger = {
+      type: "hybrid" as const, cron: "*/5 * * * *", event: { source: "test" }, debounceMs: 30000,
+    };
+
+    // sessionStartedAt before creation — simulating loops created in current session
+    const sessionStartedAt = Date.now();
+    s.create(eventTrigger, "event loop", { recurring: true });
+    s.create(hybridTrigger, "hybrid loop", { recurring: true });
+
+    expect(s.expireEventLoops(sessionStartedAt)).toBe(0);
+    expect(s.get("1")!.status).toBe("active");
+    expect(s.get("2")!.status).toBe("active");
   });
 
   it("enforces max loop limit", () => {

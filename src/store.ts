@@ -173,14 +173,16 @@ export class LoopStore {
     });
   }
 
-  expireEventLoops(): number {
+  expireEventLoops(sessionStartedAt: number): number {
     return this.withLock(() => {
       let count = 0;
       for (const [_id, entry] of this.loops) {
         if (entry.status !== "active") continue;
         if (entry.trigger.type === "event" || entry.trigger.type === "hybrid") {
-          entry.status = "expired";
-          count++;
+          if (entry.createdAt < sessionStartedAt) {
+            entry.status = "expired";
+            count++;
+          }
         }
       }
       return count;
