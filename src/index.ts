@@ -36,8 +36,8 @@ function textResult(msg: string) {
 }
 
 const SYSTEM_REMINDER_TEMPLATE = `<system-reminder>
-Scheduled loop "%prompt%" fired. Trigger: %trigger_info%.
-[loop:%loop_id%]
+Loop "%prompt%" fired. Execute this instruction now.
+Trigger: %trigger_info%. Loop: %loop_id%.
 </system-reminder>`;
 
 export default function (pi: ExtensionAPI) {
