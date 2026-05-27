@@ -35,10 +35,6 @@ function textResult(msg: string) {
   return { content: [{ type: "text" as const, text: msg }], details: undefined as any };
 }
 
-const SYSTEM_REMINDER_TEMPLATE = `<system-reminder>
-Loop "%prompt%" fired. Execute this instruction now.
-Trigger: %trigger_info%. Loop: %loop_id%.
-</system-reminder>`;
 
 export default function (pi: ExtensionAPI) {
   const piLoopEnv = process.env.PI_LOOP;
@@ -193,10 +189,7 @@ export default function (pi: ExtensionAPI) {
     showPersistedLoops(isResume);
   });
 
-  // ── System-reminder injection for loop fires ──
-
-  let canInjectReminder = true;
-  const pendingReminders: string[] = [];
+  // ── Loop fire handler — sends a user message to re-wake the agent ──
 
   pi.events.on("loop:fire", (data: any) => {
     const triggerInfo = typeof data.trigger === "string"
@@ -207,28 +200,15 @@ export default function (pi: ExtensionAPI) {
           ? `event: ${data.trigger.source}`
           : `hybrid`;
 
-    const reminder = SYSTEM_REMINDER_TEMPLATE
-      .replace("%prompt%", data.prompt || "loop fired")
-      .replace("%trigger_info%", triggerInfo)
-      .replace("%loop_id%", data.loopId || "unknown");
+    const prompt = data.prompt || "loop fired";
+    const message = [
+      `[pi-loop] Loop #${data.loopId || "?"} fired (${triggerInfo}).`,
+      prompt,
+    ].join("\n");
 
-    pendingReminders.push(reminder);
-  });
-
-  // Allow one reminder injection per agent turn (at the first tool call),
-  // so the reminder arrives between batches of work, not mid-execution.
-  pi.on("turn_start", async () => {
-    canInjectReminder = true;
-  });
-
-  pi.on("tool_result", async (event) => {
-    if (!canInjectReminder || pendingReminders.length === 0) return {};
-
-    canInjectReminder = false;
-    const reminder = pendingReminders.shift()!;
-    return {
-      content: [...event.content, { type: "text" as const, text: reminder }],
-    };
+    // deliverAs: "followUp" queues the message when the agent is busy;
+    // it delivers after the current turn finishes.
+    pi.sendUserMessage(message, { deliverAs: "followUp" });
   });
 
   // ──────────────────────────────────────────────────
