@@ -32,6 +32,8 @@ export interface LoopEntry {
   autoTask?: boolean;
   selfPaced?: boolean;
   readOnly?: boolean;
+  maxFires?: number;
+  fireCount?: number;
 }
 
 export interface LoopStoreData {

@@ -125,6 +125,13 @@ export default function (pi: ExtensionAPI) {
   function onLoopFire(entry: LoopEntry): void {
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
 
+    if (entry.maxFires && (entry.fireCount ?? 0) >= entry.maxFires) {
+      debug(`loop #${entry.id} — reached maxFires ${entry.maxFires}, expiring`);
+      store.update(entry.id, { status: "expired" });
+      return;
+    }
+    store.update(entry.id, { fireCount: (entry.fireCount ?? 0) + 1 });
+
     if (entry.autoTask) {
       autoCreateTask(entry).then((taskId) => {
         if (taskId) debug(`loop #${entry.id} → task #${taskId}`);
@@ -269,19 +276,24 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
 - **prompt**: what to do when the loop fires (e.g., "check if the build passed")
 - **recurring**: repeat or fire once (default: true)
 - **autoTask**: if pi-tasks is loaded, auto-create a task on each fire
-- **readOnly**: restrict the agent to read-only tools when this loop fires (default: false)`,
+- **readOnly**: restrict the agent to read-only tools when this loop fires (default: false)
+- **maxFires**: auto-stop after N fires — prevents infinite token burn on polling loops`,
     promptGuidelines: [
       "Use LoopCreate when the user asks for a repeating task, periodic check, scheduled reminder, or 'every X' — never use raw Bash for/sleep/while.",
+      "## Choosing trigger type",
+      "Prefer event triggers over cron when possible — they fire exactly when needed instead of polling.",
+      "Use event triggers for: tool completion ('tool_execution_end'), task creation ('tasks:created'), monitor completion ('monitor:done').",
+      "Use cron triggers only when: the user explicitly asks for a time interval, or there's no relevant pi event to subscribe to.",
+      "Hybrid triggers (cron + event) give you both: event-driven responsiveness with a cron safety-net fallback.",
       "## Choosing an interval",
-      "Default to 5m unless the user specifies a different interval or the task needs faster feedback.",
-      "Use shorter intervals (1m-2m) only when: the task is time-sensitive, the user explicitly asks for it, or you're polling something that completes quickly.",
-      "Use longer intervals (15m-1h) for: build watchers, CI checks, deploy monitors, or anything with natural latency.",
-      "## Recurring vs one-shot",
-      "Use recurring: true (default) for periodic checks. Use recurring: false for one-shot event reactions (monitor completion, tool execution hooks).",
+      "Default to 5m unless the user specifies differently. Use shorter intervals only when time-sensitive.",
+      "## maxFires — prevent infinite token burn",
+      "Always set maxFires on polling loops so they don't run forever. For task-continuation loops, use maxFires: 20-50.",
+      "When a loop fires and finds nothing to do, call LoopDelete on its own ID to stop it — don't keep polling.",
       "## readOnly mode",
-      "Set readOnly: true for loops that only need to observe and report (checks, status polls, monitoring). This prevents the agent from making unintended changes when it wakes.",
+      "Set readOnly: true for loops that only observe and report (checks, status polls). This prevents unintended changes.",
       "## Task-driven workflows",
-      "After creating tasks with TaskCreate, set up a loop to work through them: LoopCreate trigger='5m' readOnly: false prompt='Run TaskList, pick the next available pending task, work on it.' This keeps the agent making progress across turns.",
+      "After creating tasks with TaskCreate, use an event loop bound to 'tasks:created' with maxFires: 30 to pick up work immediately when it arrives: LoopCreate trigger='tasks:created' triggerType='event' maxFires: 30 readOnly: false prompt='Run TaskList, pick the next available pending task, work on it.'",
       "After creating a loop, tell the user the loop ID so they can cancel it with LoopDelete.",
     ],
     parameters: Type.Object({
@@ -292,10 +304,11 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       triggerType: Type.Optional(Type.String({ description: "cron, event, or hybrid (inferred from trigger string if omitted)", enum: ["cron", "event", "hybrid"] })),
       debounceMs: Type.Optional(Type.Number({ description: "Debounce for hybrid triggers (default: 30000)", default: 30000 })),
       readOnly: Type.Optional(Type.Boolean({ description: "Restrict the agent to read-only tools when this loop fires (default: false)", default: false })),
+      maxFires: Type.Optional(Type.Number({ description: "Auto-stop after N fires. Prevents infinite token burn on polling loops." })),
     }),
 
     execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const { trigger: triggerInput, prompt, recurring, autoTask, triggerType, debounceMs, readOnly } = params;
+      const { trigger: triggerInput, prompt, recurring, autoTask, triggerType, debounceMs, readOnly, maxFires } = params;
 
       let trigger: Trigger;
       const inferred = triggerType ?? inferTriggerType(triggerInput);
@@ -325,6 +338,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
         autoTask,
         selfPaced: triggerInput === "self-paced" || prompt.toLowerCase().includes("self-paced"),
         readOnly,
+        maxFires,
       });
 
       triggerSystem.add(entry);

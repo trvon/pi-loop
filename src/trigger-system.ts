@@ -94,6 +94,13 @@ export class TriggerSystem {
   }
 
   private fireLoop(entry: LoopEntry): void {
+    if (entry.maxFires && (entry.fireCount ?? 0) >= entry.maxFires) {
+      this.store.update(entry.id, { status: "expired" });
+      this.remove(entry.id);
+      return;
+    }
+    this.store.update(entry.id, { fireCount: (entry.fireCount ?? 0) + 1 });
+
     this.lastFireTime.set(entry.id, Date.now());
     this.pi.events.emit("loop:fire", {
       loopId: entry.id,

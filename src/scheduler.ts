@@ -92,6 +92,13 @@ export class CronScheduler {
       this.onFire(current);
 
       if (current.recurring) {
+        const fresh = this.store.get(entry.id);
+        if (fresh && fresh.maxFires && (fresh.fireCount ?? 0) >= fresh.maxFires) {
+          this.store.update(entry.id, { status: "expired" });
+          this.timers.delete(entry.id);
+          this.fireTimes.delete(entry.id);
+          return;
+        }
         this.armTimer(current);
       } else {
         this.timers.delete(entry.id);

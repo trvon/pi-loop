@@ -179,6 +179,18 @@ describe("LoopStore (in-memory)", () => {
     const l = store.create(cronTrigger, "test", { recurring: true, autoTask: true });
     expect(l.autoTask).toBe(true);
   });
+
+  it("stores maxFires and initializes fireCount to 0", () => {
+    const l = store.create(cronTrigger, "limited", { recurring: true, maxFires: 5 });
+    expect(l.maxFires).toBe(5);
+    expect(l.fireCount).toBe(0);
+  });
+
+  it("increments fireCount via update", () => {
+    store.create(cronTrigger, "count test", { recurring: true });
+    store.update("1", { fireCount: 3 });
+    expect(store.get("1")!.fireCount).toBe(3);
+  });
 });
 
 describe("LoopStore (file-backed)", () => {

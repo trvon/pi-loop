@@ -95,7 +95,7 @@ export class LoopStore {
     }
   }
 
-  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; selfPaced?: boolean; readOnly?: boolean }): LoopEntry {
+  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; selfPaced?: boolean; readOnly?: boolean; maxFires?: number }): LoopEntry {
     return this.withLock(() => {
       if (this.loops.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
@@ -110,6 +110,8 @@ export class LoopStore {
         autoTask: opts.autoTask,
         selfPaced: opts.selfPaced,
         readOnly: opts.readOnly,
+        maxFires: opts.maxFires,
+        fireCount: 0,
         createdAt: now,
         updatedAt: now,
         expiresAt: now + MAX_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
@@ -129,7 +131,7 @@ export class LoopStore {
     return Array.from(this.loops.values()).sort((a, b) => Number(a.id) - Number(b.id));
   }
 
-  update(id: string, fields: { status?: LoopStatus; trigger?: Trigger; prompt?: string }): { entry: LoopEntry | undefined; changedFields: string[] } {
+  update(id: string, fields: { status?: LoopStatus; trigger?: Trigger; prompt?: string; fireCount?: number }): { entry: LoopEntry | undefined; changedFields: string[] } {
     return this.withLock(() => {
       const entry = this.loops.get(id);
       if (!entry) return { entry: undefined, changedFields: [] };
@@ -146,6 +148,10 @@ export class LoopStore {
       if (fields.prompt !== undefined) {
         entry.prompt = fields.prompt;
         changedFields.push("prompt");
+      }
+      if (fields.fireCount !== undefined) {
+        entry.fireCount = fields.fireCount;
+        changedFields.push("fireCount");
       }
       entry.updatedAt = Date.now();
       return { entry, changedFields };
