@@ -35,9 +35,10 @@ export class LoopWidget {
     if (!this.uiCtx) return;
 
     const loops = this.store.list().filter(l => l.status === "active");
-    const monitors = this.monitorManager.list().filter(m => m.status === "running");
+    const monitors = this.monitorManager.list();
+    const hasContent = loops.length > 0 || monitors.length > 0;
 
-    if (loops.length === 0 && monitors.length === 0) {
+    if (!hasContent) {
       if (this.widgetRegistered) {
         this.uiCtx.setWidget("loops", undefined);
         this.widgetRegistered = false;
@@ -66,16 +67,21 @@ export class LoopWidget {
 
   private renderWidget(tui: TUI, _theme: Theme): string[] {
     const loops = this.store.list().filter(l => l.status === "active");
-    const monitors = this.monitorManager.list().filter(m => m.status === "running");
+    const runningMonitors = this.monitorManager.list().filter(m => m.status === "running");
+    const completedMonitors = this.monitorManager.list().filter(m => m.status === "completed");
+    const allMonitors = [...runningMonitors, ...completedMonitors];
     const w = tui.terminal.columns;
     const trunc = (line: string) => truncateToWidth(line, w);
 
     const lines: string[] = [];
-    const total = loops.length + monitors.length;
+    const total = loops.length + allMonitors.length;
 
     if (total === 0) return [];
 
-    lines.push(trunc(`⟳ ${loops.length} loops · ${monitors.length} monitors`));
+    const headerParts: string[] = [`⟳ ${loops.length} loops`];
+    if (runningMonitors.length > 0) headerParts.push(`${runningMonitors.length} running`);
+    if (completedMonitors.length > 0) headerParts.push(`${completedMonitors.length} done`);
+    lines.push(trunc(headerParts.join(" · ")));
 
     for (const loop of loops.slice(0, MAX_VISIBLE)) {
       const icon = "◷";
@@ -96,11 +102,13 @@ export class LoopWidget {
       lines.push(trunc(`  ${icon} #${loop.id} ${loop.prompt.slice(0, 50)} → ${schedule}${timing}`));
     }
 
-    for (const m of monitors.slice(0, Math.max(0, MAX_VISIBLE - loops.length))) {
-      const icon = "◉";
+    for (const m of allMonitors.slice(0, Math.max(0, MAX_VISIBLE - loops.length))) {
+      const icon = m.status === "running" ? "◉" : "✓";
       const age = Date.now() - m.startedAt;
       const label = m.description || m.command.replace(/\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 50);
-      lines.push(trunc(`  ${icon} #${m.id} ${label} ${m.outputLines} lines (${formatDuration(age)})`));
+      let line = `  ${icon} #${m.id} ${label} ${m.outputLines} lines (${formatDuration(age)})`;
+      if (m.exitCode !== undefined && m.status !== "running") line += ` exit=${m.exitCode}`;
+      lines.push(trunc(line));
     }
 
     return lines;

@@ -372,6 +372,22 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       });
 
       triggerSystem.add(entry);
+
+      if (trigger.type === "event" && trigger.source === "monitor:done" && trigger.filter) {
+        try {
+          const filterObj = JSON.parse(trigger.filter);
+          const monitorId = filterObj.monitorId as string | undefined;
+          if (monitorId) {
+            const monitor = monitorManager.get(monitorId);
+            if (monitor && monitor.status !== "running") {
+              debug(`loop #${entry.id} — monitor #${monitorId} already ${monitor.status}, expiring`);
+              triggerSystem.remove(entry.id);
+              store.update(entry.id, { status: "expired" });
+            }
+          }
+        } catch { /* filter parse failure, ignore */ }
+      }
+
       widget.update();
 
       const triggerDesc = trigger.type === "cron"
@@ -390,6 +406,16 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       ));
     },
   });
+
+  function handleMonitorDoneLoop(doneLoop: LoopEntry, monitorId: string): void {
+    triggerSystem.add(doneLoop);
+    const monitor = monitorManager.get(monitorId);
+    if (monitor && monitor.status !== "running") {
+      debug(`onDone loop #${doneLoop.id} — monitor #${monitorId} already ${monitor.status}, expiring`);
+      triggerSystem.remove(doneLoop.id);
+      store.update(doneLoop.id, { status: "expired" });
+    }
+  }
 
   function validateTrigger(trigger: Trigger): string | null {
     if (trigger.type === "cron") {
@@ -553,7 +579,7 @@ Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fire
       if (params.onDone) {
         const doneTrigger: Trigger = { type: "event", source: "monitor:done", filter: JSON.stringify({ monitorId: entry.id }) };
         const doneLoop = store.create(doneTrigger, params.onDone, { recurring: false });
-        triggerSystem.add(doneLoop);
+        handleMonitorDoneLoop(doneLoop, entry.id);
         onDoneMsg = `\nonDone loop #${doneLoop.id}: fires when monitor completes — no polling needed`;
       }
 
@@ -572,7 +598,7 @@ Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fire
   pi.registerTool({
     name: "MonitorList",
     label: "MonitorList",
-    description: `List all monitors with their status, command, and output line count.`,
+    description: `List all monitors with their status, command, exit code, output line count, and last 5 lines of buffered output.`,
     parameters: Type.Object({}),
 
     execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
@@ -584,7 +610,16 @@ Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fire
         const icon = m.status === "running" ? "◉" : m.status === "completed" ? "✓" : "✗";
         const age = Date.now() - m.startedAt;
         const ageStr = formatRemaining(age);
-        lines.push(`${icon} #${m.id} [${m.status}] ${m.command.slice(0, 50)} — ${m.outputLines} lines (${ageStr})`);
+        let line = `${icon} #${m.id} [${m.status}] ${m.command.slice(0, 60)} — ${m.outputLines} lines (${ageStr})`;
+        if (m.exitCode !== undefined) line += ` exit=${m.exitCode}`;
+        lines.push(line);
+
+        if (m.status !== "running" && m.outputBuffer.length > 0) {
+          const tail = m.outputBuffer.slice(-5);
+          for (const out of tail) {
+            lines.push(`  | ${out.slice(0, 100)}`);
+          }
+        }
       }
 
       return Promise.resolve(textResult(lines.join("\n")));

@@ -19,6 +19,7 @@ export class MonitorManager {
       status: "running",
       startedAt: Date.now(),
       outputLines: 0,
+      outputBuffer: [],
     };
 
     const abortController = new AbortController();
@@ -41,6 +42,7 @@ export class MonitorManager {
       for (const line of lines) {
         if (line.length === 0) continue;
         entry.outputLines++;
+        if (entry.outputBuffer.length < 200) entry.outputBuffer.push(line);
         this.pi.events.emit("monitor:output", {
           monitorId: id,
           line,
@@ -54,6 +56,7 @@ export class MonitorManager {
       for (const line of lines) {
         if (line.length === 0) continue;
         entry.outputLines++;
+        if (entry.outputBuffer.length < 200) entry.outputBuffer.push(line);
         this.pi.events.emit("monitor:output", {
           monitorId: id,
           line,

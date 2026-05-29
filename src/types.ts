@@ -51,6 +51,7 @@ export interface MonitorEntry {
   completedAt?: number;
   exitCode?: number;
   outputLines: number;
+  outputBuffer: string[];
 }
 
 export interface MonitorProcess {
