@@ -6,7 +6,7 @@
 ## Install
 
 ```bash
-pi install @trevonistrevon/pi-loop
+pi install npm:@trevonistrevon/pi-loop
 ```
 
 ## Quick start
