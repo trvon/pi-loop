@@ -804,4 +804,49 @@ describe("monitor tool wrappers", () => {
     const result = await monitorStop!.execute?.("1", { monitorId: "999" });
     expect(result.content[0].text).toContain("not found");
   });
+
+  it("onDone monitor completion delivers a custom message wake", async () => {
+    vi.useRealTimers();
+    const { pi, toolMap, sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await new Promise(r => setTimeout(r, 6100));
+
+    const monitorCreate = toolMap.get("MonitorCreate");
+    expect(monitorCreate?.execute).toBeDefined();
+
+    const result = await monitorCreate!.execute?.("1", {
+      command: "echo 'monitor done'",
+      onDone: "Monitor finished — report results",
+    });
+    expect(result.content[0].text).toContain("onDone loop");
+
+    await new Promise(r => setTimeout(r, 500));
+
+    expect(sentCustomMessages).toHaveLength(1);
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Monitor finished");
+  }, 10000);
+
+  it("monitor create list stop lifecycle reflects state changes", async () => {
+    vi.useRealTimers();
+    const { pi, toolMap } = createMockPi();
+
+    extension(pi as any);
+    await new Promise(r => setTimeout(r, 6100));
+
+    const monitorCreate = toolMap.get("MonitorCreate");
+    const monitorList = toolMap.get("MonitorList");
+    const monitorStop = toolMap.get("MonitorStop");
+
+    await monitorCreate!.execute?.("1", { command: "sleep 30", timeout: 0 });
+
+    let listResult = await monitorList!.execute?.("2", {});
+    expect(listResult.content[0].text).toContain("[running]");
+
+    await monitorStop!.execute?.("3", { monitorId: "1" });
+
+    await new Promise(r => setTimeout(r, 200));
+    listResult = await monitorList!.execute?.("4", {});
+    expect(listResult.content[0].text).toContain("[stopped]");
+  }, 10000);
 });
