@@ -689,3 +689,119 @@ describe("LoopDelete tool wrapper", () => {
     expect(result.content[0].text).toBe("Loop #1 deleted");
   });
 });
+
+describe("monitor tool wrappers", () => {
+  let cwd: string;
+  let originalCwd: string;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    originalCwd = process.cwd();
+    cwd = mkdtempSync(join(tmpdir(), "pi-loop-mon-"));
+    process.chdir(cwd);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    rmSync(cwd, { recursive: true, force: true });
+    vi.useRealTimers();
+  });
+
+  it("MonitorCreate starts a monitor and returns expected output", async () => {
+    const { pi, toolMap } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const monitorCreate = toolMap.get("MonitorCreate");
+    expect(monitorCreate?.execute).toBeDefined();
+
+    const result = await monitorCreate!.execute?.("1", {
+      command: "echo hello",
+      description: "test monitor",
+    });
+    expect(result.content[0].text).toContain("Monitor #1 started");
+    expect(result.content[0].text).toContain("echo hello");
+  });
+
+  it("MonitorCreate with onDone creates a completion loop", async () => {
+    const { pi, toolMap } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const monitorCreate = toolMap.get("MonitorCreate");
+
+    const result = await monitorCreate!.execute?.("1", {
+      command: "echo done",
+      onDone: "Report completion",
+    });
+    expect(result.content[0].text).toContain("Monitor #1 started");
+    expect(result.content[0].text).toContain("onDone loop");
+    expect(result.content[0].text).toContain("fires when monitor completes");
+  });
+
+  it("MonitorList returns empty-state message when no monitors", async () => {
+    const { pi, toolMap } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const monitorList = toolMap.get("MonitorList");
+    expect(monitorList?.execute).toBeDefined();
+
+    const result = await monitorList!.execute?.("1", {});
+    expect(result.content[0].text).toBe("No monitors running.");
+  });
+
+  it("MonitorList shows monitors with status and output lines", async () => {
+    const { pi, toolMap } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const monitorCreate = toolMap.get("MonitorCreate");
+    const monitorList = toolMap.get("MonitorList");
+
+    await monitorCreate!.execute?.("1", { command: "echo test-mon", description: "list test" });
+    await vi.advanceTimersByTimeAsync(500);
+
+    const result = await monitorList!.execute?.("2", {});
+    expect(result.content[0].text).toContain("test-mon");
+    expect(result.content[0].text).toContain("lines");
+  });
+
+  it("MonitorStop stops a running monitor", async () => {
+    const { pi, toolMap } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const monitorCreate = toolMap.get("MonitorCreate");
+    const monitorStop = toolMap.get("MonitorStop");
+
+    await monitorCreate!.execute?.("1", { command: "sleep 30", timeout: 0 });
+
+    const result = await monitorStop!.execute?.("2", { monitorId: "1" });
+    expect(result.content[0].text).toBe("Monitor #1 stopped");
+  });
+
+  it("MonitorStop returns not-found for non-existent monitor", async () => {
+    const { pi, toolMap } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const monitorStop = toolMap.get("MonitorStop");
+    expect(monitorStop?.execute).toBeDefined();
+
+    const result = await monitorStop!.execute?.("1", { monitorId: "999" });
+    expect(result.content[0].text).toContain("not found");
+  });
+});
