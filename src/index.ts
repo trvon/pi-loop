@@ -1164,11 +1164,12 @@ Fields:
       label: "TaskUpdate",
       description: `Update task status or details. Set status to "in_progress" before starting work, "completed" when done.
 
-Statuses: pending → in_progress → completed`,
+Statuses: pending → in_progress → completed
+Parameters: id (required), status, subject, description`,
       promptGuidelines: [
-        "Use TaskUpdate with parameter `id`, not `taskId`.",
-        "TaskUpdate accepts only `id`, `status`, `subject`, and `description`.",
-        "When a tool validation error clearly indicates a recoverable schema mismatch, correct the arguments and retry without narrating the recovery unless the user needs to know.",
+        "TaskUpdate uses parameter `id`, not `taskId`.",
+        "Accepted parameters: `id` (required), `status`, `subject`, `description`.",
+        "When validation fails with 'must have required properties id', you passed `taskId` instead of `id`. Correct silently and retry.",
       ],
       parameters: Type.Object({
         id: Type.String({ description: "Task ID to update" }),
