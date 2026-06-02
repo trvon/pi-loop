@@ -107,6 +107,8 @@ Only task counts and the single active/next task are shown in the widget so atte
 | `PI_LOOP_SCOPE` | `memory` (ephemeral), `session` (per-session file), `project` (shared) | `session` |
 | `PI_LOOP_DEBUG` | Debug logging to stderr | unset |
 
+In `session` scope (default), loop and task files are saved per session ID (e.g. `.pi/tasks/tasks-<sessionId>.json`) so concurrent sessions and worktree agents do not share state. In `memory` scope nothing persists to disk.
+
 ## Limits
 
 25 active loops, 25 running monitors. Recurring loops expire after 7 days.

@@ -73,8 +73,12 @@ export default function (pi: ExtensionAPI) {
     return join(process.cwd(), ".pi", "loops", "loops.json");
   }
 
-  function resolveTaskStorePath(): string | undefined {
+  function resolveTaskStorePath(sessionId?: string): string | undefined {
     if (loopScope === "memory") return undefined;
+    if (loopScope === "session" && sessionId) {
+      return join(process.cwd(), ".pi", "tasks", `tasks-${sessionId}.json`);
+    }
+    if (loopScope === "session") return undefined;
     return join(process.cwd(), ".pi", "tasks", "tasks.json");
   }
 
@@ -349,6 +353,7 @@ export default function (pi: ExtensionAPI) {
   let storeUpgraded = false;
   let persistedShown = false;
   let _latestCtx: ExtensionContext | undefined;
+  let _sessionId: string | undefined;
 
   function upgradeStoreIfNeeded(ctx: ExtensionContext) {
     if (storeUpgraded) return;
@@ -378,6 +383,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("turn_start", async (_event, ctx) => {
     _latestCtx = ctx;
+    _sessionId = ctx.sessionManager.getSessionId();
     widget.setUICtx(ctx.ui);
     upgradeStoreIfNeeded(ctx);
     widget.update();
@@ -417,6 +423,7 @@ export default function (pi: ExtensionAPI) {
     triggerSystem.stop();
     agentRunning = false;
     pendingNotifications.clear();
+    _sessionId = undefined;
 
     const isResume = event?.reason === "resume";
     storeUpgraded = false;
@@ -1076,7 +1083,7 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
 
   setTimeout(async () => {
     if (tasksAvailable || nativeTasksRegistered) return;
-    nativeTaskStore = new TaskStore(resolveTaskStorePath());
+    nativeTaskStore = new TaskStore(resolveTaskStorePath(_sessionId));
     nativeTasksRegistered = true;
     const taskStore = nativeTaskStore;
 

@@ -109,9 +109,19 @@ describe("native task fallback", () => {
   });
 
   it("stores native tasks in a dedicated .pi/tasks/tasks.json path", async () => {
-    const { pi, toolMap } = createMockPi();
+    const { pi, toolMap, extensionHandlers } = createMockPi();
 
     extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
     await vi.advanceTimersByTimeAsync(6100);
     await Promise.resolve();
 
@@ -120,7 +130,7 @@ describe("native task fallback", () => {
 
     await taskCreate!.execute?.("1", { subject: "Test task", description: "Native fallback path" });
 
-    const taskPath = join(cwd, ".pi", "tasks", "tasks.json");
+    const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
     expect(existsSync(taskPath)).toBe(true);
 
     const data = JSON.parse(readFileSync(taskPath, "utf-8"));
@@ -129,9 +139,19 @@ describe("native task fallback", () => {
   });
 
   it("quick-creates native tasks through the /tasks command", async () => {
-    const { pi, commandMap } = createMockPi();
+    const { pi, commandMap, extensionHandlers } = createMockPi();
 
     extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
     await vi.advanceTimersByTimeAsync(6100);
     await Promise.resolve();
 
@@ -141,7 +161,7 @@ describe("native task fallback", () => {
     const ui = { notify: vi.fn() };
     await tasksCommand!.handler?.("Write README updates", { ui });
 
-    const taskPath = join(cwd, ".pi", "tasks", "tasks.json");
+    const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
     const data = JSON.parse(readFileSync(taskPath, "utf-8"));
     expect(data.tasks).toHaveLength(1);
     expect(data.tasks[0].subject).toBe("Write README updates");
@@ -228,9 +248,19 @@ describe("native task fallback", () => {
   });
 
   it("auto-creates native tasks when an event-triggered autoTask loop fires", async () => {
-    const { pi, toolMap } = createMockPi();
+    const { pi, toolMap, extensionHandlers } = createMockPi();
 
     extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
     await vi.advanceTimersByTimeAsync(6100);
     await Promise.resolve();
 
@@ -247,7 +277,7 @@ describe("native task fallback", () => {
     pi.events.emit("native:test:event", {});
     await Promise.resolve();
 
-    const taskPath = join(cwd, ".pi", "tasks", "tasks.json");
+    const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
     const data = JSON.parse(readFileSync(taskPath, "utf-8"));
     expect(data.tasks).toHaveLength(1);
     expect(data.tasks[0].subject).toBe("Follow up on native task work");
@@ -256,9 +286,19 @@ describe("native task fallback", () => {
   });
 
   it("sweeps completed native tasks and skips follow-up wake when no tasks remain", async () => {
-    const { pi, toolMap, sentMessages } = createMockPi();
+    const { pi, toolMap, sentMessages, extensionHandlers } = createMockPi();
 
     extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
     await vi.advanceTimersByTimeAsync(6100);
     await Promise.resolve();
 
@@ -280,7 +320,7 @@ describe("native task fallback", () => {
     });
     await Promise.resolve();
 
-    const taskPath = join(cwd, ".pi", "tasks", "tasks.json");
+    const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
     const data = JSON.parse(readFileSync(taskPath, "utf-8"));
     expect(data.tasks).toHaveLength(0);
     expect(sentMessages).toHaveLength(0);
@@ -290,6 +330,16 @@ describe("native task fallback", () => {
     const { pi, toolMap, extensionHandlers, sentCustomMessages, sentMessages } = createMockPi();
 
     extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
     await vi.advanceTimersByTimeAsync(6100);
     await Promise.resolve();
 
@@ -300,15 +350,6 @@ describe("native task fallback", () => {
 
     await taskCreate!.execute?.("1", { subject: "Buffered task", description: "will complete before flush" });
 
-    const ctx = {
-      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
-      hasPendingMessages: () => false,
-      sessionManager: { getSessionId: () => "test-session" },
-    };
-
-    for (const handler of extensionHandlers.get("turn_start") ?? []) {
-      await handler(null, ctx);
-    }
     for (const handler of extensionHandlers.get("agent_start") ?? []) {
       await handler(null, ctx);
     }
@@ -333,7 +374,7 @@ describe("native task fallback", () => {
     }
     await Promise.resolve();
 
-    const taskPath = join(cwd, ".pi", "tasks", "tasks.json");
+    const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
     const data = JSON.parse(readFileSync(taskPath, "utf-8"));
     expect(data.tasks).toHaveLength(0);
     expect(sentCustomMessages).toHaveLength(0);
