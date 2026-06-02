@@ -1,5 +1,27 @@
 # Differential Review Report
 
+## Update — 2026-06-02
+
+### Resolved audit finding
+- **Resolved:** recurring `event` / `hybrid` loops now clean themselves up immediately when `maxFires` is reached on the final allowed fire.
+- **Implementation:** `src/trigger-system.ts` now removes and deletes recurring event/hybrid loops as soon as `fireCount >= maxFires` after `onFire(...)` completes.
+- **Why this mattered:** the previous behavior left one stale active loop behind until the next matching event arrived, which was a real runtime cleanup bug.
+
+### Regression coverage added
+- `test/trigger-system.test.ts`
+  - recurring `event` loop is deleted immediately at final `maxFires`
+  - recurring `hybrid` loop is deleted immediately at final `maxFires`
+  - hybrid cleanup also clears scheduled cron state
+- `test/index.test.ts`
+  - extension-level `LoopCreate`/`LoopList` path confirms the loop is gone immediately after the final allowed event fire
+
+### Validation status
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run test` ✅
+- `npm run build` ✅
+- Current suite: **112 passing tests**
+
 ## Scope
 Reviewed recent uncommitted changes in:
 - `src/index.ts`

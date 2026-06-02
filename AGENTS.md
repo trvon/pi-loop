@@ -32,8 +32,14 @@ src/
 - Tool descriptions follow Claude Code format: `## When to Use`, `## When NOT to Use`
 - Cross-extension communication via `pi.events` with `requestId` + reply channels
 - File-backed stores use atomic write (write tmp → rename) + pid-based file locking
-- Widget uses `UICtx.setWidget()` with `render()` callback pattern
+- Runtime tracker UI uses `UICtx.setStatus()` for compact single-line state
 - Tests co-located in `test/`, named `<module>.test.ts`
+
+## Tool Schema Discipline
+- Tool calls must use the exact schema field names from the tool definition. Do not invent aliases.
+- Example: `TaskUpdate` uses `id`, not `taskId`.
+- When a tool validation error clearly indicates an immediately recoverable schema mismatch, correct it silently and retry. Do not emit user-facing chatter like "retrying with the correct shape" unless the recovery itself changes the user's understanding.
+- When adding or revising tool prompt guidance, include concrete parameter-name reminders for commonly miscalled tools.
 
 ## File Locking Pattern
 Copy TaskStore from pi-tasks: `O_EXCL` lockfile, stale PID detection, `LOCK_RETRY_MS`/`LOCK_MAX_RETRIES`
@@ -44,14 +50,12 @@ Three trigger types, all stored as `LoopEntry.trigger`:
 - `{ type: "event", source: "tool_execution_start", filter?: "regex:..." | '{"key":"value"}' }` — eventbus-based
 - `{ type: "hybrid", cron: "...", event: { source, filter? }, debounceMs: 30000 }` — both with debounce
 
-## Re-wake via System Reminder
-When a loop fires, the scheduler calls `onLoopFire()` which emits `pi.events("loop:fire", ...)`. The extension's listener queues a reminder. On the next `tool_result` event, the reminder is injected as `<system-reminder>` text (mirroring pi-tasks' pattern):
-```
-<system-reminder>
-Scheduled loop "deploy check" fired. Trigger: schedule: */5 * * * *.
-[loop:abc12345]
-</system-reminder>
-```
+All cron/hybrid loops are dynamic: they track their next fire time but only deliver on agent idle (`agent_end`/`turn_start`) rather than wall-clock timers.
+
+## Re-wake via In-Memory Pending Notifications
+When a loop fires, the scheduler calls `onLoopFire()` which emits `pi.events("loop:fire", ...)`. The extension buffers a pending notification in memory, re-checks whether the wake is still relevant, and only then injects a `pi.sendMessage()` custom message to wake the agent. Do not rely on early queued follow-up user messages for loop delivery; those are not extension-cancelable once handed to pi's queue.
+
+All loops are idle-driven. Cron and hybrid loops track their next fire time but only deliver when the agent becomes idle (via `agent_end`/`turn_start`), resetting their timer from the actual delivery point.
 
 ## Monitor Streaming via PI Events
 Monitor stdout/stderr lines are emitted as `pi.events("monitor:output", { monitorId, line, timestamp })`. Tool consumers subscribe to these events. Completion emits `"monitor:done"` / `"monitor:error"`.

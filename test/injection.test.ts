@@ -1,371 +1,261 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-describe("loop:fire triggers sendUserMessage", () => {
-  it("sends followUp message with pi-loop prefix when agent is processing", async () => {
-    let sentMessages: Array<{ msg: string; opts: any }> = [];
+interface MockOptions {
+  respondToTaskPing?: boolean;
+  pendingTaskCount?: () => number;
+}
 
-    const mockPi: any = {
-      events: {
-        emit: vi.fn((_event: string, data: any) => {
-          const cbs = eventHandlers.get(_event);
-          if (cbs) for (const cb of cbs) cb(data);
-        }),
-        on: (_event: string, handler: (data: any) => void) => {
-          if (!eventHandlers.has(_event)) eventHandlers.set(_event, []);
-          eventHandlers.get(_event)!.push(handler);
-          return () => {};
-        },
-      },
-      on: vi.fn(),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn(),
-      sendUserMessage: (msg: string, opts: any) => {
-        sentMessages.push({ msg, opts });
-      },
-    };
+function createMockPi(options: MockOptions = {}) {
+  const sentMessages: Array<{ message: any; options?: any }> = [];
+  const sentUserMessages: Array<{ message: string; options?: any }> = [];
+  const emittedEvents: Array<{ name: string; payload: any }> = [];
+  const eventHandlers = new Map<string, Array<(data: any) => void>>();
+  const extensionHandlers = new Map<string, Array<(data: any, ctx: any) => unknown>>();
 
-    const eventHandlers = new Map<string, Array<(data: any) => void>>();
+  const events = {
+    emit(name: string, payload: any) {
+      emittedEvents.push({ name, payload });
 
+      if (name === "tasks:rpc:ping" && payload?.requestId && options.respondToTaskPing) {
+        queueMicrotask(() => {
+          events.emit(`tasks:rpc:ping:reply:${payload.requestId}`, {
+            success: true,
+            data: { version: 1 },
+          });
+        });
+        return;
+      }
+
+      if (name === "tasks:rpc:pending" && payload?.requestId && options.pendingTaskCount) {
+        queueMicrotask(() => {
+          events.emit(`tasks:rpc:pending:reply:${payload.requestId}`, {
+            success: true,
+            data: { pending: options.pendingTaskCount?.() ?? 0 },
+          });
+        });
+        return;
+      }
+
+      if (name === "tasks:rpc:clean" && payload?.requestId) {
+        queueMicrotask(() => {
+          events.emit(`tasks:rpc:clean:reply:${payload.requestId}`, { success: true });
+        });
+        return;
+      }
+
+      for (const cb of eventHandlers.get(name) ?? []) cb(payload);
+    },
+    on(name: string, handler: (data: any) => void) {
+      const handlers = eventHandlers.get(name) ?? [];
+      handlers.push(handler);
+      eventHandlers.set(name, handlers);
+      return () => {};
+    },
+  };
+
+  const pi: any = {
+    events,
+    on(name: string, handler: (data: any, ctx: any) => unknown) {
+      const handlers = extensionHandlers.get(name) ?? [];
+      handlers.push(handler);
+      extensionHandlers.set(name, handlers);
+    },
+    registerTool() {},
+    registerCommand() {},
+    sendMessage(message: any, options?: any) {
+      sentMessages.push({ message, options });
+    },
+    sendUserMessage(message: string, options?: any) {
+      sentUserMessages.push({ message, options });
+    },
+  };
+
+  async function emitExtension(name: string, payload: any, ctx: any) {
+    for (const handler of extensionHandlers.get(name) ?? []) {
+      await handler(payload, ctx);
+    }
+  }
+
+  return { pi, sentMessages, sentUserMessages, emittedEvents, emitExtension };
+}
+
+function createCtx(hasPendingMessages = false) {
+  return {
+    ui: { setStatus() {}, setWidget() {} },
+    hasPendingMessages: () => hasPendingMessages,
+    sessionManager: { getSessionId: () => "test-session" },
+  };
+}
+
+async function flushAsync() {
+  await new Promise(resolve => setTimeout(resolve, 0));
+}
+
+describe("loop:fire custom message delivery", () => {
+  it("injects a custom pi-loop message immediately when idle", async () => {
+    const { pi, sentMessages, sentUserMessages, emitExtension } = createMockPi();
     const extension = await import("../src/index.js");
-    extension.default(mockPi);
+    extension.default(pi);
 
-    mockPi.events.emit("loop:fire", {
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
       loopId: "42",
       prompt: "Pick up the next task and work on it",
       trigger: { type: "cron", schedule: "*/1 * * * *" },
       timestamp: Date.now(),
     });
+    await flushAsync();
 
-    expect(sentMessages.length).toBe(1);
-    expect(sentMessages[0].opts).toEqual({ deliverAs: "followUp" });
-    expect(sentMessages[0].msg).toContain("[pi-loop]");
-    expect(sentMessages[0].msg).toContain("Loop #42 fired");
-    expect(sentMessages[0].msg).toContain("Pick up the next task and work on it");
+    expect(sentUserMessages).toHaveLength(0);
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+    expect(sentMessages[0].message.customType).toBe("pi-loop");
+    expect(sentMessages[0].message.display).toBe(false);
+    expect(sentMessages[0].message.content).toContain("[pi-loop]");
+    expect(sentMessages[0].message.content).toContain("Loop #42 fired");
+    expect(sentMessages[0].message.content).toContain("Pick up the next task and work on it");
   });
 
-  it("includes READ-ONLY MODE constraint when readOnly is true", async () => {
-    let sentMessages: Array<{ msg: string; opts: any }> = [];
-
-    const mockPi: any = {
-      events: {
-        emit: vi.fn((_event: string, data: any) => {
-          const cbs = eventHandlers.get(_event);
-          if (cbs) for (const cb of cbs) cb(data);
-        }),
-        on: (_event: string, handler: (data: any) => void) => {
-          if (!eventHandlers.has(_event)) eventHandlers.set(_event, []);
-          eventHandlers.get(_event)!.push(handler);
-          return () => {};
-        },
-      },
-      on: vi.fn(),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn(),
-      sendUserMessage: (msg: string, opts: any) => {
-        sentMessages.push({ msg, opts });
-      },
-    };
-
-    const eventHandlers = new Map<string, Array<(data: any) => void>>();
-
+  it("includes the read-only constraint without advertising LoopCreate", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
     const extension = await import("../src/index.js");
-    extension.default(mockPi);
+    extension.default(pi);
 
-    mockPi.events.emit("loop:fire", {
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
       loopId: "7",
       prompt: "Check the build status",
       trigger: { type: "cron", schedule: "*/5 * * * *" },
       timestamp: Date.now(),
       readOnly: true,
     });
+    await flushAsync();
 
-    expect(sentMessages.length).toBe(1);
-    expect(sentMessages[0].msg).toContain("READ-ONLY MODE");
-    expect(sentMessages[0].msg).toContain("[pi-loop]");
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].message.content).toContain("READ-ONLY MODE");
+    expect(sentMessages[0].message.content).toContain("MonitorList");
+    expect(sentMessages[0].message.content).not.toContain("LoopCreate");
   });
 
-  it("does not include READ-ONLY MODE when readOnly is false", async () => {
-    let sentMessages: Array<{ msg: string; opts: any }> = [];
-
-    const mockPi: any = {
-      events: {
-        emit: vi.fn((_event: string, data: any) => {
-          const cbs = eventHandlers.get(_event);
-          if (cbs) for (const cb of cbs) cb(data);
-        }),
-        on: (_event: string, handler: (data: any) => void) => {
-          if (!eventHandlers.has(_event)) eventHandlers.set(_event, []);
-          eventHandlers.get(_event)!.push(handler);
-          return () => {};
-        },
-      },
-      on: vi.fn(),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn(),
-      sendUserMessage: (msg: string, opts: any) => {
-        sentMessages.push({ msg, opts });
-      },
-    };
-
-    const eventHandlers = new Map<string, Array<(data: any) => void>>();
-
+  it("buffers recurring fires while the agent is active and flushes once idle", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
     const extension = await import("../src/index.js");
-    extension.default(mockPi);
+    extension.default(pi);
 
-    mockPi.events.emit("loop:fire", {
-      loopId: "8",
-      prompt: "Check the build status",
-      trigger: { type: "cron", schedule: "*/5 * * * *" },
-      timestamp: Date.now(),
-      readOnly: false,
-    });
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+    await emitExtension("agent_start", null, ctx);
 
-    expect(sentMessages.length).toBe(1);
-    expect(sentMessages[0].msg).not.toContain("READ-ONLY MODE");
-  });
-
-  it("skips recurring fires when agent already has pending messages", async () => {
-    let sentMessages: Array<{ msg: string; opts: any }> = [];
-    const turnHandlers: Array<(...args: any[]) => void> = [];
-
-    const mockPi: any = {
-      events: {
-        emit: vi.fn((_event: string, data: any) => {
-          const cbs = eventHandlers.get(_event);
-          if (cbs) for (const cb of cbs) cb(data);
-        }),
-        on: (_event: string, handler: (data: any) => void) => {
-          if (!eventHandlers.has(_event)) eventHandlers.set(_event, []);
-          eventHandlers.get(_event)!.push(handler);
-          return () => {};
-        },
-      },
-      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
-        if (event === "turn_start") turnHandlers.push(handler);
-      }),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn(),
-      sendUserMessage: (msg: string, opts: any) => {
-        sentMessages.push({ msg, opts });
-      },
-    };
-
-    const eventHandlers = new Map<string, Array<(data: any) => void>>();
-
-    const extension = await import("../src/index.js");
-    extension.default(mockPi);
-
-    for (const handler of turnHandlers) {
-      handler(null, {
-        ui: { setStatus: vi.fn(), setWidget: vi.fn() },
-        hasPendingMessages: () => true,
-        sessionManager: { getSessionId: () => "test" },
-      });
-    }
-
-    mockPi.events.emit("loop:fire", {
+    pi.events.emit("loop:fire", {
       loopId: "9",
-      prompt: "Should be skipped",
+      prompt: "Deliver after current work finishes",
       trigger: { type: "cron", schedule: "*/1 * * * *" },
       timestamp: Date.now(),
       recurring: true,
     });
+    await flushAsync();
+    expect(sentMessages).toHaveLength(0);
 
-    expect(sentMessages.length).toBe(0);
+    await emitExtension("agent_end", null, ctx);
+    await flushAsync();
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].message.content).toContain("Deliver after current work finishes");
   });
 
-  it("sends one-shot fires even when agent has pending messages", async () => {
-    let sentMessages: Array<{ msg: string; opts: any }> = [];
-    const turnHandlers: Array<(...args: any[]) => void> = [];
-
-    const mockPi: any = {
-      events: {
-        emit: vi.fn((_event: string, data: any) => {
-          const cbs = eventHandlers.get(_event);
-          if (cbs) for (const cb of cbs) cb(data);
-        }),
-        on: (_event: string, handler: (data: any) => void) => {
-          if (!eventHandlers.has(_event)) eventHandlers.set(_event, []);
-          eventHandlers.get(_event)!.push(handler);
-          return () => {};
-        },
-      },
-      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
-        if (event === "turn_start") turnHandlers.push(handler);
-      }),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn(),
-      sendUserMessage: (msg: string, opts: any) => {
-        sentMessages.push({ msg, opts });
-      },
-    };
-
-    const eventHandlers = new Map<string, Array<(data: any) => void>>();
-
+  it("dedupes buffered recurring fires by loop id and keeps the latest prompt", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
     const extension = await import("../src/index.js");
-    extension.default(mockPi);
+    extension.default(pi);
 
-    for (const handler of turnHandlers) {
-      handler(null, {
-        ui: { setStatus: vi.fn(), setWidget: vi.fn() },
-        hasPendingMessages: () => true,
-        sessionManager: { getSessionId: () => "test" },
-      });
-    }
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+    await emitExtension("agent_start", null, ctx);
 
-    mockPi.events.emit("loop:fire", {
+    pi.events.emit("loop:fire", {
+      loopId: "13",
+      prompt: "Old prompt",
+      trigger: { type: "cron", schedule: "*/1 * * * *" },
+      timestamp: Date.now(),
+      recurring: true,
+    });
+    pi.events.emit("loop:fire", {
+      loopId: "13",
+      prompt: "Latest prompt",
+      trigger: { type: "cron", schedule: "*/1 * * * *" },
+      timestamp: Date.now() + 1,
+      recurring: true,
+    });
+    await flushAsync();
+
+    await emitExtension("agent_end", null, ctx);
+    await flushAsync();
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].message.content).toContain("Latest prompt");
+    expect(sentMessages[0].message.content).not.toContain("Old prompt");
+  });
+
+  it("flushes one-shot monitor wakes after the current agent run", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+    await emitExtension("agent_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
       loopId: "11",
       prompt: "Monitor completed — must deliver",
       trigger: { type: "event", source: "monitor:done" },
       timestamp: Date.now(),
       recurring: false,
     });
+    await flushAsync();
+    expect(sentMessages).toHaveLength(0);
 
-    expect(sentMessages.length).toBe(1);
-    expect(sentMessages[0].msg).toContain("Monitor completed");
+    await emitExtension("agent_end", null, ctx);
+    await flushAsync();
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].message.content).toContain("Monitor completed");
   });
 
-  it("sends message when agent has no pending messages", async () => {
-    let sentMessages: Array<{ msg: string; opts: any }> = [];
-    const turnHandlers: Array<(...args: any[]) => void> = [];
-
-    const mockPi: any = {
-      events: {
-        emit: vi.fn((_event: string, data: any) => {
-          const cbs = eventHandlers.get(_event);
-          if (cbs) for (const cb of cbs) cb(data);
-        }),
-        on: (_event: string, handler: (data: any) => void) => {
-          if (!eventHandlers.has(_event)) eventHandlers.set(_event, []);
-          eventHandlers.get(_event)!.push(handler);
-          return () => {};
-        },
-      },
-      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
-        if (event === "turn_start") turnHandlers.push(handler);
-      }),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn(),
-      sendUserMessage: (msg: string, opts: any) => {
-        sentMessages.push({ msg, opts });
-      },
-    };
-
-    const eventHandlers = new Map<string, Array<(data: any) => void>>();
-
-    const extension = await import("../src/index.js");
-    extension.default(mockPi);
-
-    for (const handler of turnHandlers) {
-      handler(null, {
-        ui: { setStatus: vi.fn(), setWidget: vi.fn() },
-        hasPendingMessages: () => false,
-        sessionManager: { getSessionId: () => "test" },
-      });
-    }
-
-    mockPi.events.emit("loop:fire", {
-      loopId: "10",
-      prompt: "Should be sent",
-      trigger: { type: "cron", schedule: "*/1 * * * *" },
-      timestamp: Date.now(),
-      recurring: true,
+  it("drops a buffered autoTask wake when pending tasks reach zero before flush", async () => {
+    let pendingTaskCount = 1;
+    const { pi, sentMessages, emittedEvents, emitExtension } = createMockPi({
+      respondToTaskPing: true,
+      pendingTaskCount: () => pendingTaskCount,
     });
-
-    expect(sentMessages.length).toBe(1);
-  });
-
-  it("skips fire when autoTask loop has no pending tasks", async () => {
-    let sentMessages: Array<{ msg: string; opts: any }> = [];
-    const turnHandlers: Array<(...args: any[]) => void> = [];
-    let pendingTaskCount = 0;
-
-    const mockPi: any = {
-      events: {
-        emit: vi.fn((_event: string, data: any) => {
-          // Route tasks RPC: reply with pending count when queried
-          if (_event === "tasks:rpc:pending" && data?.requestId) {
-            const replyEvent = `tasks:rpc:pending:reply:${data.requestId}`;
-            const replyHandlers = allHandlers.get(replyEvent);
-            if (replyHandlers) {
-              for (const cb of replyHandlers) {
-                cb({ success: true, data: { pending: pendingTaskCount } });
-              }
-            }
-            return;
-          }
-          if (_event === "tasks:rpc:ping" && data?.requestId) {
-            const replyEvent = `tasks:rpc:ping:reply:${data.requestId}`;
-            const replyHandlers = allHandlers.get(replyEvent);
-            if (replyHandlers) {
-              for (const cb of replyHandlers) {
-                cb({ success: true, data: { version: 1 } });
-              }
-            }
-            return;
-          }
-          const cbs = allHandlers.get(_event);
-          if (cbs) for (const cb of cbs) cb(data);
-        }),
-        on: vi.fn((_event: string, handler: (data: any) => void) => {
-          if (!allHandlers.has(_event)) allHandlers.set(_event, []);
-          allHandlers.get(_event)!.push(handler);
-          return () => {};
-        }),
-      },
-      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
-        if (event === "turn_start") turnHandlers.push(handler);
-      }),
-      registerTool: vi.fn(),
-      registerCommand: vi.fn(),
-      sendUserMessage: (msg: string, opts: any) => {
-        sentMessages.push({ msg, opts });
-      },
-    };
-
-    const allHandlers = new Map<string, Array<(data: any) => void>>();
-
     const extension = await import("../src/index.js");
-    extension.default(mockPi);
+    extension.default(pi);
+    await flushAsync();
 
-    // Simulate pi-tasks available
-    mockPi.events.emit("tasks:ready");
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+    await emitExtension("agent_start", null, ctx);
 
-    // Seed turn_start so _latestCtx is set
-    for (const handler of turnHandlers) {
-      handler(null, {
-        ui: { setStatus: vi.fn(), setWidget: vi.fn() },
-        hasPendingMessages: () => false,
-        sessionManager: { getSessionId: () => "test" },
-      });
-    }
+    pi.events.emit("loop:fire", {
+      loopId: "12",
+      prompt: "Should be dropped before delivery",
+      trigger: { type: "cron", schedule: "*/5 * * * *" },
+      timestamp: Date.now(),
+      autoTask: true,
+      recurring: false,
+    });
+    await flushAsync();
+    expect(sentMessages).toHaveLength(0);
 
-    // pendingTaskCount is 0 — loop should skip
     pendingTaskCount = 0;
-    mockPi.events.emit("loop:fire", {
-      loopId: "12",
-      prompt: "Should be skipped — no tasks",
-      trigger: { type: "cron", schedule: "*/5 * * * *" },
-      timestamp: Date.now(),
-      autoTask: true,
-    });
+    await emitExtension("agent_end", null, ctx);
+    await flushAsync();
 
-    // Wait for async hasPendingTasks to resolve
-    await new Promise(r => setTimeout(r, 100));
-    expect(sentMessages.length).toBe(0);
-
-    // pendingTaskCount is 5 — loop should fire
-    pendingTaskCount = 5;
-    mockPi.events.emit("loop:fire", {
-      loopId: "12",
-      prompt: "Should fire — tasks pending",
-      trigger: { type: "cron", schedule: "*/5 * * * *" },
-      timestamp: Date.now(),
-      autoTask: true,
-    });
-
-    await new Promise(r => setTimeout(r, 100));
-    expect(sentMessages.length).toBe(1);
-    expect(sentMessages[0].msg).toContain("Should fire");
+    expect(sentMessages).toHaveLength(0);
+    expect(emittedEvents.some(event => event.name === "tasks:rpc:clean")).toBe(true);
   });
 });

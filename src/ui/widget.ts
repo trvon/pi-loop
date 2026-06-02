@@ -1,6 +1,4 @@
-import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { MonitorManager } from "../monitor-manager.js";
 import type { LoopStore } from "../store.js";
 
@@ -11,8 +9,6 @@ interface TaskSummary {
 
 export class LoopWidget {
   private uiCtx: ExtensionUIContext | undefined;
-  private tui: TUI | undefined;
-  private widgetRegistered = false;
   private interval: ReturnType<typeof setInterval> | undefined;
   private taskSummaryProvider: (() => TaskSummary) | undefined;
 
@@ -36,36 +32,25 @@ export class LoopWidget {
   update() {
     if (!this.uiCtx) return;
 
-    const taskSummary = this.taskSummaryProvider?.() ?? { count: 0 };
-    const hasContent = this.store.list().some(l => l.status === "active") || this.monitorManager.list().length > 0 || taskSummary.count > 0;
-    if (hasContent && !this.interval) {
+    const status = this.computeStatus();
+    if (status && !this.interval) {
       this.interval = setInterval(() => this.update(), 5000);
     }
-    if (!hasContent && this.interval) {
+    if (!status && this.interval) {
       clearInterval(this.interval);
       this.interval = undefined;
     }
 
-    if (!this.widgetRegistered) {
-      this.uiCtx.setWidget("loops", (tui: TUI, theme: Theme) => {
-        this.tui = tui;
-        return { render: () => this.renderWidget(tui, theme), invalidate: () => {} } as Component & { dispose?(): void };
-      }, { placement: "aboveEditor" });
-      this.widgetRegistered = true;
-    } else if (this.tui) {
-      (this.tui as any).requestRender();
-    }
+    this.uiCtx.setStatus("loops", status);
   }
 
-  private renderWidget(tui: TUI, _theme: Theme): string[] {
+  private computeStatus(): string | undefined {
     const loops = this.store.list().filter(l => l.status === "active");
     const monitors = this.monitorManager.list();
     const taskSummary = this.taskSummaryProvider?.() ?? { count: 0 };
-    const w = tui.terminal.columns;
-    const trunc = (line: string) => truncateToWidth(line, w);
 
     if (loops.length === 0 && monitors.length === 0 && taskSummary.count === 0) {
-      return [trunc("none")];
+      return undefined;
     }
 
     const parts: string[] = [];
@@ -75,14 +60,15 @@ export class LoopWidget {
 
     let line = parts.join(" · ");
     if (taskSummary.focusText) line += ` | ${taskSummary.focusText}`;
-    return [trunc(line)];
+    return line;
   }
 
   dispose() {
-    if (this.interval) { clearInterval(this.interval); this.interval = undefined; }
-    if (this.uiCtx) this.uiCtx.setWidget("loops", undefined);
-    this.widgetRegistered = false;
-    this.tui = undefined;
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = undefined;
+    }
+    this.uiCtx?.setStatus("loops", undefined);
   }
 }
 

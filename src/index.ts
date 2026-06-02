@@ -50,6 +50,10 @@ interface SessionSwitchEvent {
   reason?: string;
 }
 
+interface PendingNotification extends LoopFireEvent {
+  key: string;
+  message: string;
+}
 
 export default function (pi: ExtensionAPI) {
   const piLoopEnv = process.env.PI_LOOP;
@@ -191,6 +195,126 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  let agentRunning = false;
+  const pendingNotifications = new Map<string, PendingNotification>();
+  let flushPromise: Promise<void> | undefined;
+
+  function buildLoopFireMessage(data: LoopFireEvent): string {
+    const triggerInfo = typeof data.trigger === "string"
+      ? data.trigger
+      : data.trigger?.type === "cron"
+        ? `schedule: ${data.trigger.schedule}`
+        : data.trigger?.type === "event"
+          ? `event: ${data.trigger.source}`
+          : "hybrid";
+
+    const loopId = data.loopId || "?";
+    const prompt = data.prompt || "loop fired";
+    const constraint = data.readOnly
+      ? "\n\nREAD-ONLY MODE — use only read tools (Read, TaskList, LoopList, MonitorList, etc.). No file writes, shell execution, or destructive changes."
+      : "";
+
+    return [
+      `[pi-loop] Loop #${loopId} fired (${triggerInfo}).${constraint}`,
+      prompt,
+    ].join("\n");
+  }
+
+  function buildPendingNotification(data: LoopFireEvent): PendingNotification {
+    const key = data.recurring ? `loop:${data.loopId}` : `loop:${data.loopId}:${data.timestamp}`;
+    return {
+      ...data,
+      key,
+      message: buildLoopFireMessage(data),
+    };
+  }
+
+  function triggerHasEventSource(trigger: Trigger | string, source: string): boolean {
+    if (typeof trigger === "string") return false;
+    return trigger.type === "event"
+      ? trigger.source === source
+      : trigger.type === "hybrid"
+        ? trigger.event.source === source
+        : false;
+  }
+
+  async function maybeBootstrapTaskLoop(entry: LoopEntry): Promise<boolean> {
+    if (!entry.recurring) return false;
+    if (!triggerHasEventSource(entry.trigger, "tasks:created")) return false;
+
+    const pending = await hasPendingTasks();
+    if (pending <= 0) return false;
+
+    debug(`loop #${entry.id} — bootstrapping existing pending tasks (${pending})`);
+    await queueOrDeliverNotification({
+      loopId: entry.id,
+      prompt: entry.prompt,
+      trigger: entry.trigger,
+      timestamp: Date.now(),
+      readOnly: entry.readOnly,
+      recurring: false,
+      autoTask: true,
+    });
+    return true;
+  }
+
+  async function deliverNotification(notification: PendingNotification): Promise<boolean> {
+    if (notification.autoTask) {
+      const pending = await hasPendingTasks();
+      if (pending === 0) {
+        debug(`loop:fire #${notification.loopId} — no pending tasks at delivery time, dropping wake`);
+        await cleanDoneTasks();
+        return false;
+      }
+    }
+
+    agentRunning = true;
+    pi.sendMessage({
+      customType: "pi-loop",
+      content: notification.message,
+      display: false,
+      details: {
+        loopId: notification.loopId,
+        trigger: notification.trigger,
+        recurring: notification.recurring,
+        readOnly: notification.readOnly,
+        autoTask: notification.autoTask,
+        timestamp: notification.timestamp,
+      },
+    }, {
+      deliverAs: "steer",
+      triggerTurn: true,
+    });
+    return true;
+  }
+
+  async function flushPendingNotifications(): Promise<void> {
+    if (flushPromise) return flushPromise;
+
+    flushPromise = (async () => {
+      if (agentRunning || _latestCtx?.hasPendingMessages()) return;
+
+      const entries = [...pendingNotifications.entries()]
+        .sort(([, left], [, right]) => left.timestamp - right.timestamp);
+
+      for (const [key, notification] of entries) {
+        pendingNotifications.delete(key);
+        const delivered = await deliverNotification(notification);
+        if (delivered) return;
+      }
+    })().finally(() => {
+      flushPromise = undefined;
+    });
+
+    return flushPromise;
+  }
+
+  async function queueOrDeliverNotification(data: LoopFireEvent): Promise<void> {
+    const notification = buildPendingNotification(data);
+    pendingNotifications.set(notification.key, notification);
+    await flushPendingNotifications();
+  }
+
   // ── Loop fire handler ──
 
   function onLoopFire(entry: LoopEntry): void {
@@ -257,6 +381,7 @@ export default function (pi: ExtensionAPI) {
     widget.setUICtx(ctx.ui);
     upgradeStoreIfNeeded(ctx);
     widget.update();
+    await pumpLoops();
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
@@ -267,10 +392,31 @@ export default function (pi: ExtensionAPI) {
     widget.update();
   });
 
+  pi.on("agent_start", async (_event, ctx) => {
+    agentRunning = true;
+    _latestCtx = ctx;
+    widget.setUICtx(ctx.ui);
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    agentRunning = false;
+    _latestCtx = ctx;
+    widget.setUICtx(ctx.ui);
+    await flushPendingNotifications();
+    await pumpLoops();
+  });
+
+  pi.on("session_shutdown", async () => {
+    agentRunning = false;
+    pendingNotifications.clear();
+  });
+
   pi.on("session_switch" as any, async (event: SessionSwitchEvent, ctx: ExtensionContext) => {
     _latestCtx = ctx;
     widget.setUICtx(ctx.ui);
     triggerSystem.stop();
+    agentRunning = false;
+    pendingNotifications.clear();
 
     const isResume = event?.reason === "resume";
     storeUpgraded = false;
@@ -285,42 +431,37 @@ export default function (pi: ExtensionAPI) {
     widget.update();
   });
 
-  // ── Loop fire handler — sends a user message to re-wake the agent ──
+  // ── Dynamic loop pump — fires cron/hybrid loops on idle instead of wall-clock timers ──
+
+  async function pumpLoops(): Promise<void> {
+    const pendingTasks = new Map<string, boolean>();
+    for (const entry of store.list()) {
+      if (entry.status !== "active") continue;
+      if (!entry.autoTask) continue;
+      if (entry.trigger.type !== "cron" && entry.trigger.type !== "hybrid") continue;
+      const nextFire = scheduler.nextFire(entry.id);
+      if (!nextFire || Date.now() < nextFire) continue;
+      const pending = await hasPendingTasks();
+      if (pending <= 0) pendingTasks.set(entry.id, true);
+    }
+    scheduler.pump(Date.now(), (entry) => !pendingTasks.has(entry.id));
+  }
+
+  // ── Loop fire handler — queues an in-memory notification, then injects a custom message when delivery is safe ──
 
   pi.events.on("loop:fire", async (event: unknown) => {
     const data = event as LoopFireEvent;
-
-    if (data.recurring && _latestCtx?.hasPendingMessages()) {
-      debug(`loop:fire #${data.loopId} — agent has pending messages, skipping recurring fire`);
-      return;
-    }
 
     if (data.autoTask) {
       const pending = await hasPendingTasks();
       if (pending === 0) {
         debug(`loop:fire #${data.loopId} — no pending tasks, skipping, requesting cleanup`);
-        cleanDoneTasks();
+        await cleanDoneTasks();
         return;
       }
     }
 
-    const triggerInfo = typeof data.trigger === "string"
-      ? data.trigger
-      : data.trigger?.type === "cron"
-        ? `schedule: ${data.trigger.schedule}`
-        : data.trigger?.type === "event"
-          ? `event: ${data.trigger.source}`
-          : `hybrid`;
-
-    const loopId = data.loopId || "?";
-    const prompt = data.prompt || "loop fired";
-    const constraint = data.readOnly ? "\n\nREAD-ONLY MODE — use only read tools (Read, TaskList, LoopList, MonitorList, LoopCreate, etc.). No file writes, shell execution, or destructive changes." : "";
-    const message = [
-      `[pi-loop] Loop #${loopId} fired (${triggerInfo}).${constraint}`,
-      prompt,
-    ].join("\n");
-
-    pi.sendUserMessage(message, { deliverAs: "followUp" });
+    await queueOrDeliverNotification(data);
   });
 
   // ──────────────────────────────────────────────────
@@ -358,7 +499,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
 - **trigger**: interval like "30s", "5m", "2h", event source, or hybrid spec
 - **prompt**: what to do when the loop fires (e.g., "check if the build passed")
 - **recurring**: repeat or fire once (default: true)
-- **autoTask**: if pi-tasks is loaded, auto-create a task on each fire
+- **autoTask**: when pi-tasks is loaded or native task fallback is active, auto-create a task on each fire
 - **readOnly**: restrict the agent to read-only tools when this loop fires (default: false)
 - **maxFires**: auto-stop after N fires — prevents infinite token burn on polling loops`,
     promptGuidelines: [
@@ -376,8 +517,9 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       "## readOnly mode",
       "Set readOnly: true for loops that only observe and report (checks, status polls). This prevents unintended changes.",
       "## Task-driven workflows",
-      "After creating tasks with TaskCreate, use an event loop with autoTask: true so the system checks for pending tasks before firing: LoopCreate trigger='tasks:created' triggerType='event' autoTask: true maxFires: 30 prompt='Run TaskList, pick the next available pending task, work on it.'",
-      "When no tasks are pending, the loop skips the follow-up — no tokens burned on empty polls.",
+      "Do not rely on a past 'tasks:created' event to replay. If tasks already exist, bootstrap the first pass in the current turn or use a hybrid/event loop that can catch future task creation and a cron safety-net.",
+      "Use autoTask only when you want the loop itself to create a task on each fire. For processing an existing task backlog, leave autoTask off and have the loop run TaskList to pick the next pending task.",
+      "When no tasks are pending, the loop should stop itself or skip the wake entirely — no tokens burned on empty polls.",
       "After creating a loop, tell the user the loop ID so they can cancel it with LoopDelete.",
     ],
     parameters: Type.Object({
@@ -391,7 +533,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       maxFires: Type.Optional(Type.Number({ description: "Auto-stop after N fires. Prevents infinite token burn on polling loops." })),
     }),
 
-    execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
       const { trigger: triggerInput, prompt, recurring, autoTask, triggerType, debounceMs, readOnly, maxFires } = params;
 
       let trigger: Trigger;
@@ -420,7 +562,6 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       const entry = store.create(trigger, prompt, {
         recurring: recurring ?? (inferred !== "event"),
         autoTask,
-        selfPaced: triggerInput === "self-paced" || prompt.toLowerCase().includes("self-paced"),
         readOnly,
         maxFires,
       });
@@ -442,6 +583,8 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
         } catch { /* filter parse failure, ignore */ }
       }
 
+      const bootstrapped = await maybeBootstrapTaskLoop(entry);
+
       widget.update();
 
       const triggerDesc = trigger.type === "cron"
@@ -455,7 +598,8 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
         `Trigger: ${triggerDesc}\n` +
         `Recurring: ${entry.recurring}\n` +
         (entry.autoTask ? `Auto-task: enabled\n` : "") +
-        (tasksAvailable ? "" : "(pi-tasks not detected — autoTask will have no effect)\n") +
+        (bootstrapped ? "Bootstrap: queued initial wake for existing pending tasks\n" : "") +
+        ((tasksAvailable || nativeTasksRegistered) ? "" : "(task system not ready yet — autoTask may not fire until native fallback or pi-tasks becomes available)\n") +
         `ID: ${entry.id} (use LoopDelete to cancel)`
       ));
     },
@@ -594,7 +738,7 @@ Use "pause" to temporarily stop a loop without removing it. Use "delete" to perm
 
 Fire off a build check, CI monitor, experiment, script, or any slow command — then keep working. Output streams back as "monitor:output" events. When the process exits, "monitor:done" fires (or "monitor:error" on failure).
 
-If you pass onDone with a prompt, the monitor auto-creates a one-shot completion loop — you get a system reminder with the exit code and output line count. No need to poll or create a separate loop.
+If you pass onDone with a prompt, the monitor auto-creates a one-shot completion loop — you get a completion wake with the exit code and output line count. No need to poll or create a separate loop.
 
 DO NOT use raw Bash while/sleep/for loops to watch something. DO NOT run slow commands inline that could be offloaded. Use MonitorCreate to run work in parallel while you continue.
 
@@ -608,7 +752,7 @@ Default to MonitorCreate for any long-running or background work:\n- Watch a CI/
 
 ## onDone — auto-notify on completion
 
-Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fires when the process exits. The system reminder includes the exit code and output line count.\n\nExample: MonitorCreate command="python train.py" onDone="Check training results and report best loss"\nExample: MonitorCreate command="hut builds show 1769753" onDone="Analyze the build result and report status"`,
+Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fires when the process exits. The completion wake includes the exit code and output line count.\n\nExample: MonitorCreate command="python train.py" onDone="Check training results and report best loss"\nExample: MonitorCreate command="hut builds show 1769753" onDone="Analyze the build result and report status"`,
     promptGuidelines: [
       "Default to MonitorCreate for any long-running or background command — releases the agent to keep working on other tasks in parallel.",
       "When the user asks to monitor CI builds, watch a build, check a remote job, or run an experiment, use MonitorCreate instead of inline bash/curl/wait.",
@@ -618,7 +762,7 @@ Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fire
       command: Type.String({ description: "Shell command to run in background" }),
       description: Type.Optional(Type.String({ description: "Human-readable description" })),
       timeout: Type.Optional(Type.Number({ description: "Auto-stop after N ms (default: 300000, 0 = no timeout)", default: 300000 })),
-      onDone: Type.Optional(Type.String({ description: "Prompt to run when the monitor completes. Auto-creates a one-shot completion loop — no need for a separate LoopCreate." })),
+      onDone: Type.Optional(Type.String({ description: "Prompt to run when the monitor completes. Auto-creates a one-shot completion wake — no need for a separate LoopCreate." })),
     }),
 
     execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
@@ -946,6 +1090,12 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
         }
         if (trimmed) {
           const entry = nativeTaskStore.create(trimmed.slice(0, 80), trimmed);
+          pi.events.emit("tasks:created", {
+            taskId: entry.id,
+            subject: entry.subject,
+            description: entry.description,
+            status: entry.status,
+          });
           widget.update();
           ctx.ui.notify(`Task #${entry.id} created`, "info");
           return;
@@ -963,12 +1113,22 @@ Fields:
 - subject: brief actionable title
 - description: detailed requirements
 - metadata: optional tags/metadata`,
+      promptGuidelines: [
+        "Use TaskCreate to track complex multi-step work across turns.",
+        "TaskCreate accepts `subject` and `description` parameters only — do not invent extra fields unless the schema explicitly adds them.",
+      ],
       parameters: Type.Object({
         subject: Type.String({ description: "Brief actionable title for the task" }),
         description: Type.String({ description: "Detailed description of what needs to be done" }),
       }),
       execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
         const entry = taskStore.create(params.subject, params.description);
+        pi.events.emit("tasks:created", {
+          taskId: entry.id,
+          subject: entry.subject,
+          description: entry.description,
+          status: entry.status,
+        });
         widget.update();
         return Promise.resolve(textResult(`Task #${entry.id} created: ${entry.subject}`));
       },
@@ -1005,6 +1165,11 @@ Fields:
       description: `Update task status or details. Set status to "in_progress" before starting work, "completed" when done.
 
 Statuses: pending → in_progress → completed`,
+      promptGuidelines: [
+        "Use TaskUpdate with parameter `id`, not `taskId`.",
+        "TaskUpdate accepts only `id`, `status`, `subject`, and `description`.",
+        "When a tool validation error clearly indicates a recoverable schema mismatch, correct the arguments and retry without narrating the recovery unless the user needs to know.",
+      ],
       parameters: Type.Object({
         id: Type.String({ description: "Task ID to update" }),
         status: Type.Optional(Type.String({ description: "New status", enum: ["pending", "in_progress", "completed"] })),

@@ -149,6 +149,84 @@ describe("native task fallback", () => {
     expect(ui.notify).toHaveBeenCalledWith("Task #1 created", "info");
   });
 
+  it("emits tasks:created when native tasks are created", async () => {
+    const { pi, toolMap } = createMockPi();
+    const seen: Array<Record<string, unknown>> = [];
+    pi.events.on("tasks:created", (payload) => {
+      seen.push(payload as Record<string, unknown>);
+    });
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    expect(taskCreate?.execute).toBeDefined();
+
+    await taskCreate!.execute?.("1", { subject: "Emit event", description: "Native task event" });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      subject: "Emit event",
+      description: "Native task event",
+      status: "pending",
+    });
+  });
+
+  it("wakes immediately when a recurring tasks:created loop is bootstrapped against existing pending tasks", async () => {
+    const { pi, toolMap, sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const loopCreate = toolMap.get("LoopCreate");
+    expect(taskCreate?.execute).toBeDefined();
+    expect(loopCreate?.execute).toBeDefined();
+
+    await taskCreate!.execute?.("1", { subject: "Existing task", description: "Created before loop" });
+
+    const result = await loopCreate!.execute?.("2", {
+      trigger: "tasks:created",
+      prompt: "Pick the next pending task and work on it",
+      triggerType: "event",
+      recurring: true,
+    });
+
+    expect(result.content[0].text).toContain("Bootstrap: queued initial wake for existing pending tasks");
+    expect(sentCustomMessages).toHaveLength(1);
+    expect(sentCustomMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Pick the next pending task and work on it");
+  });
+
+  it("wakes when a future native task creation matches a recurring tasks:created loop", async () => {
+    const { pi, toolMap, sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const loopCreate = toolMap.get("LoopCreate");
+    const taskCreate = toolMap.get("TaskCreate");
+    expect(loopCreate?.execute).toBeDefined();
+    expect(taskCreate?.execute).toBeDefined();
+
+    await loopCreate!.execute?.("1", {
+      trigger: "tasks:created",
+      prompt: "Start work on the new task",
+      triggerType: "event",
+      recurring: true,
+    });
+    expect(sentCustomMessages).toHaveLength(0);
+
+    await taskCreate!.execute?.("2", { subject: "Future task", description: "Created after loop" });
+    await Promise.resolve();
+
+    expect(sentCustomMessages).toHaveLength(1);
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Start work on the new task");
+  });
+
   it("auto-creates native tasks when an event-triggered autoTask loop fires", async () => {
     const { pi, toolMap } = createMockPi();
 
@@ -287,5 +365,193 @@ describe("native task fallback", () => {
 
     const result = await loopList!.execute?.("2", {});
     expect(result.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+  });
+});
+
+describe("dynamic loop pump", () => {
+  let cwd: string;
+  let originalCwd: string;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    originalCwd = process.cwd();
+    cwd = mkdtempSync(join(tmpdir(), "pi-loop-pump-"));
+    process.chdir(cwd);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    rmSync(cwd, { recursive: true, force: true });
+    vi.useRealTimers();
+  });
+
+  function makeCtx() {
+    return {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+  }
+
+  it("pump fires cron loops on agent_end when next fire time has passed", async () => {
+    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = makeCtx();
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("before_agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const loopCreate = toolMap.get("LoopCreate");
+    expect(loopCreate?.execute).toBeDefined();
+
+    await loopCreate!.execute?.("1", {
+      trigger: "*/5 * * * *",
+      prompt: "Dynamic idle fire",
+      triggerType: "cron",
+      recurring: true,
+    });
+
+    vi.advanceTimersByTime(6 * 60 * 1000);
+    expect(sentCustomMessages).toHaveLength(0);
+
+    for (const handler of extensionHandlers.get("agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await Promise.resolve();
+
+    expect(sentCustomMessages).toHaveLength(1);
+    expect(sentCustomMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Dynamic idle fire");
+  });
+
+  it("pump does not fire when next fire time has not been reached", async () => {
+    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = makeCtx();
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("before_agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const loopCreate = toolMap.get("LoopCreate");
+    await loopCreate!.execute?.("1", {
+      trigger: "*/5 * * * *",
+      prompt: "Not yet due",
+      triggerType: "cron",
+      recurring: true,
+    });
+
+    expect(sentCustomMessages).toHaveLength(0);
+
+    for (const handler of extensionHandlers.get("agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await Promise.resolve();
+
+    expect(sentCustomMessages).toHaveLength(0);
+  });
+
+  it("pump fires again after time advances past next re-armed fire", async () => {
+    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = makeCtx();
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("before_agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const loopCreate = toolMap.get("LoopCreate");
+    await loopCreate!.execute?.("1", {
+      trigger: "*/5 * * * *",
+      prompt: "Recurring pump",
+      triggerType: "cron",
+      recurring: true,
+    });
+
+    vi.advanceTimersByTime(6 * 60 * 1000);
+
+    for (const handler of extensionHandlers.get("agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await Promise.resolve();
+    expect(sentCustomMessages).toHaveLength(1);
+
+    vi.advanceTimersByTime(6 * 60 * 1000);
+
+    for (const handler of extensionHandlers.get("agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await Promise.resolve();
+
+    expect(sentCustomMessages.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("autoTask loop skips pump fire when no pending tasks", async () => {
+    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = makeCtx();
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("before_agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const loopCreate = toolMap.get("LoopCreate");
+    await loopCreate!.execute?.("1", {
+      trigger: "*/5 * * * *",
+      prompt: "Pump with autoTask — no tasks",
+      triggerType: "cron",
+      autoTask: true,
+      recurring: true,
+    });
+
+    vi.advanceTimersByTime(6 * 60 * 1000);
+
+    for (const handler of extensionHandlers.get("agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await Promise.resolve();
+
+    expect(sentCustomMessages).toHaveLength(0);
   });
 });

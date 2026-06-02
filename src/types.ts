@@ -30,7 +30,6 @@ export interface LoopEntry {
   updatedAt: number;
   expiresAt: number;
   autoTask?: boolean;
-  selfPaced?: boolean;
   readOnly?: boolean;
   maxFires?: number;
   fireCount?: number;

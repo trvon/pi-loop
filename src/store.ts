@@ -95,7 +95,7 @@ export class LoopStore {
     }
   }
 
-  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; selfPaced?: boolean; readOnly?: boolean; maxFires?: number }): LoopEntry {
+  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; readOnly?: boolean; maxFires?: number }): LoopEntry {
     return this.withLock(() => {
       if (this.loops.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
@@ -108,7 +108,6 @@ export class LoopStore {
         status: "active",
         recurring: opts.recurring,
         autoTask: opts.autoTask,
-        selfPaced: opts.selfPaced,
         readOnly: opts.readOnly,
         maxFires: opts.maxFires,
         fireCount: 0,

@@ -2,11 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LoopStore } from "../src/store.js";
 import { LoopWidget } from "../src/ui/widget.js";
 
-vi.mock("@earendil-works/pi-tui", () => ({
-  truncateToWidth: (line: string, width: number) =>
-    line.length > width ? line.slice(0, width) : line,
-}));
-
 function createMockMonitorManager() {
   const monitors: Array<{
     id: string;
@@ -23,48 +18,38 @@ function createMockMonitorManager() {
   };
 }
 
-describe("LoopWidget rendering", () => {
+describe("LoopWidget status rendering", () => {
   let store: LoopStore;
   let monitorManager: ReturnType<typeof createMockMonitorManager>;
-  let mockTui: any;
   let widget: LoopWidget;
+  let setStatus: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     store = new LoopStore();
     monitorManager = createMockMonitorManager();
     widget = new LoopWidget(store, monitorManager as any);
-    mockTui = { terminal: { columns: 80 }, requestRender: vi.fn() };
+    setStatus = vi.fn();
+    widget.setUICtx({
+      setStatus,
+      setWidget: vi.fn(),
+    } as any);
   });
 
   afterEach(() => {
     widget.dispose();
   });
 
-  function makeMockUiCtx(setWidget: (_key: string, factory: any) => void) {
-    return {
-      setStatus: vi.fn(),
-      setWidget,
-    } as any;
+  function latestStatusCall() {
+    const calls = setStatus.mock.calls.filter((call) => call[0] === "loops");
+    return calls[calls.length - 1];
   }
 
-  function extractRenderLines(): string[] {
-    let rendered: string[] = [];
-    widget.setUICtx(makeMockUiCtx((_key: string, factory: any) => {
-      if (factory) {
-        const widget = factory(mockTui, {});
-        rendered = widget.render();
-      }
-    }));
+  it("clears status when no loops or monitors are active", () => {
     widget.update();
-    return rendered;
-  }
-
-  it("shows none when no loops or monitors are active", () => {
-    const lines = extractRenderLines();
-    expect(lines).toEqual(["none"]);
+    expect(latestStatusCall()).toEqual(["loops", undefined]);
   });
 
-  it("shows a compact monitor count", () => {
+  it("shows a compact monitor count in status", () => {
     monitorManager._add({
       id: "1",
       command: "bash -lc 'set -euo pipefail\nwhile sleep 30; do hut builds show 1769753; done'",
@@ -74,11 +59,11 @@ describe("LoopWidget rendering", () => {
       outputLines: 42,
     });
 
-    const lines = extractRenderLines();
-    expect(lines).toEqual(["1 monitor"]);
+    widget.update();
+    expect(latestStatusCall()).toEqual(["loops", "1 monitor"]);
   });
 
-  it("shows compact loop and monitor counts", () => {
+  it("shows compact loop and monitor counts in status", () => {
     store.create(
       { type: "event", source: "monitor:done", filter: '{"monitorId":"5"}' },
       "Summarize the GitHub Actions run result",
@@ -92,8 +77,8 @@ describe("LoopWidget rendering", () => {
       outputLines: 0,
     });
 
-    const lines = extractRenderLines();
-    expect(lines).toEqual(["1 loop · 1 monitor"]);
+    widget.update();
+    expect(latestStatusCall()).toEqual(["loops", "1 loop · 1 monitor"]);
   });
 
   it("shows task counts and only the active task focus text", () => {
@@ -102,8 +87,8 @@ describe("LoopWidget rendering", () => {
       focusText: "active: Fix native task fallback",
     }));
 
-    const lines = extractRenderLines();
-    expect(lines).toEqual(["2 tasks | active: Fix native task fallback"]);
+    widget.update();
+    expect(latestStatusCall()).toEqual(["loops", "2 tasks | active: Fix native task fallback"]);
   });
 
   it("shows next task when no task is in progress", () => {
@@ -112,24 +97,20 @@ describe("LoopWidget rendering", () => {
       focusText: "next: Write README updates",
     }));
 
-    const lines = extractRenderLines();
-    expect(lines).toEqual(["3 tasks | next: Write README updates"]);
+    widget.update();
+    expect(latestStatusCall()).toEqual(["loops", "3 tasks | next: Write README updates"]);
   });
 
-  it("keeps widget registered and updates to none after content clears", () => {
+  it("clears status after active content disappears", () => {
     monitorManager._add({
       id: "x", command: "true", status: "running", startedAt: Date.now(), outputLines: 0,
     });
 
-    let currentFactory: any = null;
-    widget.setUICtx(makeMockUiCtx(vi.fn((_key: string, factory: any) => {
-      currentFactory = factory;
-    })));
     widget.update();
-    expect(currentFactory).not.toBeNull();
+    expect(latestStatusCall()).toEqual(["loops", "1 monitor"]);
 
     monitorManager._clear();
-    const rendered = currentFactory(mockTui, {}).render();
-    expect(rendered).toEqual(["none"]);
+    widget.update();
+    expect(latestStatusCall()).toEqual(["loops", undefined]);
   });
 });

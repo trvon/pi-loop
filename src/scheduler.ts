@@ -12,7 +12,6 @@ function computeNextFire(entry: LoopEntry): Date {
 }
 
 export class CronScheduler {
-  private timers = new Map<string, NodeJS.Timeout>();
   private fireTimes = new Map<string, number>();
 
   constructor(
@@ -30,11 +29,7 @@ export class CronScheduler {
   }
 
   stop(): void {
-    for (const [id, timer] of this.timers) {
-      clearTimeout(timer);
-      this.timers.delete(id);
-      this.fireTimes.delete(id);
-    }
+    this.fireTimes.clear();
   }
 
   add(entry: LoopEntry): void {
@@ -44,9 +39,6 @@ export class CronScheduler {
   }
 
   remove(id: string): void {
-    const timer = this.timers.get(id);
-    if (timer) clearTimeout(timer);
-    this.timers.delete(id);
     this.fireTimes.delete(id);
   }
 
@@ -62,52 +54,52 @@ export class CronScheduler {
     const minuteStep = minuteField.startsWith("*/") ? parseInt(minuteField.slice(2), 10) || 30 : 30;
     const jitter = computeJitter(entry.id, entry.recurring, minuteStep);
     const fireTime = nextFire.getTime() + jitter;
-    const now = Date.now();
 
     if (fireTime > entry.expiresAt) {
       this.store.delete(entry.id);
       return;
     }
 
-    const delay = Math.max(0, fireTime - now);
     this.fireTimes.set(entry.id, fireTime);
+  }
 
-    const existing = this.timers.get(entry.id);
-    if (existing) clearTimeout(existing);
+  pump(now: number, filter?: (entry: LoopEntry) => boolean): void {
+    for (const [id, fireTime] of this.fireTimes) {
+      if (now < fireTime) continue;
 
-    const timer = setTimeout(() => {
-      const current = this.store.get(entry.id);
-      if (!current || current.status !== "active") {
-        this.timers.delete(entry.id);
-        this.fireTimes.delete(entry.id);
-        return;
+      const entry = this.store.get(id);
+      if (!entry || entry.status !== "active") {
+        this.fireTimes.delete(id);
+        continue;
       }
 
-      const now2 = Date.now();
-      if (now2 >= current.expiresAt) {
-        this.store.delete(entry.id);
-        this.timers.delete(entry.id);
-        this.fireTimes.delete(entry.id);
-        return;
+      if (filter && !filter(entry)) continue;
+
+      if (now >= entry.expiresAt) {
+        this.store.delete(id);
+        this.fireTimes.delete(id);
+        continue;
       }
 
-      this.onFire(current);
+      this.onFire(entry);
 
-      if (current.recurring) {
-        const fresh = this.store.get(entry.id);
-        if (fresh?.maxFires && (fresh.fireCount ?? 0) >= fresh.maxFires) {
-          this.store.delete(entry.id);
-          this.timers.delete(entry.id);
-          this.fireTimes.delete(entry.id);
-          return;
-        }
-        this.armTimer(current);
+      const fresh = this.store.get(id);
+      if (!fresh) {
+        this.fireTimes.delete(id);
+        continue;
+      }
+
+      if (fresh.recurring && fresh.maxFires && (fresh.fireCount ?? 0) >= fresh.maxFires) {
+        this.store.delete(id);
+        this.fireTimes.delete(id);
+        continue;
+      }
+
+      if (fresh.recurring) {
+        this.armTimer(fresh);
       } else {
-        this.timers.delete(entry.id);
-        this.fireTimes.delete(entry.id);
+        this.fireTimes.delete(id);
       }
-    }, delay);
-
-    this.timers.set(entry.id, timer);
+    }
   }
 }
