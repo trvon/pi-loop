@@ -292,11 +292,12 @@ export default function (pi: ExtensionAPI) {
     return true;
   }
 
-  async function flushPendingNotifications(): Promise<void> {
+  async function flushPendingNotifications(options?: { ignorePendingMessages?: boolean }): Promise<void> {
     if (flushPromise) return flushPromise;
 
     flushPromise = (async () => {
-      if (agentRunning || _latestCtx?.hasPendingMessages()) return;
+      if (agentRunning) return;
+      if (!options?.ignorePendingMessages && _latestCtx?.hasPendingMessages()) return;
 
       const entries = [...pendingNotifications.entries()]
         .sort(([, left], [, right]) => left.timestamp - right.timestamp);
@@ -408,7 +409,7 @@ export default function (pi: ExtensionAPI) {
     agentRunning = false;
     _latestCtx = ctx;
     widget.setUICtx(ctx.ui);
-    await flushPendingNotifications();
+    await flushPendingNotifications({ ignorePendingMessages: true });
     await pumpLoops();
   });
 

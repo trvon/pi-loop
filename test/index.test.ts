@@ -276,6 +276,51 @@ describe("native task fallback", () => {
     expect(lines[0]).toContain("#1");
   });
 
+  it("flushes the auto-created worker wake on agent_end even if pending messages are reported", async () => {
+    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+
+    let hasPendingMessages = false;
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => hasPendingMessages,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    expect(taskCreate?.execute).toBeDefined();
+
+    for (const handler of extensionHandlers.get("agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    for (let i = 1; i <= 5; i++) {
+      await taskCreate!.execute?.(`${i}`, {
+        subject: `Task ${i}`,
+        description: `Desc ${i}`,
+      });
+    }
+
+    expect(sentCustomMessages).toHaveLength(0);
+
+    hasPendingMessages = true;
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await Promise.resolve();
+
+    expect(sentCustomMessages).toHaveLength(1);
+    expect(sentCustomMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Run TaskList, pick next pending task");
+  });
+
   it("wakes immediately when a recurring tasks:created loop is bootstrapped against existing pending tasks", async () => {
     const { pi, toolMap, sentCustomMessages } = createMockPi();
 
