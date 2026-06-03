@@ -1122,6 +1122,7 @@ Fields:
 - metadata: optional tags/metadata`,
       promptGuidelines: [
         "Use TaskCreate to track complex multi-step work across turns.",
+        "Break work into small, independently completable tasks. A task should be finishable in one focused session — if a task would take multiple turns, split it further.",
         "TaskCreate accepts `subject` and `description` parameters only — do not invent extra fields unless the schema explicitly adds them.",
       ],
       parameters: Type.Object({
