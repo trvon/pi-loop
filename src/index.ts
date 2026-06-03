@@ -1005,6 +1005,39 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
     ui.notify(`${active}/${loops.length} active loops (max 25)`, "info");
   }
 
+  const AUTO_TASK_WORKER_THRESHOLD = 5;
+  const AUTO_TASK_WORKER_PROMPT = "Run TaskList, pick next pending task, mark it in_progress, implement it, run validation, complete it. If no pending tasks remain, call LoopDelete on your own loop ID.";
+
+  function findAutoTaskWorkerLoop(): LoopEntry | undefined {
+    return store.list().find(entry =>
+      entry.status === "active"
+      && entry.prompt === AUTO_TASK_WORKER_PROMPT
+      && triggerHasEventSource(entry.trigger, "tasks:created")
+    );
+  }
+
+  async function ensureAutoTaskWorkerLoop(taskStore: TaskStore): Promise<{ entry?: LoopEntry; created: boolean }> {
+    if (taskStore.pendingCount() < AUTO_TASK_WORKER_THRESHOLD) return { created: false };
+
+    const existing = findAutoTaskWorkerLoop();
+    if (existing) return { entry: existing, created: false };
+
+    const trigger: Trigger = {
+      type: "hybrid",
+      cron: "*/5 * * * *",
+      event: { source: "tasks:created" },
+      debounceMs: 30000,
+    };
+    const entry = store.create(trigger, AUTO_TASK_WORKER_PROMPT, {
+      recurring: true,
+      maxFires: 30,
+    });
+    triggerSystem.add(entry);
+    await maybeBootstrapTaskLoop(entry);
+    widget.update();
+    return { entry, created: true };
+  }
+
   async function createNativeTaskInteractively(ui: ExtensionUIContext) {
     if (!nativeTaskStore) {
       ui.notify("Native tasks are unavailable while pi-tasks is active", "warning");
@@ -1015,8 +1048,18 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
     if (!subject) return;
     const description = await ui.input("Task description") || subject;
     const entry = nativeTaskStore.create(subject, description);
+    pi.events.emit("tasks:created", {
+      taskId: entry.id,
+      subject: entry.subject,
+      description: entry.description,
+      status: entry.status,
+    });
+    const worker = await ensureAutoTaskWorkerLoop(nativeTaskStore);
     widget.update();
     ui.notify(`Task #${entry.id} created`, "info");
+    if (worker.created && worker.entry) {
+      ui.notify(`Worker loop #${worker.entry.id} auto-created`, "info");
+    }
   }
 
   async function viewNativeTasks(ui: ExtensionUIContext): Promise<void> {
@@ -1103,8 +1146,12 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
             description: entry.description,
             status: entry.status,
           });
+          const worker = await ensureAutoTaskWorkerLoop(nativeTaskStore);
           widget.update();
           ctx.ui.notify(`Task #${entry.id} created`, "info");
+          if (worker.created && worker.entry) {
+            ctx.ui.notify(`Worker loop #${worker.entry.id} auto-created`, "info");
+          }
           return;
         }
         await viewNativeTasks(ctx.ui);
@@ -1129,7 +1176,7 @@ Fields:
         subject: Type.String({ description: "Brief actionable title for the task" }),
         description: Type.String({ description: "Detailed description of what needs to be done" }),
       }),
-      execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
         const entry = taskStore.create(params.subject, params.description);
         pi.events.emit("tasks:created", {
           taskId: entry.id,
@@ -1137,13 +1184,13 @@ Fields:
           description: entry.description,
           status: entry.status,
         });
+        const worker = await ensureAutoTaskWorkerLoop(taskStore);
         widget.update();
 
-        const pending = taskStore.pendingCount();
-        const hint = pending >= 5
-          ? `\n(${pending} pending tasks — consider creating a worker loop: LoopCreate trigger='tasks:created' recurring: true maxFires: 30 prompt='Run TaskList, pick next pending task, mark it in_progress, implement it, run validation, complete it. If no pending tasks remain, call LoopDelete on your own loop ID.')`
+        const autoLoopMsg = worker.created && worker.entry
+          ? `\nWorker loop #${worker.entry.id} auto-created`
           : "";
-        return Promise.resolve(textResult(`Task #${entry.id} created: ${entry.subject}${hint}`));
+        return Promise.resolve(textResult(`Task #${entry.id} created: ${entry.subject}${autoLoopMsg}`));
       },
     });
 

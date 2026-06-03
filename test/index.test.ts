@@ -193,6 +193,89 @@ describe("native task fallback", () => {
     });
   });
 
+  it("auto-creates a worker loop when pending native tasks reach five", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const loopList = toolMap.get("LoopList");
+    expect(taskCreate?.execute).toBeDefined();
+    expect(loopList?.execute).toBeDefined();
+
+    for (let i = 1; i <= 4; i++) {
+      const result = await taskCreate!.execute?.(`${i}`, {
+        subject: `Task ${i}`,
+        description: `Desc ${i}`,
+      });
+      expect(result.content[0].text).not.toContain("Worker loop #");
+    }
+
+    let listResult = await loopList!.execute?.("10", {});
+    expect(listResult.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+
+    const fifth = await taskCreate!.execute?.("11", {
+      subject: "Task 5",
+      description: "Desc 5",
+    });
+    expect(fifth.content[0].text).toContain("Worker loop #1 auto-created");
+
+    listResult = await loopList!.execute?.("12", {});
+    expect(listResult.content[0].text).toContain("hybrid:");
+    expect(listResult.content[0].text).toContain("tasks:created");
+  });
+
+  it("does not create duplicate worker loops above the task threshold", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const loopList = toolMap.get("LoopList");
+
+    for (let i = 1; i <= 5; i++) {
+      await taskCreate!.execute?.(`${i}`, {
+        subject: `Task ${i}`,
+        description: `Desc ${i}`,
+      });
+    }
+
+    const sixth = await taskCreate!.execute?.("6", {
+      subject: "Task 6",
+      description: "Desc 6",
+    });
+    expect(sixth.content[0].text).not.toContain("auto-created");
+
+    const listResult = await loopList!.execute?.("7", {});
+    const lines = listResult.content[0].text.split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("#1");
+  });
+
   it("wakes immediately when a recurring tasks:created loop is bootstrapped against existing pending tasks", async () => {
     const { pi, toolMap, sentCustomMessages } = createMockPi();
 
