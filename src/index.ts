@@ -196,7 +196,7 @@ export default function (pi: ExtensionAPI) {
     if (nativeTaskStore) {
       nativeTaskStore.sweepCompleted();
       widget.update();
-      await cleanupAutoTaskWorkerLoop();
+      await cleanupTaskBacklogLoops();
     }
   }
 
@@ -411,7 +411,7 @@ export default function (pi: ExtensionAPI) {
     _latestCtx = ctx;
     widget.setUICtx(ctx.ui);
     await flushPendingNotifications({ ignorePendingMessages: true });
-    await cleanupAutoTaskWorkerLoop();
+    await cleanupTaskBacklogLoops();
     await pumpLoops();
   });
 
@@ -510,6 +510,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
 - **prompt**: what to do when the loop fires (e.g., "check if the build passed")
 - **recurring**: repeat or fire once (default: true)
 - **autoTask**: when pi-tasks is loaded or native task fallback is active, auto-create a task on each fire
+- **taskBacklog**: mark this as a task-backlog worker loop so it auto-deletes when pending tasks reach zero
 - **readOnly**: restrict the agent to read-only tools when this loop fires (default: false)
 - **maxFires**: auto-stop after N fires — prevents infinite token burn on polling loops`,
     promptGuidelines: [
@@ -529,6 +530,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       "## Task-driven workflows",
       "Do not rely on a past 'tasks:created' event to replay. If tasks already exist, bootstrap the first pass in the current turn or use a hybrid/event loop that can catch future task creation and a cron safety-net.",
       "Use autoTask only when you want the loop itself to create a task on each fire. For processing an existing task backlog, leave autoTask off and have the loop run TaskList to pick the next pending task.",
+      "Set taskBacklog: true for task-worker loops that process the existing pending queue. Task-backlog loops bootstrap against existing pending tasks and auto-delete when the queue reaches zero.",
       "When no tasks are pending, the loop should stop itself or skip the wake entirely — no tokens burned on empty polls.",
       "After creating a loop, tell the user the loop ID so they can cancel it with LoopDelete.",
     ],
@@ -537,6 +539,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       prompt: Type.String({ description: "Prompt to run when the loop fires" }),
       recurring: Type.Optional(Type.Boolean({ description: "Whether loop repeats (default: true)", default: true })),
       autoTask: Type.Optional(Type.Boolean({ description: "Auto-create pi-tasks task on fire", default: false })),
+      taskBacklog: Type.Optional(Type.Boolean({ description: "Mark as a task-backlog worker loop that auto-deletes when pending tasks reach zero", default: false })),
       triggerType: Type.Optional(Type.String({ description: "cron, event, or hybrid (inferred from trigger string if omitted)", enum: ["cron", "event", "hybrid"] })),
       debounceMs: Type.Optional(Type.Number({ description: "Debounce for hybrid triggers (default: 30000)", default: 30000 })),
       readOnly: Type.Optional(Type.Boolean({ description: "Restrict the agent to read-only tools when this loop fires (default: false)", default: false })),
@@ -544,7 +547,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const { trigger: triggerInput, prompt, recurring, autoTask, triggerType, debounceMs, readOnly, maxFires } = params;
+      const { trigger: triggerInput, prompt, recurring, autoTask, taskBacklog, triggerType, debounceMs, readOnly, maxFires } = params;
 
       let trigger: Trigger;
       const inferred = triggerType ?? inferTriggerType(triggerInput);
@@ -572,6 +575,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       const entry = store.create(trigger, prompt, {
         recurring: recurring ?? (inferred !== "event"),
         autoTask,
+        taskBacklog,
         readOnly,
         maxFires,
       });
@@ -608,6 +612,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
         `Trigger: ${triggerDesc}\n` +
         `Recurring: ${entry.recurring}\n` +
         (entry.autoTask ? `Auto-task: enabled\n` : "") +
+        (entry.taskBacklog ? `Task-backlog: enabled\n` : "") +
         (bootstrapped ? "Bootstrap: queued initial wake for existing pending tasks\n" : "") +
         ((tasksAvailable || nativeTasksRegistered) ? "" : "(task system not ready yet — autoTask may not fire until native fallback or pi-tasks becomes available)\n") +
         `ID: ${entry.id} (use LoopDelete to cancel)`
@@ -1017,22 +1022,30 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
       && triggerHasEventSource(entry.trigger, "tasks:created");
   }
 
+  function isTaskBacklogLoop(entry: LoopEntry): boolean {
+    return entry.status === "active"
+      && triggerHasEventSource(entry.trigger, "tasks:created")
+      && (entry.taskBacklog === true || isAutoTaskWorkerLoop(entry));
+  }
+
   function findAutoTaskWorkerLoop(): LoopEntry | undefined {
     return store.list().find(isAutoTaskWorkerLoop);
   }
 
-  async function cleanupAutoTaskWorkerLoop(): Promise<boolean> {
-    const existing = findAutoTaskWorkerLoop();
-    if (!existing) return false;
+  async function cleanupTaskBacklogLoops(): Promise<number> {
+    const backlogLoops = store.list().filter(isTaskBacklogLoop);
+    if (backlogLoops.length === 0) return 0;
 
     const pending = await hasPendingTasks();
-    if (pending < 0 || pending > 0) return false;
+    if (pending < 0 || pending > 0) return 0;
 
-    debug(`worker loop #${existing.id} — no pending tasks remain, deleting`);
-    triggerSystem.remove(existing.id);
-    store.delete(existing.id);
+    for (const entry of backlogLoops) {
+      debug(`task backlog loop #${entry.id} — no pending tasks remain, deleting`);
+      triggerSystem.remove(entry.id);
+      store.delete(entry.id);
+    }
     widget.update();
-    return true;
+    return backlogLoops.length;
   }
 
   async function ensureAutoTaskWorkerLoop(taskStore: TaskStore): Promise<{ entry?: LoopEntry; created: boolean }> {
@@ -1049,6 +1062,7 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
     };
     const entry = store.create(trigger, AUTO_TASK_WORKER_PROMPT, {
       recurring: true,
+      taskBacklog: true,
       maxFires: 30,
     });
     triggerSystem.add(entry);
@@ -1138,7 +1152,7 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
     }
 
     widget.update();
-    await cleanupAutoTaskWorkerLoop();
+    await cleanupTaskBacklogLoops();
     return viewNativeTasks(ui);
   }
 
@@ -1266,7 +1280,7 @@ Parameters: id (required), status, subject, description`,
         });
         if (!entry) return Promise.resolve(textResult(`Task #${id} not found`));
         widget.update();
-        await cleanupAutoTaskWorkerLoop();
+        await cleanupTaskBacklogLoops();
         const statusMsg = status ? ` → ${status}` : "";
         return Promise.resolve(textResult(`Task #${id} updated${statusMsg}`));
       },
@@ -1283,7 +1297,7 @@ Parameters: id (required), status, subject, description`,
         const deleted = taskStore.delete(params.id);
         widget.update();
         if (deleted) {
-          await cleanupAutoTaskWorkerLoop();
+          await cleanupTaskBacklogLoops();
           return Promise.resolve(textResult(`Task #${params.id} deleted`));
         }
         return Promise.resolve(textResult(`Task #${params.id} not found`));

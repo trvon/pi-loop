@@ -368,6 +368,96 @@ describe("native task fallback", () => {
     expect(listResult.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
   });
 
+  it("manual task-backlog loops auto-delete after the pending queue clears", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const taskUpdate = toolMap.get("TaskUpdate");
+    const loopCreate = toolMap.get("LoopCreate");
+    const loopList = toolMap.get("LoopList");
+    expect(taskCreate?.execute).toBeDefined();
+    expect(taskUpdate?.execute).toBeDefined();
+    expect(loopCreate?.execute).toBeDefined();
+    expect(loopList?.execute).toBeDefined();
+
+    await taskCreate!.execute?.("1", { subject: "Existing task", description: "Created before loop" });
+
+    const result = await loopCreate!.execute?.("2", {
+      trigger: "tasks:created",
+      prompt: "Pick the next pending task and work on it",
+      triggerType: "event",
+      recurring: true,
+      taskBacklog: true,
+    });
+
+    expect(result.content[0].text).toContain("Task-backlog: enabled");
+    expect(result.content[0].text).toContain("Bootstrap: queued initial wake for existing pending tasks");
+
+    let listResult = await loopList!.execute?.("3", {});
+    expect(listResult.content[0].text).toContain("#1");
+
+    await taskUpdate!.execute?.("4", { id: "1", status: "completed" });
+
+    listResult = await loopList!.execute?.("5", {});
+    expect(listResult.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+  });
+
+  it("plain tasks:created watcher loops stay active after the pending queue clears", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const taskUpdate = toolMap.get("TaskUpdate");
+    const loopCreate = toolMap.get("LoopCreate");
+    const loopList = toolMap.get("LoopList");
+    expect(taskCreate?.execute).toBeDefined();
+    expect(taskUpdate?.execute).toBeDefined();
+    expect(loopCreate?.execute).toBeDefined();
+    expect(loopList?.execute).toBeDefined();
+
+    await taskCreate!.execute?.("1", { subject: "Existing task", description: "Created before loop" });
+
+    await loopCreate!.execute?.("2", {
+      trigger: "tasks:created",
+      prompt: "Start work on the new task",
+      triggerType: "event",
+      recurring: true,
+    });
+
+    await taskUpdate!.execute?.("3", { id: "1", status: "completed" });
+
+    const listResult = await loopList!.execute?.("4", {});
+    expect(listResult.content[0].text).toContain("#1");
+    expect(listResult.content[0].text).toContain("tasks:created");
+  });
+
   it("wakes immediately when a recurring tasks:created loop is bootstrapped against existing pending tasks", async () => {
     const { pi, toolMap, sentCustomMessages } = createMockPi();
 

@@ -30,6 +30,7 @@ export interface LoopEntry {
   updatedAt: number;
   expiresAt: number;
   autoTask?: boolean;
+  taskBacklog?: boolean;
   readOnly?: boolean;
   maxFires?: number;
   fireCount?: number;
