@@ -371,6 +371,109 @@ describe("native task fallback", () => {
     expect(listResult.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
   });
 
+  it("prunes completed native tasks after a successful git commit and preserves monotonic ids", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const taskUpdate = toolMap.get("TaskUpdate");
+    const taskList = toolMap.get("TaskList");
+    expect(taskCreate?.execute).toBeDefined();
+    expect(taskUpdate?.execute).toBeDefined();
+    expect(taskList?.execute).toBeDefined();
+
+    await taskCreate!.execute?.("1", { subject: "Done 1", description: "d1" });
+    await taskCreate!.execute?.("2", { subject: "Done 2", description: "d2" });
+    await taskCreate!.execute?.("3", { subject: "Active 3", description: "d3" });
+
+    await taskUpdate!.execute?.("4", { id: "1", status: "completed" });
+    await taskUpdate!.execute?.("5", { id: "2", status: "completed" });
+    await taskUpdate!.execute?.("6", { id: "3", status: "in_progress" });
+
+    for (const handler of extensionHandlers.get("tool_execution_end") ?? []) {
+      await handler({
+        toolCallId: "bash-1",
+        toolName: "bash",
+        args: { command: "git commit -m 'checkpoint'" },
+        isError: false,
+        result: { stdout: "[master abc123] checkpoint" },
+      }, ctx);
+    }
+    await Promise.resolve();
+
+    let listResult = await taskList!.execute?.("7", {});
+    expect(listResult.content[0].text).toContain("1 tasks (0 pending, 1 in progress, 0 done)");
+    expect(listResult.content[0].text).toContain("#3 [in_progress] Active 3");
+    expect(listResult.content[0].text).not.toContain("#1 [completed]");
+    expect(listResult.content[0].text).not.toContain("#2 [completed]");
+
+    const createResult = await taskCreate!.execute?.("8", { subject: "New 4", description: "d4" });
+    expect(createResult.content[0].text).toContain("Task #4 created: New 4");
+
+    listResult = await taskList!.execute?.("9", {});
+    expect(listResult.content[0].text).toContain("#4 [pending] New 4");
+  });
+
+  it("does not prune completed native tasks after failed or non-commit bash tools", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const taskUpdate = toolMap.get("TaskUpdate");
+    const taskList = toolMap.get("TaskList");
+
+    await taskCreate!.execute?.("1", { subject: "Done 1", description: "d1" });
+    await taskUpdate!.execute?.("2", { id: "1", status: "completed" });
+
+    for (const handler of extensionHandlers.get("tool_execution_end") ?? []) {
+      await handler({
+        toolCallId: "bash-1",
+        toolName: "bash",
+        args: { command: "git status" },
+        isError: false,
+        result: { stdout: "On branch master" },
+      }, ctx);
+      await handler({
+        toolCallId: "bash-2",
+        toolName: "bash",
+        args: { command: "git commit -m 'broken'" },
+        isError: true,
+        result: { stderr: "nothing to commit" },
+      }, ctx);
+    }
+    await Promise.resolve();
+
+    const listResult = await taskList!.execute?.("3", {});
+    expect(listResult.content[0].text).toContain("1 tasks (0 pending, 0 in progress, 1 done)");
+    expect(listResult.content[0].text).toContain("#1 [completed] Done 1");
+  });
+
   it("manual task-backlog loops auto-delete after the pending queue clears", async () => {
     const { pi, toolMap, extensionHandlers } = createMockPi();
 

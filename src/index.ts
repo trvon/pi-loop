@@ -441,6 +441,19 @@ export default function (pi: ExtensionAPI) {
     widget.update();
   });
 
+  pi.on("tool_execution_end", async (event: any, ctx: ExtensionContext) => {
+    _latestCtx = ctx;
+    widget.setUICtx(ctx.ui);
+
+    if (event?.toolName !== "bash" || event?.isError) return;
+
+    const command = event?.args?.command ?? event?.input?.command;
+    if (typeof command !== "string") return;
+    if (!/^\s*git\s+commit\b/i.test(command)) return;
+
+    await cleanDoneTasks();
+  });
+
   // ── Dynamic loop pump — fires cron/hybrid loops on idle instead of wall-clock timers ──
 
   async function pumpLoops(): Promise<void> {
