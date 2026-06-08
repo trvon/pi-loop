@@ -18,10 +18,30 @@ import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import {
+  createCoordinator,
+  type ReducerEffect,
+  type ReducerEvent,
+  type ReducerHandler,
+} from "./coordinator.js";
 import { parseInterval } from "./loop-parse.js";
+import {
+  type MonitorCompletionEvent,
+  reduceMonitorCompletionEvent,
+} from "./monitor-completion-coordinator.js";
 import { MonitorManager } from "./monitor-manager.js";
+import {
+  type NotificationReducerEvent,
+  type NotificationReducerState,
+  type ReducerNotification,
+  reduceNotificationState,
+} from "./notification-reducer.js";
 import { CronScheduler } from "./scheduler.js";
 import { LoopStore } from "./store.js";
+import {
+  reduceTaskBacklogEvent,
+  type TaskBacklogEvent,
+} from "./task-backlog-coordinator.js";
 import { TaskStore } from "./task-store.js";
 import { TriggerSystem } from "./trigger-system.js";
 import type { LoopEntry, Trigger } from "./types.js";
@@ -196,13 +216,97 @@ export default function (pi: ExtensionAPI) {
     if (nativeTaskStore) {
       nativeTaskStore.sweepCompleted();
       widget.update();
-      await cleanupTaskBacklogLoops();
+      await evaluateTaskBacklog(nativeTaskStore, nativeTaskStore.pendingCount());
     }
   }
 
-  let agentRunning = false;
-  const pendingNotifications = new Map<string, PendingNotification>();
+  let notificationState: NotificationReducerState = {
+    notificationsByKey: {},
+    agentRunning: false,
+    hasPendingMessages: false,
+  };
   let flushPromise: Promise<void> | undefined;
+  let notificationCoordinatorDelivered = false;
+  let notificationCoordinatorDeliveredSuccessfully = false;
+
+  const notificationReducerHandler: ReducerHandler = (incoming: ReducerEvent) => {
+    const result = reduceNotificationState(notificationState, incoming as NotificationReducerEvent);
+    notificationState = result.state;
+    return result.effects;
+  };
+
+  const notificationCoordinator = createCoordinator({
+    reducers: [notificationReducerHandler],
+    effectHandlers: {
+      REQUEST_NOTIFICATION_FLUSH: () => {},
+      DELIVER_NOTIFICATION: async (effect: ReducerEffect) => {
+        notificationCoordinatorDelivered = true;
+        notificationCoordinatorDeliveredSuccessfully = await deliverNotification(
+          (effect.payload as { notification: ReducerNotification }).notification,
+        );
+      },
+    },
+  });
+
+  const monitorCompletionReducerHandler: ReducerHandler = (incoming: ReducerEvent) => {
+    if (incoming.type !== "MONITOR_ONDONE_TRIGGERED") return [];
+    return reduceMonitorCompletionEvent(incoming as MonitorCompletionEvent);
+  };
+
+  const monitorCompletionCoordinator = createCoordinator({
+    reducers: [monitorCompletionReducerHandler],
+    effectHandlers: {
+      DELIVER_MONITOR_ONDONE_WAKE: (effect: ReducerEffect) => {
+        const { loopId, monitorId } = effect.payload as { loopId: string; monitorId: string };
+        const current = store.get(loopId);
+        if (!current) return;
+        debug(`onDone loop #${loopId} — monitor #${monitorId} completed, delivering through coordinator`);
+        onLoopFire(current);
+        store.delete(loopId);
+      },
+    },
+  });
+
+  let taskBacklogCoordinatorStore: TaskStore | undefined;
+  let taskBacklogCoordinatorWorker: { entry?: LoopEntry; created: boolean } = { created: false };
+  let taskBacklogCoordinatorCleanupCount = 0;
+
+  const taskBacklogReducerHandler: ReducerHandler = (incoming: ReducerEvent) => {
+    if (incoming.type !== "TASK_BACKLOG_EVALUATED") return [];
+    return reduceTaskBacklogEvent(incoming as TaskBacklogEvent);
+  };
+
+  const taskBacklogCoordinator = createCoordinator({
+    reducers: [taskBacklogReducerHandler],
+    effectHandlers: {
+      ENSURE_AUTO_TASK_WORKER: async () => {
+        if (!taskBacklogCoordinatorStore) return;
+        taskBacklogCoordinatorWorker = await ensureAutoTaskWorkerLoop(taskBacklogCoordinatorStore);
+      },
+      CLEANUP_TASK_BACKLOG_LOOPS: async () => {
+        taskBacklogCoordinatorCleanupCount = await cleanupTaskBacklogLoops();
+      },
+    },
+  });
+
+  function applyNotificationEvent(event: NotificationReducerEvent) {
+    const result = reduceNotificationState(notificationState, event);
+    notificationState = result.state;
+    return result;
+  }
+
+  function syncNotificationRuntimeState(options?: { agentRunning?: boolean; hasPendingMessages?: boolean }) {
+    applyNotificationEvent({
+      type: "NOTIFICATION_RUNTIME_UPDATED",
+      at: Date.now(),
+      source: "system",
+      entityType: "notification",
+      payload: {
+        agentRunning: options?.agentRunning ?? notificationState.agentRunning,
+        hasPendingMessages: options?.hasPendingMessages ?? (_latestCtx?.hasPendingMessages() ?? false),
+      },
+    });
+  }
 
   function buildLoopFireMessage(data: LoopFireEvent): string {
     const triggerInfo = typeof data.trigger === "string"
@@ -263,7 +367,7 @@ export default function (pi: ExtensionAPI) {
     return true;
   }
 
-  async function deliverNotification(notification: PendingNotification): Promise<boolean> {
+  async function deliverNotification(notification: ReducerNotification): Promise<boolean> {
     if (notification.autoTask) {
       const pending = await hasPendingTasks();
       if (pending === 0) {
@@ -273,7 +377,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    agentRunning = true;
+    syncNotificationRuntimeState({ agentRunning: true });
     pi.sendMessage({
       customType: "pi-loop",
       content: notification.message,
@@ -297,16 +401,22 @@ export default function (pi: ExtensionAPI) {
     if (flushPromise) return flushPromise;
 
     flushPromise = (async () => {
-      if (agentRunning) return;
-      if (!options?.ignorePendingMessages && _latestCtx?.hasPendingMessages()) return;
+      syncNotificationRuntimeState({
+        hasPendingMessages: _latestCtx?.hasPendingMessages() ?? false,
+      });
 
-      const entries = [...pendingNotifications.entries()]
-        .sort(([, left], [, right]) => left.timestamp - right.timestamp);
-
-      for (const [key, notification] of entries) {
-        pendingNotifications.delete(key);
-        const delivered = await deliverNotification(notification);
-        if (delivered) return;
+      while (true) {
+        notificationCoordinatorDelivered = false;
+        notificationCoordinatorDeliveredSuccessfully = false;
+        await notificationCoordinator.dispatch({
+          type: "NOTIFICATION_FLUSH_REQUESTED",
+          at: Date.now(),
+          source: "system",
+          entityType: "notification",
+          payload: { ignorePendingMessages: options?.ignorePendingMessages },
+        });
+        if (!notificationCoordinatorDelivered) return;
+        if (notificationCoordinatorDeliveredSuccessfully) return;
       }
     })().finally(() => {
       flushPromise = undefined;
@@ -317,7 +427,14 @@ export default function (pi: ExtensionAPI) {
 
   async function queueOrDeliverNotification(data: LoopFireEvent): Promise<void> {
     const notification = buildPendingNotification(data);
-    pendingNotifications.set(notification.key, notification);
+    applyNotificationEvent({
+      type: "NOTIFICATION_QUEUED",
+      at: notification.timestamp,
+      source: "system",
+      entityType: "notification",
+      entityId: notification.key,
+      payload: { notification },
+    });
     await flushPendingNotifications();
   }
 
@@ -401,31 +518,43 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", async (_event, ctx) => {
-    agentRunning = true;
+    syncNotificationRuntimeState({ agentRunning: true, hasPendingMessages: ctx.hasPendingMessages() });
     _latestCtx = ctx;
     widget.setUICtx(ctx.ui);
   });
 
   pi.on("agent_end", async (_event, ctx) => {
-    agentRunning = false;
     _latestCtx = ctx;
     widget.setUICtx(ctx.ui);
+    syncNotificationRuntimeState({ agentRunning: false, hasPendingMessages: ctx.hasPendingMessages() });
     await flushPendingNotifications({ ignorePendingMessages: true });
     await cleanupTaskBacklogLoops();
     await pumpLoops();
   });
 
   pi.on("session_shutdown", async () => {
-    agentRunning = false;
-    pendingNotifications.clear();
+    syncNotificationRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    applyNotificationEvent({
+      type: "NOTIFICATION_CLEARED",
+      at: Date.now(),
+      source: "session",
+      entityType: "notification",
+      payload: { reason: "session_shutdown" },
+    });
   });
 
   pi.on("session_switch" as any, async (event: SessionSwitchEvent, ctx: ExtensionContext) => {
     _latestCtx = ctx;
     widget.setUICtx(ctx.ui);
     triggerSystem.stop();
-    agentRunning = false;
-    pendingNotifications.clear();
+    syncNotificationRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    applyNotificationEvent({
+      type: "NOTIFICATION_CLEARED",
+      at: Date.now(),
+      source: "session",
+      entityType: "notification",
+      payload: { reason: "session_switch" },
+    });
     _sessionId = undefined;
 
     const isResume = event?.reason === "resume";
@@ -635,11 +764,14 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
 
   function handleMonitorDoneLoop(doneLoop: LoopEntry, monitorId: string): void {
     const deliver = () => {
-      const current = store.get(doneLoop.id);
-      if (!current) return;
-      debug(`onDone loop #${doneLoop.id} — monitor #${monitorId} completed, delivering directly`);
-      onLoopFire(current);
-      store.delete(doneLoop.id);
+      void monitorCompletionCoordinator.dispatch({
+        type: "MONITOR_ONDONE_TRIGGERED",
+        at: Date.now(),
+        source: "monitor",
+        entityType: "monitor",
+        entityId: monitorId,
+        payload: { loopId: doneLoop.id, monitorId },
+      });
     };
 
     const registered = monitorManager.onComplete(monitorId, deliver);
@@ -1097,6 +1229,28 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
     return { entry, created: true };
   }
 
+  async function evaluateTaskBacklog(taskStore?: TaskStore, pendingCount?: number): Promise<{ entry?: LoopEntry; created: boolean; cleaned: number }> {
+    const resolvedPending = pendingCount ?? (taskStore ? taskStore.pendingCount() : await hasPendingTasks());
+    taskBacklogCoordinatorStore = taskStore;
+    taskBacklogCoordinatorWorker = { created: false };
+    taskBacklogCoordinatorCleanupCount = 0;
+
+    await taskBacklogCoordinator.dispatch({
+      type: "TASK_BACKLOG_EVALUATED",
+      at: Date.now(),
+      source: "system",
+      entityType: "task",
+      payload: { pendingCount: resolvedPending, threshold: AUTO_TASK_WORKER_THRESHOLD },
+    });
+
+    taskBacklogCoordinatorStore = undefined;
+    return {
+      entry: taskBacklogCoordinatorWorker.entry,
+      created: taskBacklogCoordinatorWorker.created,
+      cleaned: taskBacklogCoordinatorCleanupCount,
+    };
+  }
+
   async function createNativeTaskInteractively(ui: ExtensionUIContext) {
     if (!nativeTaskStore) {
       ui.notify("Native tasks are unavailable while pi-tasks is active", "warning");
@@ -1113,11 +1267,11 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
       description: entry.description,
       status: entry.status,
     });
-    const worker = await ensureAutoTaskWorkerLoop(nativeTaskStore);
+    const backlog = await evaluateTaskBacklog(nativeTaskStore, nativeTaskStore.pendingCount());
     widget.update();
     ui.notify(`Task #${entry.id} created`, "info");
-    if (worker.created && worker.entry) {
-      ui.notify(`Worker loop #${worker.entry.id} auto-created`, "info");
+    if (backlog.created && backlog.entry) {
+      ui.notify(`Worker loop #${backlog.entry.id} auto-created`, "info");
     }
   }
 
@@ -1178,7 +1332,7 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
     }
 
     widget.update();
-    await cleanupTaskBacklogLoops();
+    await evaluateTaskBacklog(nativeTaskStore, nativeTaskStore.pendingCount());
     return viewNativeTasks(ui);
   }
 
@@ -1206,11 +1360,11 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
             description: entry.description,
             status: entry.status,
           });
-          const worker = await ensureAutoTaskWorkerLoop(nativeTaskStore);
+          const backlog = await evaluateTaskBacklog(nativeTaskStore, nativeTaskStore.pendingCount());
           widget.update();
           ctx.ui.notify(`Task #${entry.id} created`, "info");
-          if (worker.created && worker.entry) {
-            ctx.ui.notify(`Worker loop #${worker.entry.id} auto-created`, "info");
+          if (backlog.created && backlog.entry) {
+            ctx.ui.notify(`Worker loop #${backlog.entry.id} auto-created`, "info");
           }
           return;
         }
@@ -1244,11 +1398,11 @@ Fields:
           description: entry.description,
           status: entry.status,
         });
-        const worker = await ensureAutoTaskWorkerLoop(taskStore);
+        const backlog = await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
         widget.update();
 
-        const autoLoopMsg = worker.created && worker.entry
-          ? `\nWorker loop #${worker.entry.id} auto-created`
+        const autoLoopMsg = backlog.created && backlog.entry
+          ? `\nWorker loop #${backlog.entry.id} auto-created`
           : "";
         return Promise.resolve(textResult(`Task #${entry.id} created: ${entry.subject}${autoLoopMsg}`));
       },
@@ -1306,9 +1460,12 @@ Parameters: id (required), status, subject, description`,
         });
         if (!entry) return Promise.resolve(textResult(`Task #${id} not found`));
         widget.update();
-        await cleanupTaskBacklogLoops();
+        const backlog = await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
         const statusMsg = status ? ` → ${status}` : "";
-        return Promise.resolve(textResult(`Task #${id} updated${statusMsg}`));
+        const autoLoopMsg = backlog.created && backlog.entry
+          ? `\nWorker loop #${backlog.entry.id} auto-created`
+          : "";
+        return Promise.resolve(textResult(`Task #${id} updated${statusMsg}${autoLoopMsg}`));
       },
     });
 
@@ -1323,7 +1480,7 @@ Parameters: id (required), status, subject, description`,
         const deleted = taskStore.delete(params.id);
         widget.update();
         if (deleted) {
-          await cleanupTaskBacklogLoops();
+          await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
           return Promise.resolve(textResult(`Task #${params.id} deleted`));
         }
         return Promise.resolve(textResult(`Task #${params.id} not found`));

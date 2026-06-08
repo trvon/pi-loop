@@ -133,6 +133,28 @@ describe("TriggerSystem", () => {
     });
   });
 
+  it("deletes one-shot event loops immediately after the first fire", () => {
+    const eventTrigger: Trigger = { type: "event", source: "fire_once" };
+    const entry = store.create(eventTrigger, "one-shot", { recurring: false });
+    system.add(entry);
+
+    pi.events.emit("fire_once", {});
+
+    expect(store.get(entry.id)).toBeUndefined();
+
+    const fireCalls = (pi.events.emit as any).mock.calls.filter(
+      (c: string[]) => c[0] === "loop:fire"
+    );
+    expect(fireCalls).toHaveLength(1);
+
+    pi.events.emit("fire_once", {});
+
+    const afterCalls = (pi.events.emit as any).mock.calls.filter(
+      (c: string[]) => c[0] === "loop:fire"
+    );
+    expect(afterCalls).toHaveLength(1);
+  });
+
   it("debounces hybrid triggers", () => {
     vi.useRealTimers();
     const hybridTrigger: Trigger = {

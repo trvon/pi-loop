@@ -226,6 +226,94 @@ describe("loop:fire custom message delivery", () => {
     expect(sentMessages[0].message.content).toContain("Monitor completed");
   });
 
+  it("keeps one-shot buffered wakes independent even for the same loop id", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+    await emitExtension("agent_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
+      loopId: "11",
+      prompt: "First one-shot",
+      trigger: { type: "event", source: "monitor:done" },
+      timestamp: Date.now(),
+      recurring: false,
+    });
+    pi.events.emit("loop:fire", {
+      loopId: "11",
+      prompt: "Second one-shot",
+      trigger: { type: "event", source: "monitor:done" },
+      timestamp: Date.now() + 1,
+      recurring: false,
+    });
+    await flushAsync();
+
+    expect(sentMessages).toHaveLength(0);
+
+    await emitExtension("agent_end", null, ctx);
+    await flushAsync();
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].message.content).toContain("First one-shot");
+
+    await emitExtension("agent_end", null, ctx);
+    await flushAsync();
+    expect(sentMessages).toHaveLength(2);
+    expect(sentMessages[1].message.content).toContain("Second one-shot");
+  });
+
+  it("clears buffered wakes on session switch", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+    await emitExtension("agent_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
+      loopId: "21",
+      prompt: "Should be cleared on switch",
+      trigger: { type: "cron", schedule: "*/5 * * * *" },
+      timestamp: Date.now(),
+      recurring: true,
+    });
+    await flushAsync();
+
+    await emitExtension("session_switch", { reason: "switch" }, ctx);
+    await emitExtension("agent_end", null, ctx);
+    await flushAsync();
+
+    expect(sentMessages).toHaveLength(0);
+  });
+
+  it("clears buffered wakes on session shutdown", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+    await emitExtension("agent_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
+      loopId: "22",
+      prompt: "Should be cleared on shutdown",
+      trigger: { type: "cron", schedule: "*/5 * * * *" },
+      timestamp: Date.now(),
+      recurring: true,
+    });
+    await flushAsync();
+
+    await emitExtension("session_shutdown", null, ctx);
+    await emitExtension("agent_end", null, ctx);
+    await flushAsync();
+
+    expect(sentMessages).toHaveLength(0);
+  });
+
   it("drops a buffered autoTask wake when pending tasks reach zero before flush", async () => {
     let pendingTaskCount = 1;
     const { pi, sentMessages, emittedEvents, emitExtension } = createMockPi({

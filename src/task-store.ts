@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { reduceTaskState, type TaskReducerEvent, type TaskReducerState } from "./task-reducer.js";
 import type { TaskEntry, TaskStatus, TaskStoreData } from "./task-types.js";
 
 const TASKS_DIR = join(homedir(), ".pi", "tasks");
@@ -94,23 +95,33 @@ export class TaskStore {
     }
   }
 
+  private toReducerState(): TaskReducerState {
+    return {
+      nextId: this.nextId,
+      tasksById: Object.fromEntries(this.tasks.entries()),
+    };
+  }
+
+  private applyReducerEvent(event: TaskReducerEvent): void {
+    const result = reduceTaskState(this.toReducerState(), event);
+    this.nextId = result.state.nextId;
+    this.tasks = new Map(Object.entries(result.state.tasksById));
+  }
+
   create(subject: string, description: string, metadata?: Record<string, unknown>): TaskEntry {
     return this.withLock(() => {
       if (this.tasks.size >= MAX_TASKS) {
         throw new Error(`Maximum of ${MAX_TASKS} tasks reached. Delete some before creating new ones.`);
       }
       const now = Date.now();
-      const entry: TaskEntry = {
-        id: String(this.nextId++),
-        subject,
-        description,
-        status: "pending",
-        createdAt: now,
-        updatedAt: now,
-        metadata,
-      };
-      this.tasks.set(entry.id, entry);
-      return entry;
+      this.applyReducerEvent({
+        type: "TASK_CREATED",
+        at: now,
+        source: "tool",
+        entityType: "task",
+        payload: { subject, description, metadata },
+      });
+      return this.tasks.get(String(this.nextId - 1))!;
     });
   }
 
@@ -129,21 +140,66 @@ export class TaskStore {
       const entry = this.tasks.get(id);
       if (!entry) return undefined;
 
-      if (fields.status !== undefined) {
-        entry.status = fields.status;
-        if (fields.status === "completed") entry.completedAt = Date.now();
+      const now = Date.now();
+      if (fields.status === "in_progress") {
+        this.applyReducerEvent({
+          type: "TASK_STARTED",
+          at: now,
+          source: "tool",
+          entityType: "task",
+          entityId: id,
+          payload: { id },
+        });
+      } else if (fields.status === "completed") {
+        this.applyReducerEvent({
+          type: "TASK_COMPLETED",
+          at: now,
+          source: "tool",
+          entityType: "task",
+          entityId: id,
+          payload: { id },
+        });
+      } else if (fields.status === "pending") {
+        this.applyReducerEvent({
+          type: "TASK_REOPENED",
+          at: now,
+          source: "tool",
+          entityType: "task",
+          entityId: id,
+          payload: { id },
+        });
       }
-      if (fields.subject !== undefined) entry.subject = fields.subject;
-      if (fields.description !== undefined) entry.description = fields.description;
-      entry.updatedAt = Date.now();
-      return entry;
+
+      if (fields.subject !== undefined || fields.description !== undefined) {
+        this.applyReducerEvent({
+          type: "TASK_UPDATED",
+          at: now,
+          source: "tool",
+          entityType: "task",
+          entityId: id,
+          payload: {
+            id,
+            subject: fields.subject,
+            description: fields.description,
+          },
+        });
+      }
+
+      return this.tasks.get(id);
     });
   }
 
   delete(id: string): boolean {
     return this.withLock(() => {
       if (!this.tasks.has(id)) return false;
-      this.tasks.delete(id);
+      this.applyReducerEvent({
+        type: "TASK_DELETED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "task",
+        entityId: id,
+        payload: { id },
+      });
       return true;
     });
   }
@@ -158,14 +214,15 @@ export class TaskStore {
 
   sweepCompleted(): number {
     return this.withLock(() => {
-      let count = 0;
-      for (const [id, entry] of this.tasks) {
-        if (entry.status === "completed") {
-          this.tasks.delete(id);
-          count++;
-        }
-      }
-      return count;
+      const before = this.tasks.size;
+      this.applyReducerEvent({
+        type: "TASKS_PRUNED",
+        at: Date.now(),
+        source: "system",
+        entityType: "task",
+        payload: { reason: "manual" },
+      });
+      return before - this.tasks.size;
     });
   }
 }

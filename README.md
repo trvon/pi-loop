@@ -109,6 +109,16 @@ Only task counts and the single active/next task are shown in the widget so atte
 
 In `session` scope (default), loop and task files are saved per session ID (e.g. `.pi/tasks/tasks-<sessionId>.json`) so concurrent sessions and worktree agents do not share state. In `memory` scope nothing persists to disk.
 
+### Recommended scope policy
+
+Keep `PI_LOOP_SCOPE=session` as the default.
+
+- `session` is the best balance for normal use: it preserves loops/tasks across a session restart while isolating concurrent sessions and worktrees.
+- `memory` is best for disposable scratch work, tests, or situations where you explicitly do not want any persisted loop/task state.
+- `project` should be opt-in for intentionally shared automation, because it allows multiple sessions in the same repo to see the same persisted state.
+
+This matches the current wake model well: pending notifications stay in memory and are cancelable, while durable loop/task intent remains scoped per session.
+
 ## Limits
 
 25 active loops, 25 running monitors. Recurring loops expire after 7 days.

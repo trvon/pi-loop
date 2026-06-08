@@ -89,6 +89,53 @@ describe("MonitorManager", () => {
     });
   });
 
+  it("registers completion callbacks for running monitors and invokes them on success", async () => {
+    const entry = manager.create("echo done", "callback test");
+    const callback = vi.fn();
+
+    expect(manager.onComplete(entry.id, callback)).toBe(true);
+    expect(manager.getProcess(entry.id)?.completionCallbacks).toHaveLength(1);
+
+    await new Promise<void>((resolve) => {
+      pi.events.on("monitor:done", (data: any) => {
+        if (data.monitorId === entry.id) resolve();
+      });
+    });
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(manager.getProcess(entry.id)?.completionCallbacks).toHaveLength(0);
+  });
+
+  it("prunes completed monitors after the retention callback runs", async () => {
+    const realSetTimeout = global.setTimeout;
+    const retainedTimers: Array<() => void> = [];
+    const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms === 30000) {
+        retainedTimers.push(() => {
+          if (typeof fn === "function") fn(...args);
+        });
+        return 1 as any;
+      }
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+
+    const entry = manager.create("echo done", "retention test");
+
+    await new Promise<void>((resolve) => {
+      pi.events.on("monitor:done", (data: any) => {
+        if (data.monitorId === entry.id) resolve();
+      });
+    });
+
+    expect(manager.get(entry.id)?.status).toBe("completed");
+    expect(retainedTimers).toHaveLength(1);
+
+    retainedTimers[0]();
+
+    expect(manager.get(entry.id)).toBeUndefined();
+    timeoutSpy.mockRestore();
+  });
+
   it("emits monitor:error on non-zero exit", async () => {
     manager.create("exit 1", "error test");
 

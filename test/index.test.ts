@@ -196,6 +196,58 @@ describe("native task fallback", () => {
     });
   });
 
+  it("updates native tasks through in_progress, completed, and reopened states", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const taskUpdate = toolMap.get("TaskUpdate");
+    const taskList = toolMap.get("TaskList");
+    expect(taskCreate?.execute).toBeDefined();
+    expect(taskUpdate?.execute).toBeDefined();
+    expect(taskList?.execute).toBeDefined();
+
+    await taskCreate!.execute?.("1", { subject: "Transition task", description: "track transitions" });
+
+    let result = await taskUpdate!.execute?.("2", { id: "1", status: "in_progress" });
+    expect(result.content[0].text).toBe("Task #1 updated → in_progress");
+
+    let listResult = await taskList!.execute?.("3", {});
+    expect(listResult.content[0].text).toContain("#1 [in_progress] Transition task");
+
+    result = await taskUpdate!.execute?.("4", { id: "1", status: "completed" });
+    expect(result.content[0].text).toBe("Task #1 updated → completed");
+
+    const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
+    let data = JSON.parse(readFileSync(taskPath, "utf-8"));
+    expect(data.tasks[0].status).toBe("completed");
+    expect(typeof data.tasks[0].completedAt).toBe("number");
+    const completedAt = data.tasks[0].completedAt;
+
+    result = await taskUpdate!.execute?.("5", { id: "1", status: "pending" });
+    expect(result.content[0].text).toBe("Task #1 updated → pending");
+
+    listResult = await taskList!.execute?.("6", {});
+    expect(listResult.content[0].text).toContain("#1 [pending] Transition task");
+
+    data = JSON.parse(readFileSync(taskPath, "utf-8"));
+    expect(data.tasks[0].status).toBe("pending");
+    expect(data.tasks[0].completedAt).toBe(completedAt);
+  });
+
   it("auto-creates a worker loop when pending native tasks reach five", async () => {
     const { pi, toolMap, extensionHandlers } = createMockPi();
 
@@ -277,6 +329,59 @@ describe("native task fallback", () => {
     const lines = listResult.content[0].text.split("\n");
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("#1");
+  });
+
+  it("re-creates a worker loop when TaskUpdate raises pending work back to the threshold", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const taskUpdate = toolMap.get("TaskUpdate");
+    const loopList = toolMap.get("LoopList");
+    expect(taskCreate?.execute).toBeDefined();
+    expect(taskUpdate?.execute).toBeDefined();
+    expect(loopList?.execute).toBeDefined();
+
+    for (let i = 1; i <= 5; i++) {
+      await taskCreate!.execute?.(`${i}`, {
+        subject: `Task ${i}`,
+        description: `Desc ${i}`,
+      });
+    }
+    for (let i = 1; i <= 5; i++) {
+      await taskUpdate!.execute?.(`${10 + i}`, { id: `${i}`, status: "completed" });
+    }
+
+    let listResult = await loopList!.execute?.("30", {});
+    expect(listResult.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+
+    for (let i = 1; i <= 4; i++) {
+      const result = await taskUpdate!.execute?.(`${20 + i}`, { id: `${i}`, status: "pending" });
+      expect(result.content[0].text).toBe(`Task #${i} updated → pending`);
+    }
+
+    listResult = await loopList!.execute?.("40", {});
+    expect(listResult.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+
+    const thresholdResult = await taskUpdate!.execute?.("50", { id: "5", status: "pending" });
+    expect(thresholdResult.content[0].text).toContain("Worker loop #");
+
+    listResult = await loopList!.execute?.("60", {});
+    expect(listResult.content[0].text).toContain("tasks:created");
+    expect(listResult.content[0].text).toContain("Run TaskList, pick next pending task");
   });
 
   it("flushes the auto-created worker wake on agent_end even if pending messages are reported", async () => {
@@ -1105,16 +1210,20 @@ describe("LoopDelete tool wrapper", () => {
 describe("monitor tool wrappers", () => {
   let cwd: string;
   let originalCwd: string;
+  let originalScope: string | undefined;
 
   beforeEach(() => {
     vi.useFakeTimers();
     originalCwd = process.cwd();
+    originalScope = process.env.PI_LOOP_SCOPE;
     cwd = mkdtempSync(join(tmpdir(), "pi-loop-mon-"));
     process.chdir(cwd);
   });
 
   afterEach(() => {
     process.chdir(originalCwd);
+    if (originalScope === undefined) delete process.env.PI_LOOP_SCOPE;
+    else process.env.PI_LOOP_SCOPE = originalScope;
     rmSync(cwd, { recursive: true, force: true });
     vi.useRealTimers();
   });
@@ -1261,6 +1370,46 @@ describe("monitor tool wrappers", () => {
     expect((sentCustomMessages[0].message as { content: string }).content).toContain("Monitor finished without event dispatch");
   }, 10000);
 
+  it("buffers onDone monitor completion until agent_end when the agent is busy", async () => {
+    vi.useRealTimers();
+    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await new Promise(r => setTimeout(r, 6100));
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const monitorCreate = toolMap.get("MonitorCreate");
+    expect(monitorCreate?.execute).toBeDefined();
+
+    const result = await monitorCreate!.execute?.("1", {
+      command: "echo 'monitor done while busy'",
+      onDone: "Monitor finished while agent busy",
+    });
+    expect(result.content[0].text).toContain("onDone loop");
+
+    await new Promise(r => setTimeout(r, 500));
+    expect(sentCustomMessages).toHaveLength(0);
+
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(sentCustomMessages).toHaveLength(1);
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Monitor finished while agent busy");
+  }, 10000);
+
   it("monitor create list stop lifecycle reflects state changes", async () => {
     vi.useRealTimers();
     const { pi, toolMap } = createMockPi();
@@ -1283,4 +1432,74 @@ describe("monitor tool wrappers", () => {
     listResult = await monitorList!.execute?.("4", {});
     expect(listResult.content[0].text).toContain("[stopped]");
   }, 10000);
+
+  it("defaults to session-scoped loop files when PI_LOOP_SCOPE is unset", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const loopCreate = toolMap.get("LoopCreate");
+    expect(loopCreate?.execute).toBeDefined();
+
+    await loopCreate!.execute?.("1", {
+      trigger: "tool_execution_start",
+      prompt: "Session scoped loop",
+      triggerType: "event",
+      recurring: true,
+    });
+
+    expect(existsSync(join(cwd, ".pi", "loops", "loops-test-session.json"))).toBe(true);
+    expect(existsSync(join(cwd, ".pi", "loops", "loops.json"))).toBe(false);
+  });
+
+  it("clears memory-scoped loops on non-resume session switch", async () => {
+    process.env.PI_LOOP_SCOPE = "memory";
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const loopCreate = toolMap.get("LoopCreate");
+    const loopList = toolMap.get("LoopList");
+    expect(loopCreate?.execute).toBeDefined();
+    expect(loopList?.execute).toBeDefined();
+
+    await loopCreate!.execute?.("1", {
+      trigger: "tool_execution_start",
+      prompt: "Memory scoped loop",
+      triggerType: "event",
+      recurring: true,
+    });
+
+    let listResult = await loopList!.execute?.("2", {});
+    expect(listResult.content[0].text).toContain("#1");
+
+    for (const handler of extensionHandlers.get("session_switch") ?? []) {
+      await handler({ reason: "switch" }, ctx);
+    }
+
+    listResult = await loopList!.execute?.("3", {});
+    expect(listResult.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+  });
 });

@@ -1,13 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import type { LoopEntry, LoopStatus, LoopStoreData, Trigger } from "./types.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
 const LOCK_RETRY_MS = 50;
 const LOCK_MAX_RETRIES = 100;
 const MAX_LOOPS = 25;
-const MAX_EXPIRY_DAYS = 7;
 
 function acquireLock(lockPath: string): void {
   for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
@@ -95,29 +95,41 @@ export class LoopStore {
     }
   }
 
+  private toReducerState(): LoopReducerState {
+    return {
+      nextId: this.nextId,
+      loopsById: Object.fromEntries(this.loops.entries()),
+    };
+  }
+
+  private applyReducerEvent(event: LoopReducerEvent): void {
+    const result = reduceLoopState(this.toReducerState(), event);
+    this.nextId = result.state.nextId;
+    this.loops = new Map(Object.entries(result.state.loopsById));
+  }
+
   create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number }): LoopEntry {
     return this.withLock(() => {
       if (this.loops.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
       }
       const now = Date.now();
-      const entry: LoopEntry = {
-        id: String(this.nextId++),
-        prompt,
-        trigger,
-        status: "active",
-        recurring: opts.recurring,
-        autoTask: opts.autoTask,
-        taskBacklog: opts.taskBacklog,
-        readOnly: opts.readOnly,
-        maxFires: opts.maxFires,
-        fireCount: 0,
-        createdAt: now,
-        updatedAt: now,
-        expiresAt: now + MAX_EXPIRY_DAYS * 24 * 60 * 60 * 1000,
-      };
-      this.loops.set(entry.id, entry);
-      return entry;
+      this.applyReducerEvent({
+        type: "LOOP_CREATED",
+        at: now,
+        source: "tool",
+        entityType: "loop",
+        payload: {
+          prompt,
+          trigger,
+          recurring: opts.recurring,
+          autoTask: opts.autoTask,
+          taskBacklog: opts.taskBacklog,
+          readOnly: opts.readOnly,
+          maxFires: opts.maxFires,
+        },
+      });
+      return this.loops.get(String(this.nextId - 1))!;
     });
   }
 
@@ -137,31 +149,77 @@ export class LoopStore {
       if (!entry) return { entry: undefined, changedFields: [] };
 
       const changedFields: string[] = [];
-      if (fields.status !== undefined) {
-        entry.status = fields.status;
+      const now = Date.now();
+
+      if (fields.status === "paused") {
+        this.applyReducerEvent({
+          type: "LOOP_PAUSED",
+          at: now,
+          source: "tool",
+          entityType: "loop",
+          entityId: id,
+          payload: { id },
+        });
+        changedFields.push("status");
+      } else if (fields.status === "active") {
+        this.applyReducerEvent({
+          type: "LOOP_RESUMED",
+          at: now,
+          source: "tool",
+          entityType: "loop",
+          entityId: id,
+          payload: { id },
+        });
         changedFields.push("status");
       }
+
+      const current = this.loops.get(id);
+      if (!current) return { entry: undefined, changedFields };
+
       if (fields.trigger !== undefined) {
-        entry.trigger = fields.trigger;
+        current.trigger = fields.trigger;
         changedFields.push("trigger");
       }
       if (fields.prompt !== undefined) {
-        entry.prompt = fields.prompt;
+        current.prompt = fields.prompt;
         changedFields.push("prompt");
       }
       if (fields.fireCount !== undefined) {
-        entry.fireCount = fields.fireCount;
+        if (fields.fireCount === (current.fireCount ?? 0) + 1) {
+          this.applyReducerEvent({
+            type: "LOOP_FIRED",
+            at: now,
+            source: "system",
+            entityType: "loop",
+            entityId: id,
+            payload: { id },
+          });
+        } else {
+          current.fireCount = fields.fireCount;
+          current.updatedAt = now;
+        }
         changedFields.push("fireCount");
       }
-      entry.updatedAt = Date.now();
-      return { entry, changedFields };
+
+      if (fields.trigger !== undefined || fields.prompt !== undefined) {
+        current.updatedAt = now;
+      }
+
+      return { entry: this.loops.get(id), changedFields };
     });
   }
 
   delete(id: string): boolean {
     return this.withLock(() => {
       if (!this.loops.has(id)) return false;
-      this.loops.delete(id);
+      this.applyReducerEvent({
+        type: "LOOP_DELETED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "loop",
+        entityId: id,
+        payload: { id },
+      });
       return true;
     });
   }
@@ -170,11 +228,17 @@ export class LoopStore {
     return this.withLock(() => {
       const now = Date.now();
       let count = 0;
-      for (const [id, entry] of this.loops) {
-        if (now >= entry.expiresAt) {
-          this.loops.delete(id);
-          count++;
-        }
+      for (const [id, entry] of [...this.loops.entries()]) {
+        if (now < entry.expiresAt) continue;
+        this.applyReducerEvent({
+          type: "LOOP_EXPIRED",
+          at: now,
+          source: "system",
+          entityType: "loop",
+          entityId: id,
+          payload: { id, reason: "expires_at" },
+        });
+        count++;
       }
       return count;
     });
@@ -183,26 +247,38 @@ export class LoopStore {
   expireEventLoops(sessionStartedAt: number): number {
     return this.withLock(() => {
       let count = 0;
-      const toDelete: string[] = [];
-      for (const [id, entry] of this.loops) {
+      for (const [id, entry] of [...this.loops.entries()]) {
         if (entry.status !== "active") continue;
-        if (entry.trigger.type === "event" || entry.trigger.type === "hybrid") {
-          if (entry.createdAt < sessionStartedAt) {
-            toDelete.push(id);
-            count++;
-          }
-        }
+        if (entry.trigger.type !== "event" && entry.trigger.type !== "hybrid") continue;
+        if (entry.createdAt >= sessionStartedAt) continue;
+        this.applyReducerEvent({
+          type: "LOOP_EXPIRED",
+          at: sessionStartedAt,
+          source: "session",
+          entityType: "loop",
+          entityId: id,
+          payload: { id, reason: "resume_event_stale" },
+        });
+        count++;
       }
-      for (const id of toDelete) this.loops.delete(id);
       return count;
     });
   }
 
   clearAll(): number {
     return this.withLock(() => {
-      const count = this.loops.size;
-      this.loops.clear();
-      return count;
+      const ids = [...this.loops.keys()];
+      for (const id of ids) {
+        this.applyReducerEvent({
+          type: "LOOP_DELETED",
+          at: Date.now(),
+          source: "system",
+          entityType: "loop",
+          entityId: id,
+          payload: { id },
+        });
+      }
+      return ids.length;
     });
   }
 
