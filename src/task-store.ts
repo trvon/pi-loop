@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { reduceTaskState, type TaskReducerEvent, type TaskReducerState } from "./task-reducer.js";
-import type { TaskEntry, TaskStatus, TaskStoreData } from "./task-types.js";
+import type { TaskEntry, TaskStoreData } from "./task-types.js";
 
 const TASKS_DIR = join(homedir(), ".pi", "tasks");
 const LOCK_RETRY_MS = 50;
@@ -135,56 +135,71 @@ export class TaskStore {
     return Array.from(this.tasks.values()).sort((a, b) => Number(a.id) - Number(b.id));
   }
 
-  update(id: string, fields: { status?: TaskStatus; subject?: string; description?: string }): TaskEntry | undefined {
+  start(id: string): TaskEntry | undefined {
     return this.withLock(() => {
       const entry = this.tasks.get(id);
       if (!entry) return undefined;
+      this.applyReducerEvent({
+        type: "TASK_STARTED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "task",
+        entityId: id,
+        payload: { id },
+      });
+      return this.tasks.get(id);
+    });
+  }
 
-      const now = Date.now();
-      if (fields.status === "in_progress") {
-        this.applyReducerEvent({
-          type: "TASK_STARTED",
-          at: now,
-          source: "tool",
-          entityType: "task",
-          entityId: id,
-          payload: { id },
-        });
-      } else if (fields.status === "completed") {
-        this.applyReducerEvent({
-          type: "TASK_COMPLETED",
-          at: now,
-          source: "tool",
-          entityType: "task",
-          entityId: id,
-          payload: { id },
-        });
-      } else if (fields.status === "pending") {
-        this.applyReducerEvent({
-          type: "TASK_REOPENED",
-          at: now,
-          source: "tool",
-          entityType: "task",
-          entityId: id,
-          payload: { id },
-        });
-      }
+  complete(id: string): TaskEntry | undefined {
+    return this.withLock(() => {
+      const entry = this.tasks.get(id);
+      if (!entry) return undefined;
+      this.applyReducerEvent({
+        type: "TASK_COMPLETED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "task",
+        entityId: id,
+        payload: { id },
+      });
+      return this.tasks.get(id);
+    });
+  }
 
-      if (fields.subject !== undefined || fields.description !== undefined) {
-        this.applyReducerEvent({
-          type: "TASK_UPDATED",
-          at: now,
-          source: "tool",
-          entityType: "task",
-          entityId: id,
-          payload: {
-            id,
-            subject: fields.subject,
-            description: fields.description,
-          },
-        });
-      }
+  reopen(id: string): TaskEntry | undefined {
+    return this.withLock(() => {
+      const entry = this.tasks.get(id);
+      if (!entry) return undefined;
+      this.applyReducerEvent({
+        type: "TASK_REOPENED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "task",
+        entityId: id,
+        payload: { id },
+      });
+      return this.tasks.get(id);
+    });
+  }
 
+  updateDetails(id: string, fields: { subject?: string; description?: string }): TaskEntry | undefined {
+    return this.withLock(() => {
+      const entry = this.tasks.get(id);
+      if (!entry) return undefined;
+      if (fields.subject === undefined && fields.description === undefined) return entry;
+      this.applyReducerEvent({
+        type: "TASK_UPDATED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "task",
+        entityId: id,
+        payload: {
+          id,
+          subject: fields.subject,
+          description: fields.description,
+        },
+      });
       return this.tasks.get(id);
     });
   }
@@ -212,7 +227,7 @@ export class TaskStore {
     return count;
   }
 
-  sweepCompleted(): number {
+  pruneCompleted(): number {
     return this.withLock(() => {
       const before = this.tasks.size;
       this.applyReducerEvent({

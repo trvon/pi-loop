@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
-import type { LoopEntry, LoopStatus, LoopStoreData, Trigger } from "./types.js";
+import type { LoopEntry, LoopStoreData, Trigger } from "./types.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
 const LOCK_RETRY_MS = 50;
@@ -143,38 +143,61 @@ export class LoopStore {
     return Array.from(this.loops.values()).sort((a, b) => Number(a.id) - Number(b.id));
   }
 
-  update(id: string, fields: { status?: LoopStatus; trigger?: Trigger; prompt?: string; fireCount?: number }): { entry: LoopEntry | undefined; changedFields: string[] } {
+  pause(id: string): LoopEntry | undefined {
     return this.withLock(() => {
       const entry = this.loops.get(id);
-      if (!entry) return { entry: undefined, changedFields: [] };
+      if (!entry) return undefined;
+      this.applyReducerEvent({
+        type: "LOOP_PAUSED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "loop",
+        entityId: id,
+        payload: { id },
+      });
+      return this.loops.get(id);
+    });
+  }
+
+  resume(id: string): LoopEntry | undefined {
+    return this.withLock(() => {
+      const entry = this.loops.get(id);
+      if (!entry) return undefined;
+      this.applyReducerEvent({
+        type: "LOOP_RESUMED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "loop",
+        entityId: id,
+        payload: { id },
+      });
+      return this.loops.get(id);
+    });
+  }
+
+  fire(id: string): LoopEntry | undefined {
+    return this.withLock(() => {
+      const entry = this.loops.get(id);
+      if (!entry) return undefined;
+      this.applyReducerEvent({
+        type: "LOOP_FIRED",
+        at: Date.now(),
+        source: "system",
+        entityType: "loop",
+        entityId: id,
+        payload: { id },
+      });
+      return this.loops.get(id);
+    });
+  }
+
+  updateMetadata(id: string, fields: { trigger?: Trigger; prompt?: string }): { entry: LoopEntry | undefined; changedFields: string[] } {
+    return this.withLock(() => {
+      const current = this.loops.get(id);
+      if (!current) return { entry: undefined, changedFields: [] };
 
       const changedFields: string[] = [];
       const now = Date.now();
-
-      if (fields.status === "paused") {
-        this.applyReducerEvent({
-          type: "LOOP_PAUSED",
-          at: now,
-          source: "tool",
-          entityType: "loop",
-          entityId: id,
-          payload: { id },
-        });
-        changedFields.push("status");
-      } else if (fields.status === "active") {
-        this.applyReducerEvent({
-          type: "LOOP_RESUMED",
-          at: now,
-          source: "tool",
-          entityType: "loop",
-          entityId: id,
-          payload: { id },
-        });
-        changedFields.push("status");
-      }
-
-      const current = this.loops.get(id);
-      if (!current) return { entry: undefined, changedFields };
 
       if (fields.trigger !== undefined) {
         current.trigger = fields.trigger;
@@ -184,24 +207,7 @@ export class LoopStore {
         current.prompt = fields.prompt;
         changedFields.push("prompt");
       }
-      if (fields.fireCount !== undefined) {
-        if (fields.fireCount === (current.fireCount ?? 0) + 1) {
-          this.applyReducerEvent({
-            type: "LOOP_FIRED",
-            at: now,
-            source: "system",
-            entityType: "loop",
-            entityId: id,
-            payload: { id },
-          });
-        } else {
-          current.fireCount = fields.fireCount;
-          current.updatedAt = now;
-        }
-        changedFields.push("fireCount");
-      }
-
-      if (fields.trigger !== undefined || fields.prompt !== undefined) {
+      if (changedFields.length > 0) {
         current.updatedAt = now;
       }
 

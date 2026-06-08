@@ -63,31 +63,40 @@ describe("LoopStore (in-memory)", () => {
     expect(store.delete("999")).toBe(false);
   });
 
-  it("updates loop status", () => {
+  it("pauses loops explicitly", () => {
     store.create(cronTrigger, "test", { recurring: true });
-    const { entry, changedFields } = store.update("1", { status: "paused" });
+    const entry = store.pause("1");
 
     expect(entry!.status).toBe("paused");
-    expect(changedFields).toEqual(["status"]);
   });
 
-  it("updates loop prompt", () => {
-    store.create(cronTrigger, "original", { recurring: true });
-    store.update("1", { prompt: "updated" });
+  it("resumes loops explicitly", () => {
+    store.create(cronTrigger, "test", { recurring: true });
+    store.pause("1");
+    const entry = store.resume("1");
 
+    expect(entry!.status).toBe("active");
+  });
+
+  it("updates loop prompt metadata", () => {
+    store.create(cronTrigger, "original", { recurring: true });
+    const { changedFields } = store.updateMetadata("1", { prompt: "updated" });
+
+    expect(changedFields).toEqual(["prompt"]);
     expect(store.get("1")!.prompt).toBe("updated");
   });
 
-  it("updates trigger", () => {
+  it("updates trigger metadata", () => {
     store.create(cronTrigger, "test", { recurring: true });
     const newTrigger: Trigger = { type: "event", source: "tool_execution_start" };
-    store.update("1", { trigger: newTrigger });
+    const { changedFields } = store.updateMetadata("1", { trigger: newTrigger });
 
+    expect(changedFields).toEqual(["trigger"]);
     expect(store.get("1")!.trigger.type).toBe("event");
   });
 
-  it("returns empty entry for non-existent update", () => {
-    const { entry, changedFields } = store.update("999", { status: "paused" });
+  it("returns empty entry for non-existent metadata update", () => {
+    const { entry, changedFields } = store.updateMetadata("999", { prompt: "missing" });
     expect(entry).toBeUndefined();
     expect(changedFields).toEqual([]);
   });
@@ -186,9 +195,11 @@ describe("LoopStore (in-memory)", () => {
     expect(l.fireCount).toBe(0);
   });
 
-  it("increments fireCount via update", () => {
+  it("increments fireCount via explicit fire", () => {
     store.create(cronTrigger, "count test", { recurring: true });
-    store.update("1", { fireCount: 3 });
+    store.fire("1");
+    store.fire("1");
+    store.fire("1");
     expect(store.get("1")!.fireCount).toBe(3);
   });
 });
@@ -199,9 +210,9 @@ describe("LoopStore (file-backed)", () => {
   const filePath = join(loopsDir, `${testListId}.json`);
 
   afterEach(() => {
-    try { rmSync(filePath); } catch { /* */ }
-    try { rmSync(filePath + ".lock"); } catch { /* */ }
-    try { rmSync(filePath + ".tmp"); } catch { /* */ }
+    rmSync(filePath, { force: true });
+    rmSync(filePath + ".lock", { force: true });
+    rmSync(filePath + ".tmp", { force: true });
   });
 
   it("persists loops to disk", () => {
@@ -223,10 +234,10 @@ describe("LoopStore (file-backed)", () => {
     expect(l.id).toBe("2");
   });
 
-  it("persists status updates", () => {
+  it("persists paused status updates", () => {
     const store1 = new LoopStore(testListId);
     store1.create(cronTrigger, "test", { recurring: true });
-    store1.update("1", { status: "paused" });
+    store1.pause("1");
 
     const store2 = new LoopStore(testListId);
     expect(store2.get("1")!.status).toBe("paused");
@@ -246,9 +257,9 @@ describe("LoopStore (absolute path)", () => {
   const absFilePath = join(tmpdir(), `pi-loop-test-${Date.now()}.json`);
 
   afterEach(() => {
-    try { rmSync(absFilePath); } catch { /* */ }
-    try { rmSync(absFilePath + ".lock"); } catch { /* */ }
-    try { rmSync(absFilePath + ".tmp"); } catch { /* */ }
+    rmSync(absFilePath, { force: true });
+    rmSync(absFilePath + ".lock", { force: true });
+    rmSync(absFilePath + ".tmp", { force: true });
   });
 
   it("accepts absolute path", () => {
@@ -270,9 +281,9 @@ describe("LoopStore (absolute path)", () => {
       expect(entry.id).toBe("1");
       expect(entry.prompt).toBe("stale lock test");
     } finally {
-      try { rmSync(lPath); } catch { /* */ }
-      try { rmSync(lPath + ".lock"); } catch { /* */ }
-      try { rmSync(lPath + ".tmp"); } catch { /* */ }
+      rmSync(lPath, { force: true });
+      rmSync(lPath + ".lock", { force: true });
+      rmSync(lPath + ".tmp", { force: true });
     }
   });
 
@@ -288,9 +299,9 @@ describe("LoopStore (absolute path)", () => {
       expect(s2.delete("1")).toBe(true);
       expect(s2.list()).toHaveLength(0);
     } finally {
-      try { rmSync(lPath); } catch { /* */ }
-      try { rmSync(lPath + ".lock"); } catch { /* */ }
-      try { rmSync(lPath + ".tmp"); } catch { /* */ }
+      rmSync(lPath, { force: true });
+      rmSync(lPath + ".lock", { force: true });
+      rmSync(lPath + ".tmp", { force: true });
     }
   });
 
@@ -303,9 +314,9 @@ describe("LoopStore (absolute path)", () => {
       const entry = s.create(cronTrigger, "bad lock", { recurring: true });
       expect(entry.id).toBe("1");
     } finally {
-      try { rmSync(lPath); } catch { /* */ }
-      try { rmSync(lPath + ".lock"); } catch { /* */ }
-      try { rmSync(lPath + ".tmp"); } catch { /* */ }
+      rmSync(lPath, { force: true });
+      rmSync(lPath + ".lock", { force: true });
+      rmSync(lPath + ".tmp", { force: true });
     }
   });
 });

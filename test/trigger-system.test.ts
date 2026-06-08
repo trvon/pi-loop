@@ -42,7 +42,7 @@ describe("TriggerSystem", () => {
         store.delete(entry.id);
         return;
       }
-      store.update(entry.id, { fireCount: (entry.fireCount ?? 0) + 1 });
+      store.fire(entry.id);
       pi.events.emit("loop:fire", {
         loopId: entry.id,
         prompt: entry.prompt,

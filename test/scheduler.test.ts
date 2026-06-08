@@ -35,7 +35,7 @@ describe("CronScheduler", () => {
 
   it("does not fire paused loops", () => {
     const entry = store.create(cronTrigger, "paused test", { recurring: false });
-    store.update(entry.id, { status: "paused" });
+    store.pause(entry.id);
     scheduler.add(entry);
 
     vi.advanceTimersByTime(10 * 60 * 1000);

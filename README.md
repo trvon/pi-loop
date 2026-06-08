@@ -77,37 +77,38 @@ Works with [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks). Pass `a
 
 If `pi-tasks` does not respond during startup detection, `pi-loop` registers a native fallback task system for the session:
 
-- persistent store at `.pi/tasks/tasks.json`
+- session- or project-scoped task files under `.pi/tasks/` depending on `PI_LOOP_SCOPE`
 - `TaskCreate`, `TaskList`, `TaskUpdate`, `TaskDelete`
 - `/tasks` interactive viewer
-- compact widget task tracking
+- compact status-line task tracking
 
 This fallback is session-sticky: `pi-loop` decides once at startup whether `pi-tasks` or native tasks own task management for that session.
 
-## Widget
+## Status line
 
-`pi-loop` keeps a compact persistent TUI widget above the editor.
+`pi-loop` keeps a compact persistent status line in the TUI.
 
-It now shows a single focus-friendly status line such as:
+When active work exists, it shows a single focus-friendly line such as:
 
 ```text
-none
 1 loop · 1 monitor
 2 tasks | active: Fix deploy polling
 1 loop · 2 monitors · 3 tasks | next: Update README
 ```
 
-Only task counts and the single active/next task are shown in the widget so attention stays on what is currently happening. Use `LoopList`, `MonitorList`, and `/tasks` for detail.
+When no loops, monitors, or native tasks are active, the status line clears completely.
+
+Only task counts and the single active/next task are shown there so attention stays on what is currently happening. Use `LoopList`, `MonitorList`, and `/tasks` for detail.
 
 ## Configuration
 
 | Variable | Effect | Default |
 |---|---|---|
-| `PI_LOOP` | Store path. `off` to disable, absolute or project-relative path | `.pi/loops/loops.json` |
+| `PI_LOOP` | Store path override. `off` to disable, absolute or project-relative path | unset → derived from `PI_LOOP_SCOPE` |
 | `PI_LOOP_SCOPE` | `memory` (ephemeral), `session` (per-session file), `project` (shared) | `session` |
 | `PI_LOOP_DEBUG` | Debug logging to stderr | unset |
 
-In `session` scope (default), loop and task files are saved per session ID (e.g. `.pi/tasks/tasks-<sessionId>.json`) so concurrent sessions and worktree agents do not share state. In `memory` scope nothing persists to disk.
+In `session` scope (default), loop and task files are saved per session ID (e.g. `.pi/loops/loops-<sessionId>.json` and `.pi/tasks/tasks-<sessionId>.json`) so concurrent sessions and worktree agents do not share state. In `memory` scope nothing persists to disk.
 
 ### Recommended scope policy
 
@@ -117,7 +118,7 @@ Keep `PI_LOOP_SCOPE=session` as the default.
 - `memory` is best for disposable scratch work, tests, or situations where you explicitly do not want any persisted loop/task state.
 - `project` should be opt-in for intentionally shared automation, because it allows multiple sessions in the same repo to see the same persisted state.
 
-This matches the current wake model well: pending notifications stay in memory and are cancelable, while durable loop/task intent remains scoped per session.
+
 
 ## Limits
 

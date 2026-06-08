@@ -97,3 +97,8 @@ export interface GoalReducerState {
   nextId: number;
   goalsById: Record<string, GoalEntry>;
 }
+
+export interface GoalStoreData {
+  nextId: number;
+  goals: GoalEntry[];
+}

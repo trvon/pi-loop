@@ -141,6 +141,36 @@ describe("native task fallback", () => {
     expect(data.tasks[0].subject).toBe("Test task");
   });
 
+  it("creates scheduled loops through the /loop command against the current session store", async () => {
+    const { pi, commandMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const loopCommand = commandMap.get("loop");
+    expect(loopCommand?.handler).toBeDefined();
+
+    const ui = { notify: vi.fn(), select: vi.fn(), input: vi.fn() };
+    await loopCommand!.handler?.("5m check deploy", { ui });
+
+    const loopPath = join(cwd, ".pi", "loops", "loops-test-session.json");
+    expect(existsSync(loopPath)).toBe(true);
+
+    const data = JSON.parse(readFileSync(loopPath, "utf-8"));
+    expect(data.loops).toHaveLength(1);
+    expect(data.loops[0].prompt).toBe("check deploy");
+    expect(data.loops[0].trigger).toEqual({ type: "cron", schedule: "*/5 * * * *" });
+    expect(ui.notify).toHaveBeenCalledWith("Loop #1 created: every 5 minutes — check deploy", "info");
+  });
+
   it("quick-creates native tasks through the /tasks command", async () => {
     const { pi, commandMap, extensionHandlers } = createMockPi();
 
