@@ -3,39 +3,17 @@ import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
 import { TriggerSystem } from "../src/trigger-system.js";
 import type { LoopEntry, Trigger } from "../src/types.js";
-
-function createMockPi() {
-  const handlers = new Map<string, Array<(...args: any[]) => void>>();
-  return {
-    events: {
-      emit: vi.fn((event: string, data: any) => {
-        const callbacks = handlers.get(event);
-        if (callbacks) for (const cb of callbacks) cb(data);
-      }),
-      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
-        if (!handlers.has(event)) handlers.set(event, []);
-        handlers.get(event)!.push(handler);
-        return () => {
-          const arr = handlers.get(event);
-          if (arr) {
-            const idx = arr.indexOf(handler);
-            if (idx !== -1) arr.splice(idx, 1);
-          }
-        };
-      }),
-    },
-  } as any;
-}
+import { createMockPi } from "./helpers/mock-pi.js";
 
 describe("TriggerSystem", () => {
-  let pi: ReturnType<typeof createMockPi>;
+  let pi: any;
   let store: LoopStore;
   let scheduler: CronScheduler;
   let system: TriggerSystem;
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    pi = createMockPi();
+    pi = createMockPi().pi;
     store = new LoopStore();
     const fireLoop = (entry: LoopEntry) => {
       if (entry.maxFires && (entry.fireCount ?? 0) >= entry.maxFires) {

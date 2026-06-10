@@ -2,6 +2,16 @@ import type { LoopEntry, Trigger } from "./types.js";
 
 export const MAX_LOOP_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * Whether a loop has reached its fire cap. Single source of truth for the
+ * `maxFires` check shared by the fire callbacks (`onLoopFire` pre-fire guard and
+ * `TriggerSystem.fireLoop` post-fire cleanup). Each caller keeps its own timing;
+ * only the predicate is shared.
+ */
+export function atMaxFires(loop: Pick<LoopEntry, "maxFires" | "fireCount">): boolean {
+  return !!loop.maxFires && (loop.fireCount ?? 0) >= loop.maxFires;
+}
+
 type ReducerSource = "tool" | "command" | "scheduler" | "eventbus" | "monitor" | "session" | "coordinator" | "system";
 
 export interface LoopReducerState {

@@ -1,35 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MonitorManager } from "../src/monitor-manager.js";
-
-function createMockPi() {
-  const handlers = new Map<string, Array<(...args: any[]) => void>>();
-  return {
-    events: {
-      emit: vi.fn((event: string, data: any) => {
-        const callbacks = handlers.get(event);
-        if (callbacks) for (const cb of callbacks) cb(data);
-      }),
-      on: vi.fn((event: string, handler: (...args: any[]) => void) => {
-        if (!handlers.has(event)) handlers.set(event, []);
-        handlers.get(event)!.push(handler);
-        return () => {
-          const arr = handlers.get(event);
-          if (arr) {
-            const idx = arr.indexOf(handler);
-            if (idx !== -1) arr.splice(idx, 1);
-          }
-        };
-      }),
-    },
-  } as any;
-}
+import { createMockPi } from "./helpers/mock-pi.js";
 
 describe("MonitorManager", () => {
   let manager: MonitorManager;
-  let pi: ReturnType<typeof createMockPi>;
+  let pi: any;
 
   beforeEach(() => {
-    pi = createMockPi();
+    pi = createMockPi().pi;
     manager = new MonitorManager(pi);
   });
 

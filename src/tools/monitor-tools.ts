@@ -82,6 +82,15 @@ Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fire
 
       let onDoneMsg = "";
       if (params.onDone) {
+        // onDone delivery is callback-only: the loop below is delivered solely
+        // via MonitorManager.onComplete (see handleMonitorDoneLoop →
+        // monitor-ondone-runtime), so it fires exactly once by construction.
+        // The event-typed trigger is metadata, NOT a live subscription — this
+        // loop is deliberately NOT passed to triggerSystem.add(). The "event"
+        // type lets expireEventLoops() prune it if orphaned across a session
+        // and lets the widget render it as a monitor-completion wake. Do not
+        // triggerSystem.add() this loop, or the monitor:done event would fire it
+        // a second time.
         const doneTrigger: Trigger = { type: "event", source: "monitor:done", filter: JSON.stringify({ monitorId: entry.id }) };
         const doneLoop = getStore().create(doneTrigger, params.onDone, { recurring: false });
         handleMonitorDoneLoop(doneLoop, entry.id);

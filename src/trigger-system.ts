@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { atMaxFires } from "./loop-reducer.js";
 import type { CronScheduler } from "./scheduler.js";
 import type { LoopStore } from "./store.js";
 import type { LoopEntry } from "./types.js";
@@ -110,7 +111,7 @@ export class TriggerSystem {
       return;
     }
 
-    if (fresh.recurring && fresh.maxFires && (fresh.fireCount ?? 0) >= fresh.maxFires) {
+    if (fresh.recurring && atMaxFires(fresh)) {
       this.remove(fresh.id);
       this.store.delete(fresh.id);
       return;

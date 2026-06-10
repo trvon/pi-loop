@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GoalStore } from "../src/goal-store.js";
-import type { GoalCriteria, GoalProgressSnapshot } from "../src/goal-types.js";
+import type { GoalCriteria } from "../src/goal-types.js";
+import { emptyGoalProgress } from "./helpers/factories.js";
 
 function criteria(): GoalCriteria {
   return {
@@ -11,21 +12,7 @@ function criteria(): GoalCriteria {
   };
 }
 
-function progress(overrides: Partial<GoalProgressSnapshot> = {}): GoalProgressSnapshot {
-  return {
-    totalTasks: 0,
-    pendingTasks: 0,
-    inProgressTasks: 0,
-    completedTasks: 0,
-    activeLoops: 0,
-    pausedLoops: 0,
-    runningMonitors: 0,
-    completedMonitors: 0,
-    erroredMonitors: 0,
-    stoppedMonitors: 0,
-    ...overrides,
-  };
-}
+const progress = emptyGoalProgress;
 
 describe("GoalStore (in-memory)", () => {
   let store: GoalStore;

@@ -7,6 +7,9 @@
 			"style": {
 				"recommended": false
 			},
+			"correctness": {
+				"noUnusedVariables": "error"
+			},
 			"suspicious": {
 				"noExplicitAny": "off",
 				"noControlCharactersInRegex": "off",

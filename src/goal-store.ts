@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { type GoalReducerEvent, reduceGoalState } from "./goal-reducer.js";
 import type {
   GoalCriteria,
@@ -10,121 +9,24 @@ import type {
   GoalScope,
   GoalStoreData,
 } from "./goal-types.js";
+import { ReducerBackedStore } from "./reducer-backed-store.js";
 
 const GOALS_DIR = join(homedir(), ".pi", "goals");
-const LOCK_RETRY_MS = 50;
-const LOCK_MAX_RETRIES = 100;
 const MAX_GOALS = 200;
 
-function acquireLock(lockPath: string): void {
-  mkdirSync(dirname(lockPath), { recursive: true });
-  for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
-    try {
-      writeFileSync(lockPath, `${process.pid}`, { flag: "wx" });
-      return;
-    } catch (e: any) {
-      if (e.code === "EEXIST") {
-        try {
-          const pid = parseInt(readFileSync(lockPath, "utf-8"), 10);
-          if (!pid || !isProcessRunning(pid)) {
-            try { unlinkSync(lockPath); } catch { /* ignore */ }
-            continue;
-          }
-        } catch { /* ignore read errors */ }
-        const start = Date.now();
-        while (Date.now() - start < LOCK_RETRY_MS) { /* busy wait */ }
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw new Error(`Failed to acquire lock: ${lockPath}`);
-}
-
-function releaseLock(lockPath: string): void {
-  try { unlinkSync(lockPath); } catch { /* ignore */ }
-}
-
-function isProcessRunning(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
-export class GoalStore {
-  private filePath: string | undefined;
-  private lockPath: string | undefined;
-  private lastLoadedSignature: string | undefined;
-
-  private nextId = 1;
-  private goals = new Map<string, GoalEntry>();
-
+export class GoalStore extends ReducerBackedStore<GoalEntry, GoalReducerState, GoalReducerEvent, GoalStoreData> {
   constructor(listIdOrPath?: string) {
-    if (!listIdOrPath) return;
-    const isAbsPath = isAbsolute(listIdOrPath);
-    const filePath = isAbsPath ? listIdOrPath : join(GOALS_DIR, `${listIdOrPath}.json`);
-    mkdirSync(dirname(filePath), { recursive: true });
-    this.filePath = filePath;
-    this.lockPath = filePath + ".lock";
-    this.load();
-  }
-
-  private getFileSignature(): string | undefined {
-    if (!this.filePath || !existsSync(this.filePath)) return undefined;
-    const stat = statSync(this.filePath);
-    return `${stat.mtimeMs}:${stat.size}`;
-  }
-
-  private load(force = false): void {
-    if (!this.filePath) return;
-    const signature = this.getFileSignature();
-    if (!signature) return;
-    if (!force && signature === this.lastLoadedSignature) return;
-    try {
-      const data: GoalStoreData = JSON.parse(readFileSync(this.filePath, "utf-8"));
-      this.nextId = data.nextId;
-      this.goals.clear();
-      for (const goal of data.goals) {
-        this.goals.set(goal.id, goal);
-      }
-      this.lastLoadedSignature = signature;
-    } catch { /* corrupt file — start fresh */ }
-  }
-
-  private save(): void {
-    if (!this.filePath) return;
-    const data: GoalStoreData = {
-      nextId: this.nextId,
-      goals: Array.from(this.goals.values()),
-    };
-    const tmpPath = this.filePath + ".tmp";
-    writeFileSync(tmpPath, JSON.stringify(data, null, 2));
-    renameSync(tmpPath, this.filePath);
-    this.lastLoadedSignature = this.getFileSignature();
-  }
-
-  private withLock<T>(fn: () => T): T {
-    if (!this.lockPath) return fn();
-    acquireLock(this.lockPath);
-    try {
-      this.load(true);
-      const result = fn();
-      this.save();
-      return result;
-    } finally {
-      releaseLock(this.lockPath);
-    }
-  }
-
-  private toReducerState(): GoalReducerState {
-    return {
-      nextId: this.nextId,
-      goalsById: Object.fromEntries(this.goals.entries()),
-    };
-  }
-
-  private applyReducerEvent(event: GoalReducerEvent): void {
-    const result = reduceGoalState(this.toReducerState(), event);
-    this.nextId = result.state.nextId;
-    this.goals = new Map(Object.entries(result.state.goalsById));
+    super(
+      {
+        baseDir: GOALS_DIR,
+        reduce: (state, event) => reduceGoalState(state, event),
+        toReducerState: (nextId, entries) => ({ nextId, goalsById: Object.fromEntries(entries.entries()) }),
+        fromReducerState: (state) => ({ nextId: state.nextId, entries: new Map(Object.entries(state.goalsById)) }),
+        serialize: (nextId, entries) => ({ nextId, goals: Array.from(entries.values()) }),
+        deserialize: (data) => ({ nextId: data.nextId, entries: new Map(data.goals.map((g) => [g.id, g])) }),
+      },
+      listIdOrPath,
+    );
   }
 
   create(
@@ -135,7 +37,7 @@ export class GoalStore {
     metadata?: Record<string, unknown>,
   ): GoalEntry {
     return this.withLock(() => {
-      if (this.goals.size >= MAX_GOALS) {
+      if (this.entries.size >= MAX_GOALS) {
         throw new Error(`Maximum of ${MAX_GOALS} goals reached. Archive some before creating new ones.`);
       }
       this.applyReducerEvent({
@@ -151,23 +53,13 @@ export class GoalStore {
           metadata,
         },
       });
-      return this.goals.get(String(this.nextId - 1))!;
+      return this.entries.get(String(this.nextId - 1))!;
     });
-  }
-
-  get(id: string): GoalEntry | undefined {
-    if (this.filePath) this.load();
-    return this.goals.get(id);
-  }
-
-  list(): GoalEntry[] {
-    if (this.filePath) this.load();
-    return Array.from(this.goals.values()).sort((a, b) => Number(a.id) - Number(b.id));
   }
 
   activate(id: string): GoalEntry | undefined {
     return this.withLock(() => {
-      if (!this.goals.has(id)) return undefined;
+      if (!this.entries.has(id)) return undefined;
       this.applyReducerEvent({
         type: "GOAL_ACTIVATED",
         at: Date.now(),
@@ -176,13 +68,13 @@ export class GoalStore {
         entityId: id,
         payload: { id },
       });
-      return this.goals.get(id);
+      return this.entries.get(id);
     });
   }
 
   recordProgress(id: string, progress: GoalProgressSnapshot): GoalEntry | undefined {
     return this.withLock(() => {
-      if (!this.goals.has(id)) return undefined;
+      if (!this.entries.has(id)) return undefined;
       this.applyReducerEvent({
         type: "GOAL_PROGRESS_RECORDED",
         at: Date.now(),
@@ -191,13 +83,13 @@ export class GoalStore {
         entityId: id,
         payload: { id, progress },
       });
-      return this.goals.get(id);
+      return this.entries.get(id);
     });
   }
 
   markVerificationStarted(id: string): GoalEntry | undefined {
     return this.withLock(() => {
-      if (!this.goals.has(id)) return undefined;
+      if (!this.entries.has(id)) return undefined;
       this.applyReducerEvent({
         type: "GOAL_VERIFICATION_STARTED",
         at: Date.now(),
@@ -206,13 +98,13 @@ export class GoalStore {
         entityId: id,
         payload: { id },
       });
-      return this.goals.get(id);
+      return this.entries.get(id);
     });
   }
 
   markVerified(id: string, reason: string, progress?: GoalProgressSnapshot): GoalEntry | undefined {
     return this.withLock(() => {
-      if (!this.goals.has(id)) return undefined;
+      if (!this.entries.has(id)) return undefined;
       this.applyReducerEvent({
         type: "GOAL_VERIFICATION_PASSED",
         at: Date.now(),
@@ -221,13 +113,13 @@ export class GoalStore {
         entityId: id,
         payload: { id, reason, progress },
       });
-      return this.goals.get(id);
+      return this.entries.get(id);
     });
   }
 
   markFailed(id: string, reason: string, progress?: GoalProgressSnapshot): GoalEntry | undefined {
     return this.withLock(() => {
-      if (!this.goals.has(id)) return undefined;
+      if (!this.entries.has(id)) return undefined;
       this.applyReducerEvent({
         type: "GOAL_FAILED",
         at: Date.now(),
@@ -236,13 +128,13 @@ export class GoalStore {
         entityId: id,
         payload: { id, reason, progress },
       });
-      return this.goals.get(id);
+      return this.entries.get(id);
     });
   }
 
   markBlocked(id: string, reason: string, progress?: GoalProgressSnapshot): GoalEntry | undefined {
     return this.withLock(() => {
-      if (!this.goals.has(id)) return undefined;
+      if (!this.entries.has(id)) return undefined;
       this.applyReducerEvent({
         type: "GOAL_BLOCKED",
         at: Date.now(),
@@ -251,13 +143,13 @@ export class GoalStore {
         entityId: id,
         payload: { id, reason, progress },
       });
-      return this.goals.get(id);
+      return this.entries.get(id);
     });
   }
 
   unblock(id: string): GoalEntry | undefined {
     return this.withLock(() => {
-      if (!this.goals.has(id)) return undefined;
+      if (!this.entries.has(id)) return undefined;
       this.applyReducerEvent({
         type: "GOAL_UNBLOCKED",
         at: Date.now(),
@@ -266,7 +158,7 @@ export class GoalStore {
         entityId: id,
         payload: { id },
       });
-      return this.goals.get(id);
+      return this.entries.get(id);
     });
   }
 
@@ -281,7 +173,7 @@ export class GoalStore {
     },
   ): GoalEntry | undefined {
     return this.withLock(() => {
-      if (!this.goals.has(id)) return undefined;
+      if (!this.entries.has(id)) return undefined;
       if (
         fields.title === undefined
         && fields.description === undefined
@@ -289,7 +181,7 @@ export class GoalStore {
         && fields.criteria === undefined
         && fields.metadata === undefined
       ) {
-        return this.goals.get(id);
+        return this.entries.get(id);
       }
       this.applyReducerEvent({
         type: "GOAL_UPDATED",
@@ -306,13 +198,13 @@ export class GoalStore {
           metadata: fields.metadata,
         },
       });
-      return this.goals.get(id);
+      return this.entries.get(id);
     });
   }
 
   archive(id: string, reason?: string): GoalEntry | undefined {
     return this.withLock(() => {
-      if (!this.goals.has(id)) return undefined;
+      if (!this.entries.has(id)) return undefined;
       this.applyReducerEvent({
         type: "GOAL_ARCHIVED",
         at: Date.now(),
@@ -321,7 +213,7 @@ export class GoalStore {
         entityId: id,
         payload: { id, reason },
       });
-      return this.goals.get(id);
+      return this.entries.get(id);
     });
   }
 }

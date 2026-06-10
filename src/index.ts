@@ -17,6 +17,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerLoopCommand } from "./commands/loop-command.js";
 import { registerTasksCommand } from "./commands/tasks-command.js";
+import { atMaxFires } from "./loop-reducer.js";
 import { MonitorManager } from "./monitor-manager.js";
 import { createMonitorOnDoneRuntime } from "./runtime/monitor-ondone-runtime.js";
 import {
@@ -178,7 +179,7 @@ export default function (pi: ExtensionAPI) {
   function onLoopFire(entry: LoopEntry): void {
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
 
-    if (entry.maxFires && (entry.fireCount ?? 0) >= entry.maxFires) {
+    if (atMaxFires(entry)) {
       debug(`loop #${entry.id} — reached maxFires ${entry.maxFires}, expiring`);
       store.delete(entry.id);
       return;

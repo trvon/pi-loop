@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type GoalReducerEvent, reduceGoalState } from "../src/goal-reducer.js";
 import type { GoalCriteria, GoalEntry, GoalReducerState } from "../src/goal-types.js";
+import { emptyGoalProgress, emptyGoalVerification } from "./helpers/factories.js";
 
 function baseCriteria(): GoalCriteria {
   return {
@@ -28,23 +29,8 @@ function makeGoal(overrides: Partial<GoalEntry> = {}): GoalEntry {
     updatedAt: 10,
     scope: {},
     criteria: baseCriteria(),
-    progress: {
-      totalTasks: 0,
-      pendingTasks: 0,
-      inProgressTasks: 0,
-      completedTasks: 0,
-      activeLoops: 0,
-      pausedLoops: 0,
-      runningMonitors: 0,
-      completedMonitors: 0,
-      erroredMonitors: 0,
-      stoppedMonitors: 0,
-    },
-    verification: {
-      attempts: 0,
-      passes: 0,
-      failures: 0,
-    },
+    progress: emptyGoalProgress(),
+    verification: emptyGoalVerification(),
     ...overrides,
   };
 }
@@ -270,7 +256,7 @@ describe("goal reducer", () => {
     });
   });
 
-  it("ignores lifecycle changes for terminal goals", () => {
+  it("ignores lifecycle changes for terminal goals but emits a diagnostic effect", () => {
     const terminal = makeGoal({ status: "satisfied", resolvedAt: 100 });
     const { state, effects } = apply(makeState([terminal], 2), {
       type: "GOAL_UNBLOCKED",
@@ -282,6 +268,13 @@ describe("goal reducer", () => {
     });
 
     expect(state).toEqual(makeState([terminal], 2));
-    expect(effects).toEqual([]);
+    expect(effects).toEqual([
+      {
+        type: "GOAL_TRANSITION_REJECTED",
+        entityType: "goal",
+        entityId: "1",
+        payload: { id: "1", status: "satisfied", attempted: "GOAL_UNBLOCKED" },
+      },
+    ]);
   });
 });

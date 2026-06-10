@@ -82,6 +82,15 @@ export type GoalReducerEffect =
     entityType: "goal";
     entityId: string;
     payload: { id: string };
+  }
+  | {
+    // Diagnostic: a transition was dropped because the goal is in a terminal
+    // state. Surfaced (rather than silently ignored) so the effect sink can log
+    // it. Carries no state change.
+    type: "GOAL_TRANSITION_REJECTED";
+    entityType: "goal";
+    entityId: string;
+    payload: { id: string; status: GoalEntry["status"]; attempted: string };
   };
 
 export interface GoalReduceResult {
@@ -160,7 +169,17 @@ export function reduceGoalState(state: GoalReducerState, event: GoalReducerEvent
   const id = event.payload.id;
   const current = state.goalsById[id];
   if (!current) return { state, effects: [] };
-  if (isTerminal(current) && event.type !== "GOAL_ARCHIVED") return { state, effects: [] };
+  if (isTerminal(current) && event.type !== "GOAL_ARCHIVED") {
+    return {
+      state,
+      effects: [{
+        type: "GOAL_TRANSITION_REJECTED",
+        entityType: "goal",
+        entityId: id,
+        payload: { id, status: current.status, attempted: event.type },
+      }],
+    };
+  }
 
   const next = cloneState(state);
   const goal: GoalEntry = {

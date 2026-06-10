@@ -136,6 +136,9 @@ export function reduceTaskState(state: TaskReducerState, event: TaskReducerEvent
   if (event.type === "TASK_REOPENED") {
     task.status = "pending";
     task.updatedAt = event.at;
+    // `completedAt` is intentionally retained: it records the most recent
+    // completion, not "is currently complete" (use `status` for that). A
+    // reopened task keeps the timestamp of when it was last completed.
   }
 
   if (event.type === "TASK_UPDATED") {

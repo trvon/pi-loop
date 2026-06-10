@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  atMaxFires,
   type LoopReducerEvent,
   type LoopReducerState,
   MAX_LOOP_EXPIRY_MS,
@@ -9,6 +10,22 @@ import type { LoopEntry, Trigger } from "../src/types.js";
 
 const cronTrigger: Trigger = { type: "cron", schedule: "*/5 * * * *" };
 const eventTrigger: Trigger = { type: "event", source: "tasks:created" };
+
+describe("atMaxFires", () => {
+  it("is false when maxFires is unset (unbounded loop)", () => {
+    expect(atMaxFires({ maxFires: undefined, fireCount: 999 })).toBe(false);
+  });
+
+  it("is false before the cap and true at or past it", () => {
+    expect(atMaxFires({ maxFires: 3, fireCount: 2 })).toBe(false);
+    expect(atMaxFires({ maxFires: 3, fireCount: 3 })).toBe(true);
+    expect(atMaxFires({ maxFires: 3, fireCount: 4 })).toBe(true);
+  });
+
+  it("treats a missing fireCount as zero", () => {
+    expect(atMaxFires({ maxFires: 1, fireCount: undefined })).toBe(false);
+  });
+});
 
 function makeState(loops: LoopEntry[] = [], nextId = 1): LoopReducerState {
   return {

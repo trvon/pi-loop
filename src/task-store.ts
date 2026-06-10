@@ -1,128 +1,30 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { join } from "node:path";
+import { ReducerBackedStore } from "./reducer-backed-store.js";
 import { reduceTaskState, type TaskReducerEvent, type TaskReducerState } from "./task-reducer.js";
 import type { TaskEntry, TaskStoreData } from "./task-types.js";
 
 const TASKS_DIR = join(homedir(), ".pi", "tasks");
-const LOCK_RETRY_MS = 50;
-const LOCK_MAX_RETRIES = 100;
 const MAX_TASKS = 200;
 
-function acquireLock(lockPath: string): void {
-  mkdirSync(dirname(lockPath), { recursive: true });
-  for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
-    try {
-      writeFileSync(lockPath, `${process.pid}`, { flag: "wx" });
-      return;
-    } catch (e: any) {
-      if (e.code === "EEXIST") {
-        try {
-          const pid = parseInt(readFileSync(lockPath, "utf-8"), 10);
-          if (!pid || !isProcessRunning(pid)) {
-            try { unlinkSync(lockPath); } catch { /* ignore */ }
-            continue;
-          }
-        } catch { /* ignore read errors */ }
-        const start = Date.now();
-        while (Date.now() - start < LOCK_RETRY_MS) { /* busy wait */ }
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw new Error(`Failed to acquire lock: ${lockPath}`);
-}
-
-function releaseLock(lockPath: string): void {
-  try { unlinkSync(lockPath); } catch { /* ignore */ }
-}
-
-function isProcessRunning(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
-export class TaskStore {
-  private filePath: string | undefined;
-  private lockPath: string | undefined;
-  private lastLoadedSignature: string | undefined;
-
-  private nextId = 1;
-  private tasks = new Map<string, TaskEntry>();
-
+export class TaskStore extends ReducerBackedStore<TaskEntry, TaskReducerState, TaskReducerEvent, TaskStoreData> {
   constructor(listIdOrPath?: string) {
-    if (!listIdOrPath) return;
-    const isAbsPath = isAbsolute(listIdOrPath);
-    const filePath = isAbsPath ? listIdOrPath : join(TASKS_DIR, `${listIdOrPath}.json`);
-    mkdirSync(dirname(filePath), { recursive: true });
-    this.filePath = filePath;
-    this.lockPath = filePath + ".lock";
-    this.load();
-  }
-
-  private getFileSignature(): string | undefined {
-    if (!this.filePath || !existsSync(this.filePath)) return undefined;
-    const stat = statSync(this.filePath);
-    return `${stat.mtimeMs}:${stat.size}`;
-  }
-
-  private load(force = false): void {
-    if (!this.filePath) return;
-    const signature = this.getFileSignature();
-    if (!signature) return;
-    if (!force && signature === this.lastLoadedSignature) return;
-    try {
-      const data: TaskStoreData = JSON.parse(readFileSync(this.filePath, "utf-8"));
-      this.nextId = data.nextId;
-      this.tasks.clear();
-      for (const task of data.tasks) {
-        this.tasks.set(task.id, task);
-      }
-      this.lastLoadedSignature = signature;
-    } catch { /* corrupt file — start fresh */ }
-  }
-
-  private save(): void {
-    if (!this.filePath) return;
-    const data: TaskStoreData = {
-      nextId: this.nextId,
-      tasks: Array.from(this.tasks.values()),
-    };
-    const tmpPath = this.filePath + ".tmp";
-    writeFileSync(tmpPath, JSON.stringify(data, null, 2));
-    renameSync(tmpPath, this.filePath);
-    this.lastLoadedSignature = this.getFileSignature();
-  }
-
-  private withLock<T>(fn: () => T): T {
-    if (!this.lockPath) return fn();
-    acquireLock(this.lockPath);
-    try {
-      this.load(true);
-      const result = fn();
-      this.save();
-      return result;
-    } finally {
-      releaseLock(this.lockPath);
-    }
-  }
-
-  private toReducerState(): TaskReducerState {
-    return {
-      nextId: this.nextId,
-      tasksById: Object.fromEntries(this.tasks.entries()),
-    };
-  }
-
-  private applyReducerEvent(event: TaskReducerEvent): void {
-    const result = reduceTaskState(this.toReducerState(), event);
-    this.nextId = result.state.nextId;
-    this.tasks = new Map(Object.entries(result.state.tasksById));
+    super(
+      {
+        baseDir: TASKS_DIR,
+        reduce: (state, event) => reduceTaskState(state, event),
+        toReducerState: (nextId, entries) => ({ nextId, tasksById: Object.fromEntries(entries.entries()) }),
+        fromReducerState: (state) => ({ nextId: state.nextId, entries: new Map(Object.entries(state.tasksById)) }),
+        serialize: (nextId, entries) => ({ nextId, tasks: Array.from(entries.values()) }),
+        deserialize: (data) => ({ nextId: data.nextId, entries: new Map(data.tasks.map((t) => [t.id, t])) }),
+      },
+      listIdOrPath,
+    );
   }
 
   create(subject: string, description: string, metadata?: Record<string, unknown>): TaskEntry {
     return this.withLock(() => {
-      if (this.tasks.size >= MAX_TASKS) {
+      if (this.entries.size >= MAX_TASKS) {
         throw new Error(`Maximum of ${MAX_TASKS} tasks reached. Delete some before creating new ones.`);
       }
       const now = Date.now();
@@ -133,23 +35,13 @@ export class TaskStore {
         entityType: "task",
         payload: { subject, description, metadata },
       });
-      return this.tasks.get(String(this.nextId - 1))!;
+      return this.entries.get(String(this.nextId - 1))!;
     });
-  }
-
-  get(id: string): TaskEntry | undefined {
-    if (this.filePath) this.load();
-    return this.tasks.get(id);
-  }
-
-  list(): TaskEntry[] {
-    if (this.filePath) this.load();
-    return Array.from(this.tasks.values()).sort((a, b) => Number(a.id) - Number(b.id));
   }
 
   start(id: string): TaskEntry | undefined {
     return this.withLock(() => {
-      const entry = this.tasks.get(id);
+      const entry = this.entries.get(id);
       if (!entry) return undefined;
       this.applyReducerEvent({
         type: "TASK_STARTED",
@@ -159,13 +51,13 @@ export class TaskStore {
         entityId: id,
         payload: { id },
       });
-      return this.tasks.get(id);
+      return this.entries.get(id);
     });
   }
 
   complete(id: string): TaskEntry | undefined {
     return this.withLock(() => {
-      const entry = this.tasks.get(id);
+      const entry = this.entries.get(id);
       if (!entry) return undefined;
       this.applyReducerEvent({
         type: "TASK_COMPLETED",
@@ -175,13 +67,13 @@ export class TaskStore {
         entityId: id,
         payload: { id },
       });
-      return this.tasks.get(id);
+      return this.entries.get(id);
     });
   }
 
   reopen(id: string): TaskEntry | undefined {
     return this.withLock(() => {
-      const entry = this.tasks.get(id);
+      const entry = this.entries.get(id);
       if (!entry) return undefined;
       this.applyReducerEvent({
         type: "TASK_REOPENED",
@@ -191,13 +83,13 @@ export class TaskStore {
         entityId: id,
         payload: { id },
       });
-      return this.tasks.get(id);
+      return this.entries.get(id);
     });
   }
 
   updateDetails(id: string, fields: { subject?: string; description?: string }): TaskEntry | undefined {
     return this.withLock(() => {
-      const entry = this.tasks.get(id);
+      const entry = this.entries.get(id);
       if (!entry) return undefined;
       if (fields.subject === undefined && fields.description === undefined) return entry;
       this.applyReducerEvent({
@@ -212,13 +104,13 @@ export class TaskStore {
           description: fields.description,
         },
       });
-      return this.tasks.get(id);
+      return this.entries.get(id);
     });
   }
 
   delete(id: string): boolean {
     return this.withLock(() => {
-      if (!this.tasks.has(id)) return false;
+      if (!this.entries.has(id)) return false;
       this.applyReducerEvent({
         type: "TASK_DELETED",
         at: Date.now(),
@@ -233,7 +125,7 @@ export class TaskStore {
 
   pendingCount(): number {
     let count = 0;
-    for (const t of this.tasks.values()) {
+    for (const t of this.entries.values()) {
       if (t.status === "pending" || t.status === "in_progress") count++;
     }
     return count;
@@ -241,7 +133,7 @@ export class TaskStore {
 
   pruneCompleted(): number {
     return this.withLock(() => {
-      const before = this.tasks.size;
+      const before = this.entries.size;
       this.applyReducerEvent({
         type: "TASKS_PRUNED",
         at: Date.now(),
@@ -249,7 +141,7 @@ export class TaskStore {
         entityType: "task",
         payload: { reason: "manual" },
       });
-      return before - this.tasks.size;
+      return before - this.entries.size;
     });
   }
 }

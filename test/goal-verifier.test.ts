@@ -6,6 +6,7 @@ import type { MonitorReducerState } from "../src/monitor-reducer.js";
 import type { TaskReducerState } from "../src/task-reducer.js";
 import type { TaskEntry } from "../src/task-types.js";
 import type { LoopEntry, MonitorEntry } from "../src/types.js";
+import { emptyGoalProgress, emptyGoalVerification } from "./helpers/factories.js";
 
 function makeGoal(overrides: Partial<GoalEntry> = {}): GoalEntry {
   return {
@@ -30,23 +31,8 @@ function makeGoal(overrides: Partial<GoalEntry> = {}): GoalEntry {
         requireNoPendingTasksInScope: true,
       },
     },
-    progress: {
-      totalTasks: 0,
-      pendingTasks: 0,
-      inProgressTasks: 0,
-      completedTasks: 0,
-      activeLoops: 0,
-      pausedLoops: 0,
-      runningMonitors: 0,
-      completedMonitors: 0,
-      erroredMonitors: 0,
-      stoppedMonitors: 0,
-    },
-    verification: {
-      attempts: 0,
-      passes: 0,
-      failures: 0,
-    },
+    progress: emptyGoalProgress(),
+    verification: emptyGoalVerification(),
     ...overrides,
   };
 }

@@ -3,68 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "../src/index.js";
-
-interface RegisteredTool {
-  name: string;
-  execute?: (...args: any[]) => any;
-}
-
-interface RegisteredCommand {
-  description?: string;
-  handler?: (...args: any[]) => any;
-}
-
-function createMockPi(options?: { respondToTaskPing?: boolean; suppressMonitorDoneDispatch?: boolean }) {
-  const toolMap = new Map<string, RegisteredTool>();
-  const commandMap = new Map<string, RegisteredCommand>();
-  const sentMessages: Array<{ message: string; options?: unknown }> = [];
-  const sentCustomMessages: Array<{ message: unknown; options?: unknown }> = [];
-  const eventHandlers = new Map<string, Set<(payload: unknown) => void>>();
-  const extensionHandlers = new Map<string, Set<(payload: unknown, ctx: unknown) => void>>();
-
-  const events = {
-    on(name: string, cb: (payload: unknown) => void) {
-      const handlers = eventHandlers.get(name) ?? new Set();
-      handlers.add(cb);
-      eventHandlers.set(name, handlers);
-      return () => handlers.delete(cb);
-    },
-    emit(name: string, payload: any) {
-      if (name === "tasks:rpc:ping" && options?.respondToTaskPing) {
-        queueMicrotask(() => {
-          events.emit(`tasks:rpc:ping:reply:${payload.requestId}`, { data: { version: 1 } });
-        });
-      }
-      if (name === "monitor:done" && options?.suppressMonitorDoneDispatch) {
-        return;
-      }
-      for (const cb of eventHandlers.get(name) ?? []) cb(payload);
-    },
-  };
-
-  const pi = {
-    events,
-    on(name: string, cb: (payload: unknown, ctx: unknown) => void) {
-      const handlers = extensionHandlers.get(name) ?? new Set();
-      handlers.add(cb);
-      extensionHandlers.set(name, handlers);
-    },
-    registerTool(tool: RegisteredTool) {
-      toolMap.set(tool.name, tool);
-    },
-    registerCommand(name: string, command: RegisteredCommand) {
-      commandMap.set(name, command);
-    },
-    sendMessage(message: unknown, options?: unknown) {
-      sentCustomMessages.push({ message, options });
-    },
-    sendUserMessage(message: string, options?: unknown) {
-      sentMessages.push({ message, options });
-    },
-  };
-
-  return { pi, toolMap, commandMap, extensionHandlers, sentMessages, sentCustomMessages };
-}
+import { createMockPi } from "./helpers/mock-pi.js";
 
 describe("native task fallback", () => {
   let cwd: string;
@@ -436,7 +375,7 @@ describe("native task fallback", () => {
   });
 
   it("flushes the auto-created worker wake on agent_end even if pending messages are reported", async () => {
-    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
 
@@ -721,7 +660,7 @@ describe("native task fallback", () => {
   });
 
   it("wakes immediately when a recurring tasks:created loop is bootstrapped against existing pending tasks", async () => {
-    const { pi, toolMap, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await vi.advanceTimersByTimeAsync(6100);
@@ -748,7 +687,7 @@ describe("native task fallback", () => {
   });
 
   it("wakes when a future native task creation matches a recurring tasks:created loop", async () => {
-    const { pi, toolMap, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await vi.advanceTimersByTimeAsync(6100);
@@ -813,7 +752,7 @@ describe("native task fallback", () => {
   });
 
   it("sweeps completed native tasks and skips follow-up wake when no tasks remain", async () => {
-    const { pi, toolMap, sentMessages, extensionHandlers } = createMockPi();
+    const { pi, toolMap, sentUserMessages: sentMessages, extensionHandlers } = createMockPi();
 
     extension(pi as any);
 
@@ -854,7 +793,13 @@ describe("native task fallback", () => {
   });
 
   it("drops a buffered native autoTask wake when tasks finish before agent_end", async () => {
-    const { pi, toolMap, extensionHandlers, sentCustomMessages, sentMessages } = createMockPi();
+    const {
+      pi,
+      toolMap,
+      extensionHandlers,
+      sentMessages: sentCustomMessages,
+      sentUserMessages: sentMessages,
+    } = createMockPi();
 
     extension(pi as any);
 
@@ -962,7 +907,7 @@ describe("dynamic loop pump", () => {
   }
 
   it("pump fires cron loops on agent_end when next fire time has passed", async () => {
-    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await vi.advanceTimersByTimeAsync(6100);
@@ -1004,7 +949,7 @@ describe("dynamic loop pump", () => {
   });
 
   it("pump does not fire when next fire time has not been reached", async () => {
-    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await vi.advanceTimersByTimeAsync(6100);
@@ -1040,7 +985,7 @@ describe("dynamic loop pump", () => {
   });
 
   it("pump fires again after time advances past next re-armed fire", async () => {
-    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await vi.advanceTimersByTimeAsync(6100);
@@ -1087,7 +1032,7 @@ describe("dynamic loop pump", () => {
   });
 
   it("autoTask loop skips pump fire when no pending tasks", async () => {
-    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await vi.advanceTimersByTimeAsync(6100);
@@ -1379,7 +1324,7 @@ describe("monitor tool wrappers", () => {
 
   it("onDone monitor completion delivers a custom message wake", async () => {
     vi.useRealTimers();
-    const { pi, toolMap, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await new Promise(r => setTimeout(r, 6100));
@@ -1401,7 +1346,7 @@ describe("monitor tool wrappers", () => {
 
   it("onDone monitor completion does not rely on monitor:done event dispatch", async () => {
     vi.useRealTimers();
-    const { pi, toolMap, sentCustomMessages } = createMockPi({ suppressMonitorDoneDispatch: true });
+    const { pi, toolMap, sentMessages: sentCustomMessages } = createMockPi({ suppressMonitorDoneDispatch: true });
 
     extension(pi as any);
     await new Promise(r => setTimeout(r, 6100));
@@ -1423,7 +1368,7 @@ describe("monitor tool wrappers", () => {
 
   it("buffers onDone monitor completion until agent_end when the agent is busy", async () => {
     vi.useRealTimers();
-    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await new Promise(r => setTimeout(r, 6100));
@@ -1463,7 +1408,7 @@ describe("monitor tool wrappers", () => {
 
   it("delivers monitor completion wake immediately in an idle session after agent_end", async () => {
     vi.useRealTimers();
-    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await new Promise(r => setTimeout(r, 6100));
@@ -1502,7 +1447,7 @@ describe("monitor tool wrappers", () => {
 
   it("delivers monitor completion wake even when the command exits with non-zero status in an idle session", async () => {
     vi.useRealTimers();
-    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await new Promise(r => setTimeout(r, 6100));
@@ -1538,7 +1483,7 @@ describe("monitor tool wrappers", () => {
 
   it("does not deliver monitor completion wake if the completion loop is deleted", async () => {
     vi.useRealTimers();
-    const { pi, toolMap, extensionHandlers, sentCustomMessages } = createMockPi();
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
     await new Promise(r => setTimeout(r, 6100));

@@ -1,128 +1,30 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
+import { ReducerBackedStore } from "./reducer-backed-store.js";
 import type { LoopEntry, LoopStoreData, Trigger } from "./types.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
-const LOCK_RETRY_MS = 50;
-const LOCK_MAX_RETRIES = 100;
 const MAX_LOOPS = 25;
 
-function acquireLock(lockPath: string): void {
-  mkdirSync(dirname(lockPath), { recursive: true });
-  for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
-    try {
-      writeFileSync(lockPath, `${process.pid}`, { flag: "wx" });
-      return;
-    } catch (e: any) {
-      if (e.code === "EEXIST") {
-        try {
-          const pid = parseInt(readFileSync(lockPath, "utf-8"), 10);
-          if (!pid || !isProcessRunning(pid)) {
-            try { unlinkSync(lockPath); } catch { /* ignore */ }
-            continue;
-          }
-        } catch { /* ignore read errors */ }
-        const start = Date.now();
-        while (Date.now() - start < LOCK_RETRY_MS) { /* busy wait */ }
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw new Error(`Failed to acquire lock: ${lockPath}`);
-}
-
-function releaseLock(lockPath: string): void {
-  try { unlinkSync(lockPath); } catch { /* ignore */ }
-}
-
-function isProcessRunning(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
-
-export class LoopStore {
-  private filePath: string | undefined;
-  private lockPath: string | undefined;
-  private lastLoadedSignature: string | undefined;
-
-  private nextId = 1;
-  private loops = new Map<string, LoopEntry>();
-
+export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, LoopReducerEvent, LoopStoreData> {
   constructor(listIdOrPath?: string) {
-    if (!listIdOrPath) return;
-    const isAbsPath = isAbsolute(listIdOrPath);
-    const filePath = isAbsPath ? listIdOrPath : join(LOOPS_DIR, `${listIdOrPath}.json`);
-    mkdirSync(dirname(filePath), { recursive: true });
-    this.filePath = filePath;
-    this.lockPath = filePath + ".lock";
-    this.load();
-  }
-
-  private getFileSignature(): string | undefined {
-    if (!this.filePath || !existsSync(this.filePath)) return undefined;
-    const stat = statSync(this.filePath);
-    return `${stat.mtimeMs}:${stat.size}`;
-  }
-
-  private load(force = false): void {
-    if (!this.filePath) return;
-    const signature = this.getFileSignature();
-    if (!signature) return;
-    if (!force && signature === this.lastLoadedSignature) return;
-    try {
-      const data: LoopStoreData = JSON.parse(readFileSync(this.filePath, "utf-8"));
-      this.nextId = data.nextId;
-      this.loops.clear();
-      for (const loop of data.loops) {
-        this.loops.set(loop.id, loop);
-      }
-      this.lastLoadedSignature = signature;
-    } catch { /* corrupt file — start fresh */ }
-  }
-
-  private save(): void {
-    if (!this.filePath) return;
-    const data: LoopStoreData = {
-      nextId: this.nextId,
-      loops: Array.from(this.loops.values()),
-    };
-    const tmpPath = this.filePath + ".tmp";
-    writeFileSync(tmpPath, JSON.stringify(data, null, 2));
-    renameSync(tmpPath, this.filePath);
-    this.lastLoadedSignature = this.getFileSignature();
-  }
-
-  private withLock<T>(fn: () => T): T {
-    if (!this.lockPath) return fn();
-    acquireLock(this.lockPath);
-    try {
-      this.load(true);
-      const result = fn();
-      this.save();
-      return result;
-    } finally {
-      releaseLock(this.lockPath);
-    }
-  }
-
-  private toReducerState(): LoopReducerState {
-    return {
-      nextId: this.nextId,
-      loopsById: Object.fromEntries(this.loops.entries()),
-    };
-  }
-
-  private applyReducerEvent(event: LoopReducerEvent): void {
-    const result = reduceLoopState(this.toReducerState(), event);
-    this.nextId = result.state.nextId;
-    this.loops = new Map(Object.entries(result.state.loopsById));
+    super(
+      {
+        baseDir: LOOPS_DIR,
+        reduce: (state, event) => reduceLoopState(state, event),
+        toReducerState: (nextId, entries) => ({ nextId, loopsById: Object.fromEntries(entries.entries()) }),
+        fromReducerState: (state) => ({ nextId: state.nextId, entries: new Map(Object.entries(state.loopsById)) }),
+        serialize: (nextId, entries) => ({ nextId, loops: Array.from(entries.values()) }),
+        deserialize: (data) => ({ nextId: data.nextId, entries: new Map(data.loops.map((l) => [l.id, l])) }),
+      },
+      listIdOrPath,
+    );
   }
 
   create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number }): LoopEntry {
     return this.withLock(() => {
-      if (this.loops.size >= MAX_LOOPS) {
+      if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
       }
       const now = Date.now();
@@ -141,23 +43,13 @@ export class LoopStore {
           maxFires: opts.maxFires,
         },
       });
-      return this.loops.get(String(this.nextId - 1))!;
+      return this.entries.get(String(this.nextId - 1))!;
     });
-  }
-
-  get(id: string): LoopEntry | undefined {
-    if (this.filePath) this.load();
-    return this.loops.get(id);
-  }
-
-  list(): LoopEntry[] {
-    if (this.filePath) this.load();
-    return Array.from(this.loops.values()).sort((a, b) => Number(a.id) - Number(b.id));
   }
 
   pause(id: string): LoopEntry | undefined {
     return this.withLock(() => {
-      const entry = this.loops.get(id);
+      const entry = this.entries.get(id);
       if (!entry) return undefined;
       this.applyReducerEvent({
         type: "LOOP_PAUSED",
@@ -167,13 +59,13 @@ export class LoopStore {
         entityId: id,
         payload: { id },
       });
-      return this.loops.get(id);
+      return this.entries.get(id);
     });
   }
 
   resume(id: string): LoopEntry | undefined {
     return this.withLock(() => {
-      const entry = this.loops.get(id);
+      const entry = this.entries.get(id);
       if (!entry) return undefined;
       this.applyReducerEvent({
         type: "LOOP_RESUMED",
@@ -183,13 +75,13 @@ export class LoopStore {
         entityId: id,
         payload: { id },
       });
-      return this.loops.get(id);
+      return this.entries.get(id);
     });
   }
 
   fire(id: string): LoopEntry | undefined {
     return this.withLock(() => {
-      const entry = this.loops.get(id);
+      const entry = this.entries.get(id);
       if (!entry) return undefined;
       this.applyReducerEvent({
         type: "LOOP_FIRED",
@@ -199,13 +91,13 @@ export class LoopStore {
         entityId: id,
         payload: { id },
       });
-      return this.loops.get(id);
+      return this.entries.get(id);
     });
   }
 
   updateMetadata(id: string, fields: { trigger?: Trigger; prompt?: string }): { entry: LoopEntry | undefined; changedFields: string[] } {
     return this.withLock(() => {
-      const current = this.loops.get(id);
+      const current = this.entries.get(id);
       if (!current) return { entry: undefined, changedFields: [] };
 
       const changedFields: string[] = [];
@@ -223,13 +115,13 @@ export class LoopStore {
         current.updatedAt = now;
       }
 
-      return { entry: this.loops.get(id), changedFields };
+      return { entry: this.entries.get(id), changedFields };
     });
   }
 
   delete(id: string): boolean {
     return this.withLock(() => {
-      if (!this.loops.has(id)) return false;
+      if (!this.entries.has(id)) return false;
       this.applyReducerEvent({
         type: "LOOP_DELETED",
         at: Date.now(),
@@ -246,7 +138,7 @@ export class LoopStore {
     return this.withLock(() => {
       const now = Date.now();
       let count = 0;
-      for (const [id, entry] of [...this.loops.entries()]) {
+      for (const [id, entry] of [...this.entries.entries()]) {
         if (now < entry.expiresAt) continue;
         this.applyReducerEvent({
           type: "LOOP_EXPIRED",
@@ -265,7 +157,7 @@ export class LoopStore {
   expireEventLoops(sessionStartedAt: number): number {
     return this.withLock(() => {
       let count = 0;
-      for (const [id, entry] of [...this.loops.entries()]) {
+      for (const [id, entry] of [...this.entries.entries()]) {
         if (entry.status !== "active") continue;
         if (entry.trigger.type !== "event" && entry.trigger.type !== "hybrid") continue;
         if (entry.createdAt >= sessionStartedAt) continue;
@@ -285,7 +177,7 @@ export class LoopStore {
 
   clearAll(): number {
     return this.withLock(() => {
-      const ids = [...this.loops.keys()];
+      const ids = [...this.entries.keys()];
       for (const id of ids) {
         this.applyReducerEvent({
           type: "LOOP_DELETED",
@@ -298,11 +190,5 @@ export class LoopStore {
       }
       return ids.length;
     });
-  }
-
-  deleteFileIfEmpty(): boolean {
-    if (!this.filePath || this.loops.size > 0) return false;
-    try { unlinkSync(this.filePath); } catch { /* ignore */ }
-    return true;
   }
 }
