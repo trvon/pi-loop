@@ -7,6 +7,10 @@ export interface SessionSwitchEvent {
   reason?: string;
 }
 
+// Wall-clock cadence for the idle heartbeat that pumps the scheduler. Cron is
+// minute-granular, so 30s gives sub-minute wake latency while idle.
+const HEARTBEAT_MS = 30_000;
+
 export interface SessionRuntimeOptions {
   pi: ExtensionAPI;
   getLoopScope: () => LoopScope;
@@ -48,6 +52,25 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
 
   let storeUpgraded = false;
   let persistedShown = false;
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+  // The CronScheduler is pump-driven; without this heartbeat it only advances at
+  // turn boundaries (turn_start/agent_end), so a loop whose fire time elapses
+  // while the agent is idle would never fire and never re-wake the agent. The
+  // timer is unref'd so it never keeps a one-shot (`pi -p`) process alive.
+  function ensureHeartbeat(): void {
+    if (heartbeatTimer) return;
+    heartbeatTimer = setInterval(() => {
+      void pumpLoops();
+    }, HEARTBEAT_MS);
+    heartbeatTimer.unref?.();
+  }
+
+  function stopHeartbeat(): void {
+    if (!heartbeatTimer) return;
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = undefined;
+  }
 
   function upgradeStoreIfNeeded(ctx: ExtensionContext) {
     if (storeUpgraded) return;
@@ -66,6 +89,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
       getStore().clearExpired();
       getStore().expireEventLoops(sessionStartedAt);
       getTriggerSystem().start();
+      ensureHeartbeat();
       widget.update();
     }
   }
@@ -89,6 +113,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     setSessionId(ctx.sessionManager.getSessionId());
     widget.setUICtx(ctx.ui);
     upgradeStoreIfNeeded(ctx);
+    ensureHeartbeat();
     widget.update();
     await pumpLoops();
   });
@@ -97,6 +122,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     setLatestCtx(ctx);
     widget.setUICtx(ctx.ui);
     upgradeStoreIfNeeded(ctx);
+    ensureHeartbeat();
     showPersistedLoops();
     widget.update();
   });
@@ -123,6 +149,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
   });
 
   pi.on("session_shutdown", async () => {
+    stopHeartbeat();
     notificationRuntime.clear("session_shutdown");
   });
 
@@ -130,6 +157,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     setLatestCtx(ctx);
     widget.setUICtx(ctx.ui);
     getTriggerSystem().stop();
+    stopHeartbeat();
     notificationRuntime.clear("session_switch");
     setSessionId(undefined);
 

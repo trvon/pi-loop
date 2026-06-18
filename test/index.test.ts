@@ -906,7 +906,7 @@ describe("dynamic loop pump", () => {
     };
   }
 
-  it("pump fires cron loops on agent_end when next fire time has passed", async () => {
+  it("fires a due cron loop once via the heartbeat, without double-firing on a later agent_end pump", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
@@ -931,21 +931,56 @@ describe("dynamic loop pump", () => {
       recurring: true,
     });
 
-    vi.advanceTimersByTime(6 * 60 * 1000);
-    expect(sentCustomMessages).toHaveLength(0);
+    // The heartbeat pumps while idle, so the loop fires once its time passes —
+    // no turn boundary required.
+    await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+    expect(sentCustomMessages).toHaveLength(1);
+    expect(sentCustomMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Dynamic idle fire");
 
+    // A subsequent turn boundary must not re-fire the already-fired (re-armed) loop.
     for (const handler of extensionHandlers.get("agent_start") ?? []) {
       await handler(null, ctx);
     }
-
     for (const handler of extensionHandlers.get("agent_end") ?? []) {
       await handler(null, ctx);
     }
     await Promise.resolve();
 
     expect(sentCustomMessages).toHaveLength(1);
+  });
+
+  it("fires idle cron loops via the heartbeat without any turn boundary", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = makeCtx();
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("before_agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const loopCreate = toolMap.get("LoopCreate");
+    await loopCreate!.execute?.("1", {
+      trigger: "*/5 * * * *",
+      prompt: "Idle heartbeat fire",
+      triggerType: "cron",
+      recurring: true,
+    });
+    expect(sentCustomMessages).toHaveLength(0);
+
+    // Agent is idle (no agent_start/agent_end, no further turns). Advancing
+    // wall-clock time alone must re-wake the agent via the heartbeat pump.
+    await vi.advanceTimersByTimeAsync(11 * 60 * 1000);
+
+    expect(sentCustomMessages).toHaveLength(1);
     expect(sentCustomMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
-    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Dynamic idle fire");
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Idle heartbeat fire");
   });
 
   it("pump does not fire when next fire time has not been reached", async () => {
