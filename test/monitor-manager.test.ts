@@ -133,6 +133,92 @@ describe("MonitorManager", () => {
     expect(manager.get(entry.id)!.status).toBe("stopped");
   });
 
+  it("prunes stopped monitors after the retention window", async () => {
+    const realSetTimeout = global.setTimeout;
+    const retainedTimers: Array<() => void> = [];
+    const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms === 30000) {
+        retainedTimers.push(() => {
+          if (typeof fn === "function") fn(...args);
+        });
+        return 1 as any;
+      }
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+
+    const entry = manager.create("sleep 30", "stop retention test", 300000);
+    await manager.stop(entry.id);
+
+    expect(manager.get(entry.id)!.status).toBe("stopped");
+    // Stopped monitors must schedule the same retention prune as completed ones.
+    expect(retainedTimers).toHaveLength(1);
+
+    retainedTimers[0]();
+
+    expect(manager.get(entry.id)).toBeUndefined();
+    expect(manager.list()).toHaveLength(0);
+    timeoutSpy.mockRestore();
+  });
+
+  it("prunes timed-out monitors after the retention window", async () => {
+    const realSetTimeout = global.setTimeout;
+    const retainedTimers: Array<() => void> = [];
+    const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms === 30000) {
+        retainedTimers.push(() => {
+          if (typeof fn === "function") fn(...args);
+        });
+        return 1 as any;
+      }
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+
+    // Short timeout → MonitorManager auto-calls stop() once it elapses.
+    manager.create("sleep 60", "timeout retention test", 50);
+    await new Promise((r) => realSetTimeout(r, 150));
+
+    expect(manager.get("1")!.status).toBe("stopped");
+    expect(retainedTimers).toHaveLength(1);
+
+    retainedTimers[0]();
+
+    expect(manager.get("1")).toBeUndefined();
+    timeoutSpy.mockRestore();
+  });
+
+  it("fires onChange on status transitions and prune, but not on output lines", async () => {
+    const realSetTimeout = global.setTimeout;
+    const retainedTimers: Array<() => void> = [];
+    const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms === 30000) {
+        retainedTimers.push(() => {
+          if (typeof fn === "function") fn(...args);
+        });
+        return 1 as any;
+      }
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+
+    const onChange = vi.fn();
+    manager.setOnChange(onChange);
+
+    // Emits three output lines, then completes.
+    const entry = manager.create("printf 'a\\nb\\nc\\n'", "onchange test", 300000);
+    await new Promise<void>((resolve) => {
+      pi.events.on("monitor:done", (data: any) => {
+        if (data.monitorId === entry.id) resolve();
+      });
+    });
+
+    // Output lines must not repaint; only the completion transition counts.
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    retainedTimers[0]();
+    expect(onChange).toHaveBeenCalledTimes(2); // MONITOR_PRUNED
+    expect(manager.get(entry.id)).toBeUndefined();
+    timeoutSpy.mockRestore();
+  });
+
   it("returns false when stopping non-existent monitor", async () => {
     expect(await manager.stop("999")).toBe(false);
   });

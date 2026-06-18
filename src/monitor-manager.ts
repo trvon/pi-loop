@@ -11,8 +11,19 @@ import type { MonitorEntry, MonitorProcess } from "./types.js";
 export class MonitorManager {
   private processes = new Map<string, MonitorProcess>();
   private nextId = 1;
+  private onChange: (() => void) | undefined;
 
   constructor(private pi: ExtensionAPI) {}
+
+  /**
+   * Register a callback fired when a monitor's status changes or it is pruned
+   * (e.g. autonomous completion/error/stop/prune with no tool call). Used to
+   * repaint the status widget, which otherwise only refreshes on turn
+   * boundaries and explicit tool actions. Not fired for output lines.
+   */
+  setOnChange(cb: () => void): void {
+    this.onChange = cb;
+  }
 
   private toReducerState(): MonitorReducerState {
     return {
@@ -34,7 +45,29 @@ export class MonitorManager {
       }
       process.entry = updated;
     }
+    // Repaint on status/set transitions, but not on the frequent output-line
+    // events (which never change the visible count).
+    if (event.type !== "MONITOR_OUTPUT" && event.type !== "MONITOR_ONDONE_REGISTERED") {
+      this.onChange?.();
+    }
     return result;
+  }
+
+  // Remove a finished monitor (completed/errored/stopped) after a brief delay so
+  // tool consumers can still read its final state via MonitorList. Shared by
+  // finish() and stop() so every terminal status is pruned consistently — a
+  // stopped monitor that is never pruned lingers in list() and the widget count.
+  private schedulePrune(id: string): void {
+    setTimeout(() => {
+      this.applyReducerEvent({
+        type: "MONITOR_PRUNED",
+        at: Date.now(),
+        source: "system",
+        entityType: "monitor",
+        entityId: id,
+        payload: { id },
+      });
+    }, 30000);
   }
 
   create(command: string, description?: string, timeout = 300000): MonitorEntry {
@@ -132,18 +165,7 @@ export class MonitorManager {
       bp.completionCallbacks = [];
       for (const resolve of bp.waiters) resolve();
       bp.waiters = [];
-      // Remove completed/errored monitors after a brief delay so tool
-      // consumers have time to read the final state via MonitorList.
-      setTimeout(() => {
-        this.applyReducerEvent({
-          type: "MONITOR_PRUNED",
-          at: Date.now(),
-          source: "system",
-          entityType: "monitor",
-          entityId: id,
-          payload: { id },
-        });
-      }, 30000);
+      this.schedulePrune(id);
     };
 
     child.on("close", (code) => {
@@ -214,6 +236,7 @@ export class MonitorManager {
         reason: "manual",
       },
     });
+    this.schedulePrune(id);
     bp.proc.kill("SIGTERM");
 
     await new Promise<void>((resolve) => {

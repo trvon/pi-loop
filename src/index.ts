@@ -55,6 +55,9 @@ export default function (pi: ExtensionAPI) {
   let scheduler: CronScheduler;
   let triggerSystem: TriggerSystem;
   const widget = new LoopWidget(store, monitorManager);
+  // Repaint the status bar when a monitor finishes/prunes on its own (no tool
+  // call), so stale monitors don't linger in the count between turns.
+  monitorManager.setOnChange(() => widget.update());
   widget.setTaskSummaryProvider(() => {
     if (!nativeTaskStore) return { count: 0 };
     const tasks = nativeTaskStore.list().filter(t => t.status === "pending" || t.status === "in_progress");
