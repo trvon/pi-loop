@@ -1395,11 +1395,11 @@ describe("monitor tool wrappers", () => {
   });
 
   it("onDone monitor completion delivers a custom message wake", async () => {
-    vi.useRealTimers();
     const { pi, toolMap, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
-    await new Promise(r => setTimeout(r, 6100));
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
 
     const monitorCreate = toolMap.get("MonitorCreate");
     expect(monitorCreate?.execute).toBeDefined();
@@ -1417,11 +1417,11 @@ describe("monitor tool wrappers", () => {
   }, 10000);
 
   it("onDone monitor completion does not rely on monitor:done event dispatch", async () => {
-    vi.useRealTimers();
     const { pi, toolMap, sentMessages: sentCustomMessages } = createMockPi({ suppressMonitorDoneDispatch: true });
 
     extension(pi as any);
-    await new Promise(r => setTimeout(r, 6100));
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
 
     const monitorCreate = toolMap.get("MonitorCreate");
     expect(monitorCreate?.execute).toBeDefined();
@@ -1439,11 +1439,11 @@ describe("monitor tool wrappers", () => {
   }, 10000);
 
   it("buffers onDone monitor completion until agent_end when the agent is busy", async () => {
-    vi.useRealTimers();
     const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
-    await new Promise(r => setTimeout(r, 6100));
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
 
     const ctx = {
       ui: { setStatus: vi.fn(), setWidget: vi.fn() },
@@ -1479,11 +1479,11 @@ describe("monitor tool wrappers", () => {
   }, 10000);
 
   it("delivers monitor completion wake immediately in an idle session after agent_end", async () => {
-    vi.useRealTimers();
     const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
-    await new Promise(r => setTimeout(r, 6100));
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
 
     // Simulate session start, running, and then going idle (agent_end)
     const ctx = {
@@ -1518,11 +1518,11 @@ describe("monitor tool wrappers", () => {
   }, 10000);
 
   it("delivers monitor completion wake even when the command exits with non-zero status in an idle session", async () => {
-    vi.useRealTimers();
     const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
-    await new Promise(r => setTimeout(r, 6100));
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
 
     const ctx = {
       ui: { setStatus: vi.fn(), setWidget: vi.fn() },
@@ -1554,11 +1554,11 @@ describe("monitor tool wrappers", () => {
   }, 10000);
 
   it("does not deliver monitor completion wake if the completion loop is deleted", async () => {
-    vi.useRealTimers();
     const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
-    await new Promise(r => setTimeout(r, 6100));
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
 
     const ctx = {
       ui: { setStatus: vi.fn(), setWidget: vi.fn() },
