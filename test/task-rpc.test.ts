@@ -120,8 +120,8 @@ describe("task-rpc autoCreateTask", () => {
     expect(await bridge.autoCreateTask(autoTaskLoop())).toBe("rpc-42");
   });
 
-  it("creates in the native store when pi-tasks is absent and notifies", async () => {
-    const { pi } = createMockPi();
+  it("creates in the native store, emits tasks:created, and notifies when pi-tasks is absent", async () => {
+    const { pi, emittedEvents } = createMockPi();
     const store = new TaskStore();
     const onNativeTaskCreated = vi.fn();
     const bridge = createTaskRuntimeBridge({
@@ -136,6 +136,7 @@ describe("task-rpc autoCreateTask", () => {
     expect(id).toBeDefined();
     expect(store.get(id!)?.subject).toBe("do the thing");
     expect(onNativeTaskCreated).toHaveBeenCalledWith(store);
+    expect(emittedEvents.some((e) => e.name === "tasks:created" && e.payload.taskId === id)).toBe(true);
   });
 });
 

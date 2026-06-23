@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { emitNativeTaskEvent } from "../runtime/task-events.js";
 import { TaskStore } from "../task-store.js";
 
 export interface TaskBacklogResult {
@@ -47,12 +48,7 @@ Fields:
     }),
     async execute(_toolCallId, params) {
       const entry = taskStore.create(params.subject, params.description);
-      pi.events.emit("tasks:created", {
-        taskId: entry.id,
-        subject: entry.subject,
-        description: entry.description,
-        status: entry.status,
-      });
+      emitNativeTaskEvent(pi, "tasks:created", entry);
       const backlog = await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
       updateWidget();
 
@@ -111,13 +107,22 @@ Parameters: id (required), status, subject, description`,
       let entry = taskStore.get(id);
       if (!entry) return Promise.resolve(textResult(`Task #${id} not found`));
 
-      if (status === "in_progress") entry = taskStore.start(id);
-      else if (status === "completed") entry = taskStore.complete(id);
-      else if (status === "pending") entry = taskStore.reopen(id);
+      const previousStatus = entry.status;
+      if (status === "in_progress") {
+        entry = taskStore.start(id);
+        if (entry) emitNativeTaskEvent(pi, "tasks:started", entry, previousStatus);
+      } else if (status === "completed") {
+        entry = taskStore.complete(id);
+        if (entry) emitNativeTaskEvent(pi, "tasks:completed", entry, previousStatus);
+      } else if (status === "pending") {
+        entry = taskStore.reopen(id);
+        if (entry) emitNativeTaskEvent(pi, "tasks:reopened", entry, previousStatus);
+      }
 
       if (!entry) return Promise.resolve(textResult(`Task #${id} not found`));
       if (subject !== undefined || description !== undefined) {
         entry = taskStore.updateDetails(id, { subject, description });
+        if (entry) emitNativeTaskEvent(pi, "tasks:updated", entry, previousStatus);
       }
       if (!entry) return Promise.resolve(textResult(`Task #${id} not found`));
       updateWidget();
@@ -138,9 +143,11 @@ Parameters: id (required), status, subject, description`,
       id: Type.String({ description: "Task ID to delete" }),
     }),
     async execute(_toolCallId, params) {
+      const existing = taskStore.get(params.id);
       const deleted = taskStore.delete(params.id);
       updateWidget();
       if (deleted) {
+        if (existing) emitNativeTaskEvent(pi, "tasks:deleted", existing, existing.status);
         await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
         return Promise.resolve(textResult(`Task #${params.id} deleted`));
       }

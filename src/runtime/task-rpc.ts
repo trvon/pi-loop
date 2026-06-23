@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TaskStore } from "../task-store.js";
 import type { LoopEntry } from "../types.js";
+import { emitNativeTaskEvent } from "./task-events.js";
 
 export interface TaskRuntimeBridgeOptions {
   pi: ExtensionAPI;
@@ -82,6 +83,7 @@ export function createTaskRuntimeBridge(options: TaskRuntimeBridgeOptions): Task
       `Auto-created from loop #${entry.id}`,
       { loopId: entry.id, trigger: entry.trigger },
     );
+    emitNativeTaskEvent(pi, "tasks:created", task);
     onNativeTaskCreated?.(nativeTaskStore);
     return task.id;
   }

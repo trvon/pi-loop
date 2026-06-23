@@ -53,18 +53,23 @@ describe("TaskUpdate", () => {
     h.taskStore.create("subject", "desc");
   });
 
-  it("transitions status through the lifecycle", async () => {
+  it("transitions status through the lifecycle and emits task events", async () => {
     expect(await h.text("TaskUpdate", { id: "1", status: "in_progress" })).toContain("→ in_progress");
     expect(h.taskStore.get("1")?.status).toBe("in_progress");
     expect(await h.text("TaskUpdate", { id: "1", status: "completed" })).toContain("→ completed");
     expect(h.taskStore.get("1")?.status).toBe("completed");
     expect(await h.text("TaskUpdate", { id: "1", status: "pending" })).toContain("→ pending");
     expect(h.taskStore.get("1")?.status).toBe("pending");
+
+    expect(h.emittedEvents.some((e) => e.name === "tasks:started" && e.payload.taskId === "1")).toBe(true);
+    expect(h.emittedEvents.some((e) => e.name === "tasks:completed" && e.payload.taskId === "1")).toBe(true);
+    expect(h.emittedEvents.some((e) => e.name === "tasks:reopened" && e.payload.taskId === "1")).toBe(true);
   });
 
-  it("updates subject/description", async () => {
+  it("updates subject/description and emits tasks:updated", async () => {
     await h.text("TaskUpdate", { id: "1", subject: "renamed" });
     expect(h.taskStore.get("1")?.subject).toBe("renamed");
+    expect(h.emittedEvents.some((e) => e.name === "tasks:updated" && e.payload.taskId === "1")).toBe(true);
   });
 
   it("reports not found for an unknown id", async () => {
@@ -78,11 +83,12 @@ describe("TaskUpdate", () => {
 });
 
 describe("TaskDelete", () => {
-  it("deletes an existing task", async () => {
+  it("deletes an existing task and emits tasks:deleted", async () => {
     const h = setup();
     h.taskStore.create("a", "d");
     expect(await h.text("TaskDelete", { id: "1" })).toBe("Task #1 deleted");
     expect(h.taskStore.get("1")).toBeUndefined();
+    expect(h.emittedEvents.some((e) => e.name === "tasks:deleted" && e.payload.taskId === "1")).toBe(true);
   });
 
   it("reports not found for an unknown id", async () => {

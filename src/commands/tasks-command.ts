@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { emitNativeTaskEvent } from "../runtime/task-events.js";
 import { TaskStore } from "../task-store.js";
 import type { TaskEntry } from "../task-types.js";
 
@@ -18,12 +19,7 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
   const { pi, getNativeTaskStore, evaluateTaskBacklog, updateWidget } = options;
 
   async function emitCreated(entry: TaskEntry) {
-    pi.events.emit("tasks:created", {
-      taskId: entry.id,
-      subject: entry.subject,
-      description: entry.description,
-      status: entry.status,
-    });
+    emitNativeTaskEvent(pi, "tasks:created", entry);
     const taskStore = getNativeTaskStore();
     if (!taskStore) return { created: false } satisfies TaskBacklogResult;
     const backlog = await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
@@ -94,15 +90,19 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
 
     if (action === "x Delete") {
       taskStore.delete(task.id);
+      emitNativeTaskEvent(pi, "tasks:deleted", task, task.status);
       ui.notify(`Task #${task.id} deleted`, "info");
     } else if (action === "> Start") {
-      taskStore.start(task.id);
+      const next = taskStore.start(task.id);
+      if (next) emitNativeTaskEvent(pi, "tasks:started", next, task.status);
       ui.notify(`Task #${task.id} started`, "info");
     } else if (action === "ok Complete") {
-      taskStore.complete(task.id);
+      const next = taskStore.complete(task.id);
+      if (next) emitNativeTaskEvent(pi, "tasks:completed", next, task.status);
       ui.notify(`Task #${task.id} completed`, "info");
     } else if (action === "* Return to pending" || action === "* Reopen") {
-      taskStore.reopen(task.id);
+      const next = taskStore.reopen(task.id);
+      if (next) emitNativeTaskEvent(pi, "tasks:reopened", next, task.status);
       ui.notify(`Task #${task.id} reopened`, "info");
     }
 
