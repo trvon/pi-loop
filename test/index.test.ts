@@ -71,6 +71,34 @@ describe("native task fallback", () => {
     expect(commandMap.has("tasks")).toBe(false);
   });
 
+  it("ignores delayed native fallback registration after the extension context goes stale", async () => {
+    const { pi } = createMockPi();
+    const staleError = new Error("This extension ctx is stale after session replacement or reload.");
+
+    extension(pi as any);
+    pi.registerCommand = vi.fn(() => {
+      throw staleError;
+    });
+    pi.registerTool = vi.fn(() => {
+      throw staleError;
+    });
+
+    await vi.advanceTimersByTimeAsync(6100);
+
+    expect(pi.registerCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels delayed native fallback registration on session shutdown", async () => {
+    const { pi, toolMap, commandMap, emitExtension } = createMockPi();
+
+    extension(pi as any);
+    await emitExtension("session_shutdown", null, {});
+    await vi.advanceTimersByTimeAsync(6100);
+
+    expect(toolMap.has("TaskCreate")).toBe(false);
+    expect(commandMap.has("tasks")).toBe(false);
+  });
+
   it("stores native tasks in a dedicated .pi/tasks/tasks.json path", async () => {
     const { pi, toolMap, extensionHandlers } = createMockPi();
 

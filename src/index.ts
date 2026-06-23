@@ -43,6 +43,10 @@ function debug(...args: unknown[]) {
   if (DEBUG) console.error("[pi-loop]", ...args);
 }
 
+function isStaleExtensionContextError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("extension ctx is stale");
+}
+
 export default function (pi: ExtensionAPI) {
   const piLoopEnv = process.env.PI_LOOP;
   const piLoopScope = process.env.PI_LOOP_SCOPE as "memory" | "session" | "project" | undefined;
@@ -297,30 +301,42 @@ export default function (pi: ExtensionAPI) {
 
   // ── Native task tools (only when pi-tasks is absent) ──
 
-  setTimeout(async () => {
+  const nativeTaskFallbackTimer = setTimeout(() => {
     if (tasksAvailable || nativeTasksRegistered) return;
-    nativeTaskStore = new TaskStore(resolveTaskStorePath(getScopeOptions(), _sessionId));
+    const taskStore = new TaskStore(resolveTaskStorePath(getScopeOptions(), _sessionId));
+
+    try {
+      registerTasksCommand({
+        pi,
+        getNativeTaskStore: () => nativeTaskStore,
+        evaluateTaskBacklog,
+        updateWidget: () => {
+          widget.update();
+        },
+      });
+
+      registerNativeTaskTools({
+        pi,
+        taskStore,
+        evaluateTaskBacklog,
+        updateWidget: () => {
+          widget.update();
+        },
+      });
+    } catch (error) {
+      if (isStaleExtensionContextError(error)) {
+        debug("native task fallback skipped: extension context went stale");
+        return;
+      }
+      throw error;
+    }
+
+    nativeTaskStore = taskStore;
     nativeTasksRegistered = true;
-    const taskStore = nativeTaskStore;
-
-    registerTasksCommand({
-      pi,
-      getNativeTaskStore: () => nativeTaskStore,
-      evaluateTaskBacklog,
-      updateWidget: () => {
-        widget.update();
-      },
-    });
-
-    registerNativeTaskTools({
-      pi,
-      taskStore,
-      evaluateTaskBacklog,
-      updateWidget: () => {
-        widget.update();
-      },
-    });
-
     debug("native task tools registered (pi-tasks not detected)");
   }, 6000);
+
+  pi.on("session_shutdown", () => {
+    clearTimeout(nativeTaskFallbackTimer);
+  });
 }
