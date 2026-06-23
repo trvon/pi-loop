@@ -1,5 +1,5 @@
 
-import { spawn } from "node:child_process";
+import { type ChildProcess, type SpawnOptions, spawn as nodeSpawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   type MonitorReducerEvent,
@@ -8,12 +8,20 @@ import {
 } from "./monitor-reducer.js";
 import type { MonitorEntry, MonitorProcess } from "./types.js";
 
+export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+
 export class MonitorManager {
   private processes = new Map<string, MonitorProcess>();
   private nextId = 1;
   private onChange: (() => void) | undefined;
+  private spawnFn: SpawnFn;
 
-  constructor(private pi: ExtensionAPI) {}
+  constructor(
+    private pi: ExtensionAPI,
+    spawnFn?: SpawnFn,
+  ) {
+    this.spawnFn = spawnFn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts));
+  }
 
   /**
    * Register a callback fired when a monitor's status changes or it is pruned
@@ -90,7 +98,7 @@ export class MonitorManager {
     const entry = result.state.monitorsById[id]!;
 
     const abortController = new AbortController();
-    const child = spawn("sh", ["-c", command], {
+    const child = this.spawnFn("sh", ["-c", command], {
       stdio: ["ignore", "pipe", "pipe"],
       signal: abortController.signal,
       env: { ...process.env },

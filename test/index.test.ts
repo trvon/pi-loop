@@ -1370,7 +1370,11 @@ describe("monitor tool wrappers", () => {
     const monitorCreate = toolMap.get("MonitorCreate");
     const monitorStop = toolMap.get("MonitorStop");
 
-    await monitorCreate!.execute?.("1", { command: "sleep 30", timeout: 0 });
+    // Switch to real timers so the 5-second SIGKILL grace period in
+    // MonitorManager.stop() can resolve. Fake timers would block the
+    // child-process 'close' event and leave the stop promise hanging.
+    vi.useRealTimers();
+    await monitorCreate!.execute?.("1", { command: "sleep 1", timeout: 0 });
 
     const result = await monitorStop!.execute?.("2", { monitorId: "1" });
     expect(result.content[0].text).toBe("Monitor #1 stopped");
@@ -1585,17 +1589,21 @@ describe("monitor tool wrappers", () => {
   }, 10000);
 
   it("monitor create list stop lifecycle reflects state changes", async () => {
-    vi.useRealTimers();
     const { pi, toolMap } = createMockPi();
 
     extension(pi as any);
-    await new Promise(r => setTimeout(r, 6100));
+    // Advance the native task fallback timer with fake timers so the 6.1s real
+    // wait is instant, then switch to real timers for the stop path (the 5s
+    // SIGKILL grace period in MonitorManager.stop() needs real I/O).
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+    vi.useRealTimers();
 
     const monitorCreate = toolMap.get("MonitorCreate");
     const monitorList = toolMap.get("MonitorList");
     const monitorStop = toolMap.get("MonitorStop");
 
-    await monitorCreate!.execute?.("1", { command: "sleep 30", timeout: 0 });
+    await monitorCreate!.execute?.("1", { command: "sleep 1", timeout: 0 });
 
     let listResult = await monitorList!.execute?.("2", {});
     expect(listResult.content[0].text).toContain("[running]");
@@ -1605,7 +1613,7 @@ describe("monitor tool wrappers", () => {
     await new Promise(r => setTimeout(r, 200));
     listResult = await monitorList!.execute?.("4", {});
     expect(listResult.content[0].text).toContain("[stopped]");
-  }, 10000);
+  });
 
   it("defaults to session-scoped loop files when PI_LOOP_SCOPE is unset", async () => {
     const { pi, toolMap, extensionHandlers } = createMockPi();
