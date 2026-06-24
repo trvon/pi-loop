@@ -81,8 +81,22 @@ If `pi-tasks` does not respond during startup detection, `pi-loop` registers a n
 - `TaskCreate`, `TaskList`, `TaskUpdate`, `TaskDelete`
 - `/tasks` interactive viewer
 - compact status-line task tracking
+- native task RPC replies on `tasks:rpc:ping`, `tasks:rpc:create`, `tasks:rpc:pending`, `tasks:rpc:clean`, and `tasks:rpc:update`
 
 This fallback is session-sticky: `pi-loop` decides once at startup whether `pi-tasks` or native tasks own task management for that session.
+
+### Task and backlog events
+
+`pi-loop` emits native task lifecycle events that other extensions can consume directly:
+
+- `tasks:created`
+- `tasks:started`
+- `tasks:completed`
+- `tasks:reopened`
+- `tasks:updated`
+- `tasks:deleted`
+- `tasks:backlog_empty` — emitted when a task-backlog worker observes zero pending tasks and is about to auto-delete
+- `loops:autodeleted` — emitted for each loop that `pi-loop` auto-deletes, including backlog workers removed because the task queue drained
 
 ## Status line
 

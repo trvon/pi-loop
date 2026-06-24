@@ -20,6 +20,7 @@ import { registerTasksCommand } from "./commands/tasks-command.js";
 import { atMaxFires } from "./loop-reducer.js";
 import { MonitorManager } from "./monitor-manager.js";
 import { createMonitorOnDoneRuntime } from "./runtime/monitor-ondone-runtime.js";
+import { registerNativeTaskRpc } from "./runtime/native-task-rpc.js";
 import {
   createNotificationRuntime,
   type LoopFireEvent,
@@ -173,6 +174,12 @@ export default function (pi: ExtensionAPI) {
     hasPendingTasks: () => hasPendingTasks(),
     bootstrapTaskLoop: (entry) => maybeBootstrapTaskLoop(entry),
     triggerHasEventSource,
+    emitLoopAutodeleted: (payload) => {
+      pi.events.emit("loops:autodeleted", payload);
+    },
+    emitTaskBacklogEmpty: (payload) => {
+      pi.events.emit("tasks:backlog_empty", payload);
+    },
     debug,
   });
 
@@ -322,6 +329,16 @@ export default function (pi: ExtensionAPI) {
         updateWidget: () => {
           widget.update();
         },
+      });
+
+      registerNativeTaskRpc({
+        pi,
+        getNativeTaskStore: () => nativeTaskStore,
+        evaluateTaskBacklog,
+        updateWidget: () => {
+          widget.update();
+        },
+        debug,
       });
     } catch (error) {
       if (isStaleExtensionContextError(error)) {

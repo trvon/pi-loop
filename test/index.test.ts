@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "../src/index.js";
+import { resolveTaskStorePath } from "../src/runtime/scope.js";
+import { TaskStore } from "../src/task-store.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
 describe("native task fallback", () => {
@@ -97,6 +99,67 @@ describe("native task fallback", () => {
 
     expect(toolMap.has("TaskCreate")).toBe(false);
     expect(commandMap.has("tasks")).toBe(false);
+  });
+
+  it("serves tasks:rpc:update for native fallback tasks", async () => {
+    const { pi, toolMap, extensionHandlers, emittedEvents } = createMockPi();
+
+    extension(pi as any);
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const taskCreate = toolMap.get("TaskCreate");
+    const taskUpdate = toolMap.get("TaskUpdate");
+    expect(taskCreate?.execute).toBeDefined();
+    expect(taskUpdate?.execute).toBeDefined();
+
+    await taskCreate!.execute?.("1", {
+      subject: "Needs reopen",
+      description: "Original description",
+    });
+    await taskUpdate!.execute?.("2", { id: "1", status: "completed" });
+
+    const reply = await new Promise<any>((resolve) => {
+      pi.events.on("tasks:rpc:update:reply:req-1", resolve);
+      pi.events.emit("tasks:rpc:update", {
+        requestId: "req-1",
+        id: "1",
+        status: "pending",
+        description: "Original description\n\nValidation note:\nFix the failing validation.",
+      });
+    });
+
+    expect(reply.success).toBe(true);
+    expect(reply.data.task.status).toBe("pending");
+    expect(reply.data.task.description).toContain("Validation note:");
+
+    const taskStorePath = resolveTaskStorePath(
+      { cwd, loopScope: "session" },
+      "test-session",
+    );
+    const taskStore = new TaskStore(taskStorePath);
+    expect(taskStore.get("1")?.status).toBe("pending");
+    expect(taskStore.get("1")?.description).toContain("Validation note:");
+    expect(
+      emittedEvents.some(
+        (event) => event.name === "tasks:reopened" && event.payload.taskId === "1",
+      ),
+    ).toBe(true);
+    expect(
+      emittedEvents.some(
+        (event) => event.name === "tasks:updated" && event.payload.taskId === "1",
+      ),
+    ).toBe(true);
   });
 
   it("stores native tasks in a dedicated .pi/tasks/tasks.json path", async () => {
@@ -597,8 +660,8 @@ describe("native task fallback", () => {
     expect(listResult.content[0].text).toContain("#1 [completed] Done 1");
   });
 
-  it("manual task-backlog loops auto-delete after the pending queue clears", async () => {
-    const { pi, toolMap, extensionHandlers } = createMockPi();
+  it("manual task-backlog loops auto-delete after the pending queue clears and emit explicit events", async () => {
+    const { pi, toolMap, extensionHandlers, emittedEvents } = createMockPi();
 
     extension(pi as any);
 
@@ -643,6 +706,22 @@ describe("native task fallback", () => {
 
     listResult = await loopList!.execute?.("5", {});
     expect(listResult.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+    expect(
+      emittedEvents.some(
+        (event) =>
+          event.name === "tasks:backlog_empty"
+          && event.payload.pendingCount === 0
+          && event.payload.deletedLoopIds.includes("1"),
+      ),
+    ).toBe(true);
+    expect(
+      emittedEvents.some(
+        (event) =>
+          event.name === "loops:autodeleted"
+          && event.payload.loopId === "1"
+          && event.payload.reason === "task_backlog_empty",
+      ),
+    ).toBe(true);
   });
 
   it("plain tasks:created watcher loops stay active after the pending queue clears", async () => {

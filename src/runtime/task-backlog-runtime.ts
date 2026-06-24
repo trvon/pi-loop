@@ -9,6 +9,12 @@ import {
 } from "../task-backlog-coordinator.js";
 import type { TaskStore } from "../task-store.js";
 import type { LoopEntry, Trigger } from "../types.js";
+import {
+  buildLoopAutodeletedPayload,
+  buildTaskBacklogEmptyPayload,
+  type LoopAutodeletedPayload,
+  type TaskBacklogEmptyPayload,
+} from "./loop-events.js";
 
 export const AUTO_TASK_WORKER_THRESHOLD = 5;
 export const AUTO_TASK_WORKER_PROMPT = "Run TaskList, pick next pending task, mark it in_progress, implement it, run validation, complete it. If no pending tasks remain, call LoopDelete on your own loop ID.";
@@ -27,6 +33,8 @@ export interface TaskBacklogRuntimeOptions {
   hasPendingTasks: () => Promise<number>;
   bootstrapTaskLoop: (entry: LoopEntry) => Promise<boolean>;
   triggerHasEventSource: (trigger: Trigger | string, source: string) => boolean;
+  emitLoopAutodeleted?: (payload: LoopAutodeletedPayload) => void;
+  emitTaskBacklogEmpty?: (payload: TaskBacklogEmptyPayload) => void;
   debug?: (...args: unknown[]) => void;
 }
 
@@ -50,6 +58,8 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     hasPendingTasks,
     bootstrapTaskLoop,
     triggerHasEventSource,
+    emitLoopAutodeleted,
+    emitTaskBacklogEmpty,
     debug,
   } = options;
 
@@ -76,10 +86,14 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     const pending = await hasPendingTasks();
     if (pending < 0 || pending > 0) return 0;
 
+    emitTaskBacklogEmpty?.(
+      buildTaskBacklogEmptyPayload(backlogLoops.map((entry) => entry.id)),
+    );
     for (const entry of backlogLoops) {
       debug?.(`task backlog loop #${entry.id} — no pending tasks remain, deleting`);
       removeTrigger(entry.id);
       deleteLoop(entry.id);
+      emitLoopAutodeleted?.(buildLoopAutodeletedPayload(entry, pending));
     }
     updateWidget();
     return backlogLoops.length;

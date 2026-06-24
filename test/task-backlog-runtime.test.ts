@@ -56,6 +56,8 @@ function setup(overrides: Partial<TaskBacklogRuntimeOptions> = {}) {
     hasPendingTasks: vi.fn(async () => 0),
     bootstrapTaskLoop: vi.fn(async () => true),
     triggerHasEventSource,
+    emitLoopAutodeleted: vi.fn(),
+    emitTaskBacklogEmpty: vi.fn(),
     ...overrides,
   };
   return { runtime: createTaskBacklogRuntime(opts), opts, loops };
@@ -127,13 +129,26 @@ describe("ensureAutoTaskWorkerLoop", () => {
 });
 
 describe("cleanupTaskBacklogLoops", () => {
-  it("deletes backlog loops when zero tasks are pending", async () => {
+  it("deletes backlog loops when zero tasks are pending and emits explicit signals", async () => {
     const { runtime, opts, loops } = setup({ hasPendingTasks: vi.fn(async () => 0) });
     loops.push(makeLoop({ id: "1" }));
     const cleaned = await runtime.cleanupTaskBacklogLoops();
     expect(cleaned).toBe(1);
     expect(opts.removeTrigger).toHaveBeenCalledWith("1");
     expect(opts.deleteLoop).toHaveBeenCalledWith("1");
+    expect(opts.emitTaskBacklogEmpty).toHaveBeenCalledWith({
+      pendingCount: 0,
+      deletedLoopIds: ["1"],
+      source: "task_backlog_runtime",
+    });
+    expect(opts.emitLoopAutodeleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        loopId: "1",
+        reason: "task_backlog_empty",
+        source: "task_backlog_runtime",
+        pendingCount: 0,
+      }),
+    );
   });
 
   it("keeps backlog loops when tasks are still pending", async () => {
