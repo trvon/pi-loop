@@ -9,7 +9,6 @@ It is the capstone document for the architecture work captured in:
 - `docs/architecture/state-machine-transition-map.md`
 - `docs/architecture/state-machine-test-matrix.md`
 - `docs/architecture/state-machine-reducer-event-model.md`
-- `docs/architecture/goal-state-schema.md`
 
 The goal of this document is to explain:
 
@@ -95,7 +94,6 @@ Instead, it uses separate reducer families for:
 - loops
 - notifications
 - monitors
-- later, goals
 
 ### 2.5 Name coordination rules explicitly
 
@@ -203,14 +201,6 @@ This defines:
 - event vocabulary
 - coordinator rules
 
-### 4.4 Goal schema
-
-`docs/architecture/goal-state-schema.md`
-
-This defines the future Goal layer as a reducer-owned, verification-oriented composition of existing reducer state.
-
----
-
 ## 5. Implemented extraction status
 
 At the time of this document, the following extractions are complete.
@@ -300,18 +290,6 @@ The coordinator currently exists as a reusable module with:
 
 It is not yet fully wired through the main runtime.
 
-### 5.6 Goal verifier prototype
-
-Implemented:
-
-- `src/goal-types.ts`
-- `src/goal-verifier.ts`
-- `test/goal-verifier.test.ts`
-
-This is intentionally read-only and verification-oriented.
-
----
-
 ## 6. Current architecture after extraction
 
 The codebase now sits in an intermediate but useful state.
@@ -321,7 +299,6 @@ The codebase now sits in an intermediate but useful state.
 - entity state transitions are increasingly centralized in pure reducers
 - transition semantics are backed by focused reducer tests
 - scenario coverage exists for the highest-risk lifecycle behavior
-- goal work no longer needs to start from an undefined state model
 
 ### 6.2 What remains transitional
 
@@ -380,7 +357,6 @@ Reducers own logical state transitions for:
 - loops
 - notifications
 - monitors
-- goals
 
 ### 7.3 Coordinator
 
@@ -423,10 +399,6 @@ Suggested order:
 ### Step 3 — move effect execution behind coordinator handlers
 
 As each slice moves over, imperative code should become effect execution rather than state mutation.
-
-### Step 4 — add a goal reducer
-
-Once the coordinator is meaningfully integrated, add a true `reduceGoalState(...)` layer rather than keeping goal work verifier-only.
 
 ### Step 5 — remove redundant imperative state paths
 
@@ -476,20 +448,6 @@ Mitigation:
 - only reduce logical state
 - preserve stop/completion race tests
 
-### 9.4 Goals can grow too ambitious too early
-
-The goal prototype is intentionally read-only.
-
-Risk:
-
-- adding autonomous write-side goal behavior before coordinator adoption is mature
-
-Mitigation:
-
-- keep goal verification read-only until reducer/coordinator integration is stable
-
----
-
 ## 10. Validation strategy
 
 The migration should continue to rely on three validation layers.
@@ -525,7 +483,6 @@ We now have:
 - a test contract
 - reducer modules for the four existing entity families
 - a coordinator abstraction
-- a goal schema and verifier prototype
 
 This means future work can be judged against a coherent architecture instead of a collection of local fixes.
 
@@ -541,6 +498,5 @@ The system is not yet at the final architecture. However, it now has the essenti
 - reducer state boundaries
 - effect boundaries
 - coordinator machinery
-- verification-oriented goal design
 
 The recommended next step, if further work continues, is to adopt the coordinator in narrow runtime slices rather than attempt a single large integration rewrite.

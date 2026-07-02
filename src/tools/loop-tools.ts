@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { parseInterval } from "../loop-parse.js";
 import type { LoopEntry, Trigger } from "../types.js";
+import { textResult } from "./tool-result.js";
 
 interface LoopStoreLike {
   list(): LoopEntry[];
@@ -44,10 +45,6 @@ export interface LoopToolsOptions {
   updateWidget: () => void;
   maybeBootstrapTaskLoop: (entry: LoopEntry) => Promise<boolean>;
   isTaskSystemReady: () => boolean;
-}
-
-function textResult(msg: string) {
-  return { content: [{ type: "text" as const, text: msg }], details: undefined as any };
 }
 
 function validateTrigger(trigger: Trigger): string | null {

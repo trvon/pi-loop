@@ -52,6 +52,61 @@ describe("task-rpc checkTasksVersion", () => {
 
     expect(setTasksAvailable).not.toHaveBeenCalled();
   });
+
+  it("ignores pi-loop's own native ping reply", async () => {
+    const mock = createMockPi();
+    const setTasksAvailable = vi.fn();
+    // Simulate the native server answering its own extension's probe.
+    mock.pi.events.on("tasks:rpc:ping", (raw: unknown) => {
+      const { requestId } = raw as { requestId: string };
+      mock.pi.events.emit(`tasks:rpc:ping:reply:${requestId}`, {
+        success: true,
+        data: { version: 2, provider: "pi-loop-native" },
+      });
+    });
+    const bridge = createTaskRuntimeBridge({
+      pi: mock.pi,
+      isTasksAvailable: () => false,
+      setTasksAvailable,
+      getNativeTaskStore: () => undefined,
+    });
+
+    bridge.checkTasksVersion();
+    await flushAsync();
+
+    expect(setTasksAvailable).not.toHaveBeenCalled();
+  });
+
+  it("still detects an external provider that replies after the native self-reply", async () => {
+    const mock = createMockPi();
+    const setTasksAvailable = vi.fn();
+    mock.pi.events.on("tasks:rpc:ping", (raw: unknown) => {
+      const { requestId } = raw as { requestId: string };
+      // Native self-reply lands first…
+      mock.pi.events.emit(`tasks:rpc:ping:reply:${requestId}`, {
+        success: true,
+        data: { version: 2, provider: "pi-loop-native" },
+      });
+      // …and the external pi-tasks provider replies a tick later.
+      queueMicrotask(() => {
+        mock.pi.events.emit(`tasks:rpc:ping:reply:${requestId}`, {
+          success: true,
+          data: { version: 1 },
+        });
+      });
+    });
+    const bridge = createTaskRuntimeBridge({
+      pi: mock.pi,
+      isTasksAvailable: () => false,
+      setTasksAvailable,
+      getNativeTaskStore: () => undefined,
+    });
+
+    bridge.checkTasksVersion();
+    await flushAsync();
+
+    expect(setTasksAvailable).toHaveBeenCalledWith(true);
+  });
 });
 
 describe("task-rpc hasPendingTasks", () => {

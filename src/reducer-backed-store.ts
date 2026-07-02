@@ -11,8 +11,8 @@ function acquireLock(lockPath: string): void {
     try {
       writeFileSync(lockPath, `${process.pid}`, { flag: "wx" });
       return;
-    } catch (e: any) {
-      if (e.code === "EEXIST") {
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") {
         try {
           const pid = parseInt(readFileSync(lockPath, "utf-8"), 10);
           if (!pid || !isProcessRunning(pid)) {
@@ -60,7 +60,7 @@ export interface ReducerBackedStoreConfig<TEntry, TState, TEvent, TData> {
 
 /**
  * Shared persistence + reducer-dispatch machinery for the file-backed entity
- * stores (loops, tasks, goals). Owns file locking, signature-gated load, atomic
+ * stores (loops, tasks). Owns file locking, signature-gated load, atomic
  * save, and reducer application; subclasses add only their entity-specific
  * command methods.
  *

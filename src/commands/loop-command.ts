@@ -85,7 +85,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
     if (!selected || selected === "< Back") return;
 
     const match = selected.match(/#(\d+)/);
-    if (match) {
+    if (match?.[1]) {
       const entry = getStore().get(match[1]);
       if (entry) {
         const actions = ["x Delete"];
@@ -149,7 +149,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
 
       const intervalMatch = trimmed.match(/^(\d+\s*[smhdS]\b)/i);
       if (intervalMatch) {
-        const interval = intervalMatch[1];
+        const interval = intervalMatch[1] ?? intervalMatch[0];
         const prompt = trimmed.slice(intervalMatch[0].length).trim();
 
         if (!prompt) {

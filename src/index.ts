@@ -64,7 +64,9 @@ export default function (pi: ExtensionAPI) {
   // call), so stale monitors don't linger in the count between turns.
   monitorManager.setOnChange(() => widget.update());
   widget.setTaskSummaryProvider(() => {
-    if (!nativeTaskStore) return { count: 0 };
+    // Once pi-tasks owns the channels, any native store created during the
+    // detection window is a shadow — never surface it in the status line.
+    if (tasksAvailable || !nativeTaskStore) return { count: 0 };
     const tasks = nativeTaskStore.list().filter(t => t.status === "pending" || t.status === "in_progress");
     const active = tasks.find(t => t.status === "in_progress");
     const next = tasks.find(t => t.status === "pending");
@@ -81,8 +83,18 @@ export default function (pi: ExtensionAPI) {
 
   // ── pi-tasks integration ──
   let tasksAvailable = false;
+  let tasksDetectionSettled = false;
   let nativeTaskStore: TaskStore | undefined;
   let nativeTasksRegistered = false;
+
+  function getOrCreateNativeTaskStore(): TaskStore | undefined {
+    // pi-tasks owns the task channels; don't create a shadow store.
+    if (tasksAvailable) return undefined;
+    if (!nativeTaskStore) {
+      nativeTaskStore = new TaskStore(resolveTaskStorePath(getScopeOptions(), _sessionId));
+    }
+    return nativeTaskStore;
+  }
 
   const taskRuntime = createTaskRuntimeBridge({
     pi,
@@ -97,6 +109,28 @@ export default function (pi: ExtensionAPI) {
     onNativeTasksPruned: async (taskStore) => {
       widget.update();
       await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
+    },
+    onDetectionSettled: () => {
+      tasksDetectionSettled = true;
+    },
+    debug,
+  });
+
+  // The RPC server registers at init (not behind the 6s tool-fallback timer) so
+  // early cross-extension calls never race the timer; it stands down via
+  // isEnabled once an external pi-tasks is detected. checkTasksVersion ignores
+  // this server's own ping reply via its provider field. Mutating verbs stay
+  // silent until the detection probe settles, so a co-resident pi-tasks can
+  // never race the native server into creating divergent task state.
+  registerNativeTaskRpc({
+    pi,
+    getNativeTaskStore: getOrCreateNativeTaskStore,
+    isEnabled: () => !tasksAvailable,
+    isDetectionSettled: () => tasksDetectionSettled,
+    evaluateTaskBacklog: (taskStore, pendingCount) =>
+      evaluateTaskBacklog(taskStore, pendingCount),
+    updateWidget: () => {
+      widget.update();
     },
     debug,
   });
@@ -308,9 +342,12 @@ export default function (pi: ExtensionAPI) {
 
   // ── Native task tools (only when pi-tasks is absent) ──
 
+  // Only tool/command registration stays deferred: the tool names collide with
+  // pi-tasks and cannot be unregistered. The RPC server is already live (above).
   const nativeTaskFallbackTimer = setTimeout(() => {
     if (tasksAvailable || nativeTasksRegistered) return;
-    const taskStore = new TaskStore(resolveTaskStorePath(getScopeOptions(), _sessionId));
+    const taskStore = getOrCreateNativeTaskStore();
+    if (!taskStore) return;
 
     try {
       registerTasksCommand({
@@ -330,16 +367,6 @@ export default function (pi: ExtensionAPI) {
           widget.update();
         },
       });
-
-      registerNativeTaskRpc({
-        pi,
-        getNativeTaskStore: () => nativeTaskStore,
-        evaluateTaskBacklog,
-        updateWidget: () => {
-          widget.update();
-        },
-        debug,
-      });
     } catch (error) {
       if (isStaleExtensionContextError(error)) {
         debug("native task fallback skipped: extension context went stale");
@@ -348,7 +375,6 @@ export default function (pi: ExtensionAPI) {
       throw error;
     }
 
-    nativeTaskStore = taskStore;
     nativeTasksRegistered = true;
     debug("native task tools registered (pi-tasks not detected)");
   }, 6000);

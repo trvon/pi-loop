@@ -1,29 +1,35 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  type CleanReply,
+  type CreateTaskReply,
+  type PendingReply,
+  type PingReply,
+  TASKS_RPC,
+  type UpdateTaskReply,
+} from "../rpc/channels.js";
+import { handleRpc, PROTOCOL_VERSION } from "../rpc/cross-extension-rpc.js";
 import type { TaskStore } from "../task-store.js";
-import type { TaskEntry, TaskStatus } from "../task-types.js";
-import { emitNativeTaskEvent } from "./task-events.js";
+import type { TaskStatus } from "../task-types.js";
+import {
+  cleanTasks,
+  createTask,
+  type TaskBacklogResult,
+  type TaskMutationContext,
+  updateTask,
+} from "./task-mutations.js";
 
-interface RpcSuccess<T> {
-  success: true;
-  data: T;
-}
+/** Discriminates pi-loop's own ping replies from an external pi-tasks provider. */
+export const NATIVE_TASKS_PROVIDER = "pi-loop-native";
 
-interface RpcFailure {
-  success: false;
-  error: string;
-}
-
-interface RpcBaseRequest {
-  requestId?: string;
-}
-
-interface CreateTaskRequest extends RpcBaseRequest {
+interface CreateTaskRequest {
+  requestId: string;
   subject?: string;
   description?: string;
   metadata?: Record<string, unknown>;
 }
 
-interface UpdateTaskRequest extends RpcBaseRequest {
+interface UpdateTaskRequest {
+  requestId: string;
   id?: string;
   status?: TaskStatus;
   subject?: string;
@@ -33,164 +39,101 @@ interface UpdateTaskRequest extends RpcBaseRequest {
 export interface NativeTaskRpcOptions {
   pi: ExtensionAPI;
   getNativeTaskStore: () => TaskStore | undefined;
+  /** Stands the server down (silent no-op) when an external pi-tasks owns the channels. */
+  isEnabled?: () => boolean;
+  /**
+   * Gates the mutating/reading verbs (create/update/pending/clean) until the
+   * pi-tasks detection probe has settled. Ping stays answerable throughout so
+   * providers remain discoverable, but no state diverges while an external
+   * provider might still claim the channels. Defaults to settled.
+   */
+  isDetectionSettled?: () => boolean;
   evaluateTaskBacklog: (
     taskStore: TaskStore,
     pendingCount: number,
-  ) => Promise<{ created: boolean; cleaned: number }>;
+  ) => Promise<TaskBacklogResult>;
   updateWidget: () => void;
   debug?: (...args: unknown[]) => void;
 }
 
-function replySuccess<T>(
-  pi: ExtensionAPI,
-  channel: string,
-  requestId: string,
-  data: T,
-): void {
-  pi.events.emit(`${channel}:reply:${requestId}`, {
-    success: true,
-    data,
-  } satisfies RpcSuccess<T>);
-}
-
-function replyFailure(
-  pi: ExtensionAPI,
-  channel: string,
-  requestId: string,
-  error: string,
-): void {
-  pi.events.emit(`${channel}:reply:${requestId}`, {
-    success: false,
-    error,
-  } satisfies RpcFailure);
-}
-
-function updateTaskEntry(
-  pi: ExtensionAPI,
-  taskStore: TaskStore,
-  request: UpdateTaskRequest,
-): TaskEntry | undefined {
-  const { id, status, subject, description } = request;
-  if (!id) return undefined;
-
-  let entry = taskStore.get(id);
-  if (!entry) return undefined;
-
-  const previousStatus = entry.status;
-  if (status === "in_progress") {
-    entry = taskStore.start(id);
-    if (entry) emitNativeTaskEvent(pi, "tasks:started", entry, previousStatus);
-  } else if (status === "completed") {
-    entry = taskStore.complete(id);
-    if (entry) emitNativeTaskEvent(pi, "tasks:completed", entry, previousStatus);
-  } else if (status === "pending") {
-    entry = taskStore.reopen(id);
-    if (entry) emitNativeTaskEvent(pi, "tasks:reopened", entry, previousStatus);
-  }
-
-  if (!entry) return undefined;
-  if (subject !== undefined || description !== undefined) {
-    const detailPreviousStatus = entry.status;
-    entry = taskStore.updateDetails(id, { subject, description });
-    if (entry) {
-      emitNativeTaskEvent(pi, "tasks:updated", entry, detailPreviousStatus);
-    }
-  }
-
-  return entry;
-}
-
 export function registerNativeTaskRpc(options: NativeTaskRpcOptions): void {
-  const { pi, getNativeTaskStore, evaluateTaskBacklog, updateWidget, debug } =
-    options;
+  const {
+    pi,
+    getNativeTaskStore,
+    isEnabled,
+    isDetectionSettled,
+    evaluateTaskBacklog,
+    updateWidget,
+    debug,
+  } = options;
+  const rpcOpts = { enabled: isEnabled, debug };
+  const settledRpcOpts = {
+    enabled: () => (isEnabled ? isEnabled() : true) && (isDetectionSettled ? isDetectionSettled() : true),
+    debug,
+  };
 
-  pi.events.on("tasks:rpc:ping", (raw) => {
-    const request = raw as RpcBaseRequest;
+  function requireMutationContext(): TaskMutationContext {
     const taskStore = getNativeTaskStore();
-    if (!request.requestId || !taskStore) return;
-    replySuccess(pi, "tasks:rpc:ping", request.requestId, { version: 1 });
-  });
+    if (!taskStore) throw new Error("native task store unavailable");
+    return { pi, taskStore, evaluateTaskBacklog, updateWidget };
+  }
 
-  pi.events.on("tasks:rpc:pending", (raw) => {
-    const request = raw as RpcBaseRequest;
-    const taskStore = getNativeTaskStore();
-    if (!request.requestId || !taskStore) return;
-    replySuccess(pi, "tasks:rpc:pending", request.requestId, {
-      pending: taskStore.pendingCount(),
-    });
-  });
+  handleRpc<{ requestId: string }, PingReply>(
+    pi.events,
+    TASKS_RPC.ping,
+    () => ({ version: PROTOCOL_VERSION, provider: NATIVE_TASKS_PROVIDER }),
+    rpcOpts,
+  );
 
-  pi.events.on("tasks:rpc:create", async (raw) => {
-    const request = raw as CreateTaskRequest;
-    const taskStore = getNativeTaskStore();
-    if (!request.requestId || !taskStore) return;
-    if (!request.subject || !request.description) {
-      replyFailure(
-        pi,
-        "tasks:rpc:create",
-        request.requestId,
-        "subject and description are required",
-      );
-      return;
-    }
+  handleRpc<{ requestId: string }, PendingReply>(
+    pi.events,
+    TASKS_RPC.pending,
+    () => ({ pending: requireMutationContext().taskStore.pendingCount() }),
+    settledRpcOpts,
+  );
 
-    try {
-      const task = taskStore.create(
-        request.subject,
-        request.description,
-        request.metadata,
-      );
-      emitNativeTaskEvent(pi, "tasks:created", task);
-      await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
-      updateWidget();
-      replySuccess(pi, "tasks:rpc:create", request.requestId, {
-        id: task.id,
-        task,
+  handleRpc<CreateTaskRequest, CreateTaskReply>(
+    pi.events,
+    TASKS_RPC.create,
+    async (request) => {
+      if (!request.subject || !request.description) {
+        throw new Error("subject and description are required");
+      }
+      const { entry } = await createTask(requireMutationContext(), {
+        subject: request.subject,
+        description: request.description,
+        metadata: request.metadata,
       });
-    } catch (error) {
-      replyFailure(
-        pi,
-        "tasks:rpc:create",
-        request.requestId,
-        error instanceof Error ? error.message : String(error),
-      );
-    }
-  });
+      return { id: entry.id, task: entry };
+    },
+    settledRpcOpts,
+  );
 
-  pi.events.on("tasks:rpc:clean", async (raw) => {
-    const request = raw as RpcBaseRequest;
-    const taskStore = getNativeTaskStore();
-    if (!request.requestId || !taskStore) return;
+  handleRpc<{ requestId: string }, CleanReply>(
+    pi.events,
+    TASKS_RPC.clean,
+    async () => {
+      const pruned = await cleanTasks(requireMutationContext());
+      debug?.(`${TASKS_RPC.clean} — pruned ${pruned} completed task(s)`);
+      return { pruned };
+    },
+    settledRpcOpts,
+  );
 
-    const pruned = taskStore.pruneCompleted();
-    updateWidget();
-    await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
-    debug?.(`tasks:rpc:clean — pruned ${pruned} completed task(s)`);
-    replySuccess(pi, "tasks:rpc:clean", request.requestId, { pruned });
-  });
-
-  pi.events.on("tasks:rpc:update", async (raw) => {
-    const request = raw as UpdateTaskRequest;
-    const taskStore = getNativeTaskStore();
-    if (!request.requestId || !taskStore) return;
-    if (!request.id) {
-      replyFailure(pi, "tasks:rpc:update", request.requestId, "id is required");
-      return;
-    }
-
-    const entry = updateTaskEntry(pi, taskStore, request);
-    if (!entry) {
-      replyFailure(
-        pi,
-        "tasks:rpc:update",
-        request.requestId,
-        `Task #${request.id} not found`,
-      );
-      return;
-    }
-
-    updateWidget();
-    await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
-    replySuccess(pi, "tasks:rpc:update", request.requestId, { task: entry });
-  });
+  handleRpc<UpdateTaskRequest, UpdateTaskReply>(
+    pi.events,
+    TASKS_RPC.update,
+    async (request) => {
+      if (!request.id) throw new Error("id is required");
+      const result = await updateTask(requireMutationContext(), {
+        id: request.id,
+        status: request.status,
+        subject: request.subject,
+        description: request.description,
+      });
+      if (!result) throw new Error(`Task #${request.id} not found`);
+      return { task: result.entry };
+    },
+    settledRpcOpts,
+  );
 }

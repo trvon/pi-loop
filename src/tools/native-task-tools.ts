@@ -1,12 +1,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { emitNativeTaskEvent } from "../runtime/task-events.js";
+import {
+  createTask,
+  deleteTask,
+  type TaskBacklogResult,
+  type TaskMutationContext,
+  updateTask,
+} from "../runtime/task-mutations.js";
 import { TaskStore } from "../task-store.js";
+import type { TaskStatus } from "../task-types.js";
+import { textResult } from "./tool-result.js";
 
-export interface TaskBacklogResult {
-  created: boolean;
-  entry?: { id: string };
-}
+export type { TaskBacklogResult };
 
 export interface NativeTaskToolsOptions {
   pi: ExtensionAPI;
@@ -15,12 +20,15 @@ export interface NativeTaskToolsOptions {
   updateWidget: () => void;
 }
 
-function textResult(msg: string) {
-  return { content: [{ type: "text" as const, text: msg }], details: undefined as any };
+function backlogSuffix(backlog: TaskBacklogResult): string {
+  return backlog.created && backlog.entry
+    ? `\nBacklog worker loop #${backlog.entry.id} created`
+    : "";
 }
 
 export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
   const { pi, taskStore, evaluateTaskBacklog, updateWidget } = options;
+  const mutationCtx: TaskMutationContext = { pi, taskStore, evaluateTaskBacklog, updateWidget };
 
   pi.registerTool({
     name: "TaskCreate",
@@ -47,15 +55,11 @@ Fields:
       description: Type.String({ description: "Detailed description of what needs to be done" }),
     }),
     async execute(_toolCallId, params) {
-      const entry = taskStore.create(params.subject, params.description);
-      emitNativeTaskEvent(pi, "tasks:created", entry);
-      const backlog = await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
-      updateWidget();
-
-      const autoLoopMsg = backlog.created && backlog.entry
-        ? `\nBacklog worker loop #${backlog.entry.id} created`
-        : "";
-      return Promise.resolve(textResult(`Task #${entry.id} created: ${entry.subject}${autoLoopMsg}`));
+      const { entry, backlog } = await createTask(mutationCtx, {
+        subject: params.subject,
+        description: params.description,
+      });
+      return textResult(`Task #${entry.id} created: ${entry.subject}${backlogSuffix(backlog)}`);
     },
   });
 
@@ -104,34 +108,15 @@ Parameters: id (required), status, subject, description`,
     }),
     async execute(_toolCallId, params) {
       const { id, status, subject, description } = params;
-      let entry = taskStore.get(id);
-      if (!entry) return Promise.resolve(textResult(`Task #${id} not found`));
-
-      const previousStatus = entry.status;
-      if (status === "in_progress") {
-        entry = taskStore.start(id);
-        if (entry) emitNativeTaskEvent(pi, "tasks:started", entry, previousStatus);
-      } else if (status === "completed") {
-        entry = taskStore.complete(id);
-        if (entry) emitNativeTaskEvent(pi, "tasks:completed", entry, previousStatus);
-      } else if (status === "pending") {
-        entry = taskStore.reopen(id);
-        if (entry) emitNativeTaskEvent(pi, "tasks:reopened", entry, previousStatus);
-      }
-
-      if (!entry) return Promise.resolve(textResult(`Task #${id} not found`));
-      if (subject !== undefined || description !== undefined) {
-        entry = taskStore.updateDetails(id, { subject, description });
-        if (entry) emitNativeTaskEvent(pi, "tasks:updated", entry, previousStatus);
-      }
-      if (!entry) return Promise.resolve(textResult(`Task #${id} not found`));
-      updateWidget();
-      const backlog = await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
+      const result = await updateTask(mutationCtx, {
+        id,
+        status: status as TaskStatus | undefined,
+        subject,
+        description,
+      });
+      if (!result) return textResult(`Task #${id} not found`);
       const statusMsg = status ? ` → ${status}` : "";
-      const autoLoopMsg = backlog.created && backlog.entry
-        ? `\nBacklog worker loop #${backlog.entry.id} created`
-        : "";
-      return Promise.resolve(textResult(`Task #${id} updated${statusMsg}${autoLoopMsg}`));
+      return textResult(`Task #${id} updated${statusMsg}${backlogSuffix(result.backlog)}`);
     },
   });
 
@@ -143,15 +128,9 @@ Parameters: id (required), status, subject, description`,
       id: Type.String({ description: "Task ID to delete" }),
     }),
     async execute(_toolCallId, params) {
-      const existing = taskStore.get(params.id);
-      const deleted = taskStore.delete(params.id);
-      updateWidget();
-      if (deleted) {
-        if (existing) emitNativeTaskEvent(pi, "tasks:deleted", existing, existing.status);
-        await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
-        return Promise.resolve(textResult(`Task #${params.id} deleted`));
-      }
-      return Promise.resolve(textResult(`Task #${params.id} not found`));
+      const result = await deleteTask(mutationCtx, params.id);
+      if (!result) return textResult(`Task #${params.id} not found`);
+      return textResult(`Task #${params.id} deleted`);
     },
   });
 }

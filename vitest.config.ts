@@ -15,14 +15,14 @@ export default defineConfig({
       include: ["src/**/*.ts"],
       // Type-only modules and test helpers carry no executable logic worth gating.
       exclude: ["src/**/*-types.ts", "src/types.ts"],
-      // Floors set just below current actuals (stmts 84%, branches 75%,
-      // funcs 95%, lines 86%) to catch regressions. Raised in Phase 4 after the
-      // runtime/ + tools/ suites landed.
+      // Floors set just below current actuals (stmts 91%, branches 83%,
+      // funcs 98%, lines 94%) to catch regressions. Re-anchored after the
+      // goal-subsystem removal and the rpc/native-task-rpc/command suites landed.
       thresholds: {
-        statements: 82,
-        branches: 73,
-        functions: 94,
-        lines: 84,
+        statements: 89,
+        branches: 80,
+        functions: 96,
+        lines: 91,
       },
     },
   },

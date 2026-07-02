@@ -67,10 +67,10 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
       return viewNativeTasks(ui);
     }
 
-    const match = selected.match(/#(\d+)/);
-    if (!match) return viewNativeTasks(ui);
+    const taskId = selected.match(/#(\d+)/)?.[1];
+    if (!taskId) return viewNativeTasks(ui);
 
-    const task = taskStore.get(match[1]);
+    const task = taskStore.get(taskId);
     if (!task) return viewNativeTasks(ui);
 
     const actions = ["x Delete"];

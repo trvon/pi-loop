@@ -81,7 +81,7 @@ interface ReducerEvent<TType extends string = string, TPayload = unknown> {
     | "session"
     | "coordinator"
     | "system";
-  entityType?: "task" | "loop" | "monitor" | "notification" | "goal";
+  entityType?: "task" | "loop" | "monitor" | "notification";
   entityId?: string;
   payload: TPayload;
 }
@@ -104,7 +104,7 @@ Reducers do not call Pi APIs directly. They emit effects.
 ```ts
 interface ReducerEffect<TEffect extends string = string, TPayload = unknown> {
   type: TEffect;
-  entityType?: "task" | "loop" | "monitor" | "notification" | "goal";
+  entityType?: "task" | "loop" | "monitor" | "notification";
   entityId?: string;
   payload: TPayload;
 }
@@ -801,7 +801,6 @@ If an event cannot be tied to a transition/invariant/scenario row, it is probabl
 This event model does **not** yet define:
 
 - Goal reducer fields
-- persistent serialization format for goals
 - UI rendering model
 - task provider abstraction replacement
 - a generalized event sourcing log

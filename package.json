@@ -17,6 +17,11 @@
     "monitor",
     "scheduler"
   ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./api": "./src/api.ts",
+    "./package.json": "./package.json"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^0.75.5",
     "@earendil-works/pi-tui": "^0.75.5"

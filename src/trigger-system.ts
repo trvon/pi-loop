@@ -58,7 +58,7 @@ export class TriggerSystem {
     }
     const subs = this.eventSubscriptions.get(source)!;
 
-    const unsub = this.pi.events.on(source as any, (data: any) => {
+    const unsub = this.pi.events.on(source, (data: unknown) => {
       if (entry.trigger.type === "hybrid") {
         this.handleHybridFire(entry, data);
       } else {
@@ -71,7 +71,7 @@ export class TriggerSystem {
     subs.set(entry.id, unsub);
   }
 
-  private handleHybridFire(entry: LoopEntry, _data: any): void {
+  private handleHybridFire(entry: LoopEntry, _data: unknown): void {
     const now = Date.now();
     const last = this.lastFireTime.get(entry.id) ?? 0;
     const debounceMs = entry.trigger.type === "hybrid" ? entry.trigger.debounceMs : 0;
@@ -123,7 +123,7 @@ export class TriggerSystem {
     }
   }
 
-  private matchesFilter(data: any, filter?: string): boolean {
+  private matchesFilter(data: unknown, filter?: string): boolean {
     if (!filter) return true;
 
     if (filter.startsWith("regex:")) {
@@ -138,7 +138,7 @@ export class TriggerSystem {
     try {
       const parsed = JSON.parse(filter);
       for (const [key, value] of Object.entries(parsed)) {
-        const dataValue = data?.[key];
+        const dataValue = (data as Record<string, unknown> | undefined)?.[key];
         if (dataValue === undefined) return false;
         if (typeof value === "object" && typeof dataValue === "object") {
           if (JSON.stringify(value) !== JSON.stringify(dataValue)) return false;

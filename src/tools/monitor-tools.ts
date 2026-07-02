@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { LoopEntry, MonitorEntry, Trigger } from "../types.js";
+import { textResult } from "./tool-result.js";
 
 interface MonitorManagerLike {
   list(): MonitorEntry[];
@@ -24,10 +25,6 @@ export interface MonitorToolsOptions {
   getMonitorManager: () => MonitorManagerLike;
   updateWidget: () => void;
   handleMonitorDoneLoop: (doneLoop: LoopEntry, monitorId: string) => void;
-}
-
-function textResult(msg: string) {
-  return { content: [{ type: "text" as const, text: msg }], details: undefined as any };
 }
 
 function formatRemaining(ms: number): string {

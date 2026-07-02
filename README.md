@@ -95,8 +95,41 @@ This fallback is session-sticky: `pi-loop` decides once at startup whether `pi-t
 - `tasks:reopened`
 - `tasks:updated`
 - `tasks:deleted`
+
+Payloads carry `previousStatus`. Transition events (`tasks:started` /
+`tasks:completed` / `tasks:reopened`) report the status before the transition;
+`tasks:updated` (a details edit) reports the status current at edit time — so a
+combined status+details update never fabricates a second transition. (Changed
+in 0.6.0: the tool path previously reused the pre-transition status.)
 - `tasks:backlog_empty` — emitted when a task-backlog worker observes zero pending tasks and is about to auto-delete
 - `loops:autodeleted` — emitted for each loop that `pi-loop` auto-deletes, including backlog workers removed because the task queue drained
+
+### Cross-extension task RPC
+
+Other extensions can create and manage native tasks without importing `pi-loop` internals. `pi-loop` answers `ping` over `pi.events` from extension init; the other verbs unlock once the pi-tasks detection probe settles (a few seconds at most, immediate when no provider replies race it). The whole server stands down (silent no-op) once an external `pi-tasks` is detected:
+
+| Channel | Request | Reply |
+|---|---|---|
+| `tasks:rpc:ping` | `{}` | `{ version, provider }` |
+| `tasks:rpc:pending` | `{}` | `{ pending }` |
+| `tasks:rpc:create` | `{ subject, description, metadata? }` | `{ id, task }` |
+| `tasks:rpc:clean` | `{}` | `{ pruned }` |
+| `tasks:rpc:update` | `{ id, status?, subject?, description? }` | `{ task }` |
+
+Every request/reply pair follows the same contract: emit `{ requestId, ...params }` on the channel, receive an envelope on `<channel>:reply:<requestId>` — `{ success: true, data }` or `{ success: false, error }`.
+
+`@trevonistrevon/pi-loop/api` exports typed channel constants and a client helper so consumers don't hand-roll the envelope:
+
+```ts
+import { TASKS_RPC, rpcCall } from "@trevonistrevon/pi-loop/api";
+
+const { id, task } = await rpcCall(pi.events, TASKS_RPC.create, {
+  subject: "Fix deploy polling",
+  description: "Switch deploy check to event-driven loop",
+});
+```
+
+`rpcCall` rejects on failure or timeout instead of returning a sentinel; wrap it in `try/catch` if you want fallback behavior. Import only from `@trevonistrevon/pi-loop/api` — the package's `exports` map blocks deep `src/` imports.
 
 ## Status line
 

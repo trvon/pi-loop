@@ -8,7 +8,7 @@ export type ReducerSource =
   | "coordinator"
   | "system";
 
-export type ReducerEntityType = "task" | "loop" | "monitor" | "notification" | "goal";
+export type ReducerEntityType = "task" | "loop" | "monitor" | "notification";
 
 export interface ReducerEvent<TType extends string = string, TPayload = unknown> {
   type: TType;

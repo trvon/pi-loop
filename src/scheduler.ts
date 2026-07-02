@@ -50,7 +50,7 @@ export class CronScheduler {
     const _scheduleExpr = entry.trigger.type === "hybrid" ? entry.trigger.cron : (entry.trigger as { schedule: string }).schedule;
 
     const nextFire = computeNextFire(entry);
-    const minuteField = _scheduleExpr.trim().split(/\s+/)[0];
+    const minuteField = _scheduleExpr.trim().split(/\s+/)[0] ?? "";
     const minuteStep = minuteField.startsWith("*/") ? parseInt(minuteField.slice(2), 10) || 30 : 30;
     const jitter = computeJitter(entry.id, entry.recurring, minuteStep);
     const fireTime = nextFire.getTime() + jitter;
