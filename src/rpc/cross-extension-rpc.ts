@@ -70,7 +70,16 @@ export function rpcCall<T = void>(
         reject(new RpcError(channel, error ?? `${channel} replied with a malformed envelope`));
       }
     });
-    bus.emit(channel, { requestId, ...params });
+    try {
+      bus.emit(channel, { requestId, ...params });
+    } catch (error) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        unsub();
+        reject(error);
+      }
+    }
   });
 }
 

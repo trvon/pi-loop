@@ -187,6 +187,34 @@ describe("rpcCall", () => {
 
     await expect(rpcCall(bus, channel)).rejects.toThrow(/malformed envelope/);
   });
+
+  it("cleans up the reply listener when emitting the request throws", async () => {
+    const channel = "test:rpc:emit-throws";
+    const handlers = new Map<string, Array<(data: unknown) => void>>();
+    const bus: RpcEventBus = {
+      on(event, handler) {
+        const arr = handlers.get(event) ?? [];
+        arr.push(handler);
+        handlers.set(event, arr);
+        return () => {
+          const current = handlers.get(event);
+          const idx = current?.indexOf(handler) ?? -1;
+          if (current && idx !== -1) current.splice(idx, 1);
+        };
+      },
+      emit(event) {
+        if (event === channel) throw new Error("listener exploded");
+      },
+    };
+
+    await expect(rpcCall(bus, channel, {}, 1000)).rejects.toThrow("listener exploded");
+
+    const replyHandlerCount = [...handlers.entries()]
+      .filter(([event]) => event.startsWith(`${channel}:reply:`))
+      .reduce((sum, [, arr]) => sum + arr.length, 0);
+    expect(replyHandlerCount).toBe(0);
+    await vi.advanceTimersByTimeAsync(1000);
+  });
 });
 
 describe("rpcProbe", () => {

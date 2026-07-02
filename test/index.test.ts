@@ -73,6 +73,42 @@ describe("native task fallback", () => {
     expect(commandMap.has("tasks")).toBe(false);
   });
 
+  it("keeps native mutating RPC silent during a late tasks:ready detection window", async () => {
+    const { pi, emittedEvents } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(5000);
+    await Promise.resolve();
+
+    pi.events.on("tasks:rpc:ping", (raw: unknown) => {
+      const { requestId } = raw as { requestId: string };
+      setTimeout(() => {
+        pi.events.emit(`tasks:rpc:ping:reply:${requestId}`, {
+          success: true,
+          data: { version: 1 },
+        });
+      }, 1000);
+    });
+
+    pi.events.emit("tasks:ready", {});
+    pi.events.emit("tasks:rpc:create", {
+      requestId: "late-create",
+      subject: "should not fork native state",
+      description: "external provider is announcing readiness",
+    });
+    await Promise.resolve();
+
+    expect(
+      emittedEvents.some((event) => event.name === "tasks:rpc:create:reply:late-create"),
+    ).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await Promise.resolve();
+    expect(
+      emittedEvents.some((event) => event.name === "tasks:rpc:create:reply:late-create"),
+    ).toBe(false);
+  });
+
   it("ignores delayed native fallback registration after the extension context goes stale", async () => {
     const { pi } = createMockPi();
     const staleError = new Error("This extension ctx is stale after session replacement or reload.");

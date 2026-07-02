@@ -21,6 +21,8 @@ export interface TaskRuntimeBridgeOptions {
   getNativeTaskStore: () => TaskStore | undefined;
   onNativeTaskCreated?: (taskStore: TaskStore) => void;
   onNativeTasksPruned?: (taskStore: TaskStore) => Promise<void> | void;
+  /** Called when a detection window opens. */
+  onDetectionStarted?: () => void;
   /** Called when a detection window closes (provider found or probe timed out). */
   onDetectionSettled?: () => void;
   debug?: (...args: unknown[]) => void;
@@ -41,19 +43,27 @@ export function createTaskRuntimeBridge(options: TaskRuntimeBridgeOptions): Task
     getNativeTaskStore,
     onNativeTaskCreated,
     onNativeTasksPruned,
+    onDetectionStarted,
     onDetectionSettled,
     debug,
   } = options;
+  let detectionEpoch = 0;
 
   function checkTasksVersion() {
     // Not rpcProbe: pi-loop's own native server also answers this ping, and a
     // first-reply-wins probe would always settle on that self-reply. Keep the
     // listener open for the whole window and skip self-replies so a slower
     // external provider (pi-tasks) is still detected.
+    const epoch = ++detectionEpoch;
+    onDetectionStarted?.();
+    const settleCurrentDetection = () => {
+      if (epoch !== detectionEpoch) return;
+      onDetectionSettled?.();
+    };
     const requestId = randomUUID();
     const timer = setTimeout(() => {
       unsub();
-      onDetectionSettled?.();
+      settleCurrentDetection();
     }, 5000);
     const unsub = pi.events.on(replyChannel(TASKS_RPC.ping, requestId), (raw: unknown) => {
       const reply = raw as RpcReply<PingReply> | undefined;
@@ -63,7 +73,7 @@ export function createTaskRuntimeBridge(options: TaskRuntimeBridgeOptions): Task
       unsub();
       clearTimeout(timer);
       setTasksAvailable(true);
-      onDetectionSettled?.();
+      settleCurrentDetection();
     });
     pi.events.emit(TASKS_RPC.ping, { requestId });
   }

@@ -110,6 +110,9 @@ export default function (pi: ExtensionAPI) {
       widget.update();
       await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
     },
+    onDetectionStarted: () => {
+      tasksDetectionSettled = false;
+    },
     onDetectionSettled: () => {
       tasksDetectionSettled = true;
     },
