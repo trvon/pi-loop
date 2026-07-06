@@ -5,13 +5,14 @@ import {
   type ReducerEvent,
   type ReducerHandler,
 } from "../coordinator.js";
+import { formatTrigger } from "../loop-format.js";
 import {
   type NotificationReducerEvent,
   type NotificationReducerState,
   type ReducerNotification,
   reduceNotificationState,
 } from "../notification-reducer.js";
-import type { Trigger } from "../types.js";
+import type { DynamicLoopState, Trigger } from "../types.js";
 
 export interface LoopFireEvent {
   loopId: string;
@@ -21,6 +22,7 @@ export interface LoopFireEvent {
   readOnly?: boolean;
   recurring?: boolean;
   autoTask?: boolean;
+  dynamic?: DynamicLoopState;
 }
 
 export interface PendingNotification extends LoopFireEvent {
@@ -94,19 +96,29 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   }
 
   function buildLoopFireMessage(data: LoopFireEvent): string {
-    const triggerInfo = typeof data.trigger === "string"
-      ? data.trigger
-      : data.trigger?.type === "cron"
-        ? `schedule: ${data.trigger.schedule}`
-        : data.trigger?.type === "event"
-          ? `event: ${data.trigger.source}`
-          : "hybrid";
+    const triggerInfo = formatTrigger(data.trigger, "notification");
 
     const loopId = data.loopId || "?";
     const prompt = data.prompt || "loop fired";
     const constraint = data.readOnly
       ? "\n\nREAD-ONLY MODE — use only read tools (Read, TaskList, LoopList, MonitorList, etc.). No file writes, shell execution, or destructive changes."
       : "";
+
+    if (data.dynamic || (typeof data.trigger !== "string" && data.trigger?.type === "dynamic")) {
+      const dynamic = data.dynamic;
+      const lines = [
+        `[pi-loop] Loop #${loopId} fired (dynamic).${constraint}`,
+        `Goal: ${dynamic?.goal ?? prompt}`,
+        `Iteration: ${dynamic?.iteration ?? 0}`,
+      ];
+      if (dynamic?.state) lines.push(`State: ${dynamic.state}`);
+      if (dynamic?.metrics) lines.push(`Metrics: ${dynamic.metrics}`);
+      if (dynamic?.doneCriteria) lines.push(`Done criteria: ${dynamic.doneCriteria}`);
+      lines.push(
+        "Continue toward the goal. When done call LoopUpdate with status=\"completed\". If more work remains, call LoopUpdate with status=\"continue\" plus state/metrics. Omit nextInterval for idle-driven rewake; include nextInterval for a timed wake. If blocked, use status=\"paused\".",
+      );
+      return lines.join("\n");
+    }
 
     return [
       `[pi-loop] Loop #${loopId} fired (${triggerInfo}).${constraint}`,
@@ -144,6 +156,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
         recurring: notification.recurring,
         readOnly: notification.readOnly,
         autoTask: notification.autoTask,
+        dynamic: notification.dynamic,
         timestamp: notification.timestamp,
       },
     }, {

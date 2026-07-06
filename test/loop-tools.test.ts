@@ -98,6 +98,76 @@ describe("LoopList", () => {
   });
 });
 
+describe("LoopUpdate", () => {
+  let h: ReturnType<typeof setup>;
+  beforeEach(() => {
+    h = setup();
+    h.store.create({ type: "dynamic" }, "finish goal", {
+      recurring: true,
+      dynamic: { goal: "finish goal", iteration: 0 },
+    });
+  });
+
+  it("continues a dynamic loop with progress and next wake", async () => {
+    const out = await h.text("LoopUpdate", {
+      id: "1",
+      status: "continue",
+      state: "router done",
+      metrics: "2/5 tasks complete",
+      doneCriteria: "all tests pass",
+      nextInterval: "3m",
+    });
+
+    expect(out).toContain("Dynamic loop #1 updated");
+    expect(out).toContain("Iteration: 1");
+    expect(h.store.get("1")?.dynamic).toMatchObject({
+      goal: "finish goal",
+      state: "router done",
+      metrics: "2/5 tasks complete",
+      doneCriteria: "all tests pass",
+      iteration: 1,
+      awaitingUpdate: false,
+    });
+    expect(h.store.get("1")?.dynamic?.nextWakeAt).toBeGreaterThan(Date.now());
+    expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
+    expect(h.triggerSystem.add).toHaveBeenCalledWith(h.store.get("1"));
+  });
+
+  it("completes and deletes a dynamic loop", async () => {
+    const out = await h.text("LoopUpdate", { id: "1", status: "completed" });
+
+    expect(out).toBe("Dynamic loop #1 completed and deleted");
+    expect(h.store.get("1")).toBeUndefined();
+    expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
+  });
+
+  it("pauses a dynamic loop", async () => {
+    const out = await h.text("LoopUpdate", { id: "1", status: "paused" });
+
+    expect(out).toBe("Dynamic loop #1 paused");
+    expect(h.store.get("1")?.status).toBe("paused");
+    expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
+  });
+
+  it("rejects non-dynamic loops", async () => {
+    h.store.create({ type: "cron", schedule: "*/5 * * * *" }, "fixed", { recurring: true });
+
+    expect(await h.text("LoopUpdate", { id: "2", status: "continue" })).toBe("Loop #2 is not a dynamic loop");
+  });
+
+  it("defaults continued dynamic loops to idle-driven next wake", async () => {
+    const out = await h.text("LoopUpdate", { id: "1", status: "continue" });
+
+    expect(out).toContain("Next wake: when idle");
+    expect(h.store.get("1")?.dynamic?.nextWakeAt).toBeUndefined();
+  });
+
+  it("reports invalid next intervals", async () => {
+    const out = await h.text("LoopUpdate", { id: "1", status: "continue", nextInterval: "soon" });
+    expect(out).toContain("Invalid nextInterval");
+  });
+});
+
 describe("LoopDelete", () => {
   let h: ReturnType<typeof setup>;
   beforeEach(async () => {
@@ -116,6 +186,20 @@ describe("LoopDelete", () => {
     const out = await h.text("LoopDelete", { id: "1", action: "pause" });
     expect(out).toBe("Loop #1 paused");
     expect(h.store.get("1")?.status).toBe("paused");
+  });
+
+  it("reports auto-deletion tombstones for already deleted loops", async () => {
+    h.store.recordDeletionTombstone("1", { reason: "task_backlog_empty", pendingCount: 0 });
+    h.store.delete("1");
+
+    expect(await h.text("LoopDelete", { id: "1", action: "delete" })).toBe("Loop #1 already auto-deleted: task_backlog_empty (pending: 0)");
+  });
+
+  it("reports auto-deletion tombstones consistently when pausing", async () => {
+    h.store.recordDeletionTombstone("1", { reason: "task_backlog_empty", pendingCount: 0 });
+    h.store.delete("1");
+
+    expect(await h.text("LoopDelete", { id: "1", action: "pause" })).toBe("Loop #1 already auto-deleted: task_backlog_empty (pending: 0)");
   });
 
   it("reports not found for an unknown id", async () => {

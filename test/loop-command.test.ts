@@ -26,7 +26,7 @@ describe("registerLoopCommand", () => {
 
   it("registers a loop command with a description", () => {
     expect(h.command).toBeDefined();
-    expect(h.command.description).toContain("repeating scheduled task");
+    expect(h.command.description).toContain("dynamic goal loop");
   });
 
   it("creates a cron loop from an interval + prompt argument string", async () => {
@@ -54,6 +54,16 @@ describe("registerLoopCommand", () => {
     expect(ctx.notifications).toHaveLength(1);
     expect(ctx.notifications[0].level).toBe("warning");
     expect(ctx.notifications[0].message).toContain("Provide a prompt after the interval");
+  });
+
+  it("creates a cron loop from a full cron expression + prompt", async () => {
+    const ctx = createCtx();
+    await h.command.handler!("*/15 * * * * check metrics", ctx);
+
+    expect(h.store.list()).toHaveLength(1);
+    expect(h.store.get("1")?.trigger).toEqual({ type: "cron", schedule: "*/15 * * * *" });
+    expect(h.store.get("1")?.prompt).toBe("check metrics");
+    expect(h.triggerSystem.add).toHaveBeenCalledTimes(1);
   });
 
   it("no-args invocation opens the Loop menu and creates nothing without a selection", async () => {
@@ -155,37 +165,34 @@ describe("registerLoopCommand", () => {
     expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Event loop #1 created"), "info");
   });
 
-  it("ambiguous free-text input offers a Scheduled/Event choice and honors 'Event-triggered'", async () => {
-    const ui = {
-      select: vi.fn(async () => 'Event-triggered: "watch for pings"'),
-      input: vi.fn().mockResolvedValueOnce("tasks:created"), // event source prompt
-      notify: vi.fn(),
-    };
-    const ctx = { ui } as any;
+  it("free-text input defaults to a dynamic goal loop without prompting for mode", async () => {
+    const ctx = createCtx();
 
-    await h.command.handler!("watch for pings", ctx);
+    await h.command.handler!("finish the monitor wake fix", ctx);
 
-    expect(ui.select).toHaveBeenCalledWith("Loop mode", [
-      'Scheduled: "watch for pings"',
-      'Event-triggered: "watch for pings"',
-    ]);
     expect(h.store.list()).toHaveLength(1);
-    expect(h.store.get("1")?.trigger).toEqual({ type: "event", source: "tasks:created" });
+    expect(h.store.get("1")?.trigger).toEqual({ type: "dynamic" });
+    expect(h.store.get("1")?.prompt).toBe("finish the monitor wake fix");
+    expect(h.store.get("1")?.recurring).toBe(true);
+    expect(h.store.get("1")?.maxFires).toBe(20);
+    expect(h.store.get("1")?.dynamic).toMatchObject({
+      goal: "finish the monitor wake fix",
+      iteration: 0,
+    });
+    expect(h.store.get("1")?.dynamic?.nextWakeAt).toBeUndefined();
+    expect(h.triggerSystem.add).toHaveBeenCalledTimes(1);
+    expect(ctx.notifications[0].message).toContain("Dynamic loop #1 created");
   });
 
-  it("ambiguous free-text input defaults to scheduled when the Scheduled option is picked", async () => {
-    const ui = {
-      select: vi.fn(async () => 'Scheduled: "watch for pings"'),
-      input: vi.fn().mockResolvedValueOnce("15m"), // interval prompt
-      notify: vi.fn(),
-    };
-    const ctx = { ui } as any;
+  it("explicit event syntax creates an event loop without mode selection", async () => {
+    const ctx = createCtx();
 
-    await h.command.handler!("watch for pings", ctx);
+    await h.command.handler!("event tasks:created process new tasks", ctx);
 
     expect(h.store.list()).toHaveLength(1);
-    expect(h.store.get("1")?.trigger.type).toBe("cron");
-    expect(h.store.get("1")?.prompt).toBe("watch for pings");
+    expect(h.store.get("1")?.trigger).toEqual({ type: "event", source: "tasks:created" });
+    expect(h.store.get("1")?.prompt).toBe("process new tasks");
+    expect(h.triggerSystem.add).toHaveBeenCalledTimes(1);
   });
 
   it("no-args 'View loops' -> select entry -> Delete removes the loop and its trigger", async () => {

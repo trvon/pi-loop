@@ -1,4 +1,4 @@
-import type { LoopEntry, Trigger } from "./types.js";
+import type { DynamicLoopState, LoopEntry, Trigger } from "./types.js";
 
 export const MAX_LOOP_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -34,6 +34,7 @@ export type LoopReducerEvent =
       taskBacklog?: boolean;
       readOnly?: boolean;
       maxFires?: number;
+      dynamic?: Partial<DynamicLoopState>;
     };
   }
   | {
@@ -59,6 +60,18 @@ export type LoopReducerEvent =
     payload: {
       id: string;
       reason: "expires_at" | "resume_event_stale" | "already_completed_monitor";
+    };
+  }
+  | {
+    type: "LOOP_DYNAMIC_UPDATED";
+    at: number;
+    source: ReducerSource;
+    entityType?: "loop";
+    entityId?: string;
+    payload: {
+      id: string;
+      prompt?: string;
+      dynamic: Partial<DynamicLoopState>;
     };
   };
 
@@ -106,6 +119,18 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
       readOnly: event.payload.readOnly,
       maxFires: event.payload.maxFires,
       fireCount: 0,
+      dynamic: event.payload.trigger.type === "dynamic" || event.payload.dynamic
+        ? {
+            goal: event.payload.dynamic?.goal ?? event.payload.prompt,
+            state: event.payload.dynamic?.state,
+            metrics: event.payload.dynamic?.metrics,
+            doneCriteria: event.payload.dynamic?.doneCriteria,
+            iteration: event.payload.dynamic?.iteration ?? 0,
+            nextWakeAt: event.payload.dynamic?.nextWakeAt,
+            awaitingUpdate: event.payload.dynamic?.awaitingUpdate ?? false,
+            lastUpdatedAt: event.payload.dynamic?.lastUpdatedAt ?? event.at,
+          }
+        : undefined,
     };
     next.loopsById[id] = loop;
     return {
@@ -147,6 +172,21 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
 
   if (event.type === "LOOP_FIRED") {
     loop.fireCount = (loop.fireCount ?? 0) + 1;
+    loop.updatedAt = event.at;
+  }
+
+  if (event.type === "LOOP_DYNAMIC_UPDATED") {
+    loop.prompt = event.payload.prompt ?? loop.prompt;
+    loop.dynamic = {
+      goal: event.payload.dynamic.goal ?? loop.dynamic?.goal ?? loop.prompt,
+      state: event.payload.dynamic.state ?? loop.dynamic?.state,
+      metrics: event.payload.dynamic.metrics ?? loop.dynamic?.metrics,
+      doneCriteria: event.payload.dynamic.doneCriteria ?? loop.dynamic?.doneCriteria,
+      iteration: event.payload.dynamic.iteration ?? loop.dynamic?.iteration ?? 0,
+      nextWakeAt: "nextWakeAt" in event.payload.dynamic ? event.payload.dynamic.nextWakeAt : loop.dynamic?.nextWakeAt,
+      awaitingUpdate: event.payload.dynamic.awaitingUpdate ?? loop.dynamic?.awaitingUpdate ?? false,
+      lastUpdatedAt: event.payload.dynamic.lastUpdatedAt ?? event.at,
+    };
     loop.updatedAt = event.at;
   }
 

@@ -3,9 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "../src/index.js";
-import { resolveTaskStorePath } from "../src/runtime/scope.js";
+import { resolveLoopStorePath, resolveTaskStorePath } from "../src/runtime/scope.js";
 import { TaskStore } from "../src/task-store.js";
 import { createMockPi } from "./helpers/mock-pi.js";
+
+function readJsonFile(path: string): any {
+  try {
+    return JSON.parse(readFileSync(path, "utf-8"));
+  } catch (error) {
+    throw new Error(`Failed to parse JSON file ${path}: ${(error as Error).message}`);
+  }
+}
 
 describe("native task fallback", () => {
   let cwd: string;
@@ -223,7 +231,7 @@ describe("native task fallback", () => {
     const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
     expect(existsSync(taskPath)).toBe(true);
 
-    const data = JSON.parse(readFileSync(taskPath, "utf-8"));
+    const data = readJsonFile(taskPath);
     expect(data.tasks).toHaveLength(1);
     expect(data.tasks[0].subject).toBe("Test task");
   });
@@ -251,7 +259,7 @@ describe("native task fallback", () => {
     const loopPath = join(cwd, ".pi", "loops", "loops-test-session.json");
     expect(existsSync(loopPath)).toBe(true);
 
-    const data = JSON.parse(readFileSync(loopPath, "utf-8"));
+    const data = readJsonFile(loopPath);
     expect(data.loops).toHaveLength(1);
     expect(data.loops[0].prompt).toBe("check deploy");
     expect(data.loops[0].trigger).toEqual({ type: "cron", schedule: "*/5 * * * *" });
@@ -282,7 +290,7 @@ describe("native task fallback", () => {
     await tasksCommand!.handler?.("Write README updates", { ui });
 
     const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
-    const data = JSON.parse(readFileSync(taskPath, "utf-8"));
+    const data = readJsonFile(taskPath);
     expect(data.tasks).toHaveLength(1);
     expect(data.tasks[0].subject).toBe("Write README updates");
     expect(data.tasks[0].description).toBe("Write README updates");
@@ -292,7 +300,7 @@ describe("native task fallback", () => {
   it("emits tasks:created when native tasks are created", async () => {
     const { pi, toolMap } = createMockPi();
     const seen: Array<Record<string, unknown>> = [];
-    pi.events.on("tasks:created", (payload) => {
+    pi.events.on("tasks:created", (payload: unknown) => {
       seen.push(payload as Record<string, unknown>);
     });
 
@@ -349,7 +357,7 @@ describe("native task fallback", () => {
     expect(result.content[0].text).toBe("Task #1 updated → completed");
 
     const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
-    let data = JSON.parse(readFileSync(taskPath, "utf-8"));
+    let data = readJsonFile(taskPath);
     expect(data.tasks[0].status).toBe("completed");
     expect(typeof data.tasks[0].completedAt).toBe("number");
     const completedAt = data.tasks[0].completedAt;
@@ -360,7 +368,7 @@ describe("native task fallback", () => {
     listResult = await taskList!.execute?.("6", {});
     expect(listResult.content[0].text).toContain("#1 [pending] Transition task");
 
-    data = JSON.parse(readFileSync(taskPath, "utf-8"));
+    data = readJsonFile(taskPath);
     expect(data.tasks[0].status).toBe("pending");
     expect(data.tasks[0].completedAt).toBe(completedAt);
   });
@@ -887,7 +895,7 @@ describe("native task fallback", () => {
     await Promise.resolve();
 
     const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
-    const data = JSON.parse(readFileSync(taskPath, "utf-8"));
+    const data = readJsonFile(taskPath);
     expect(data.tasks).toHaveLength(1);
     expect(data.tasks[0].subject).toBe("Follow up on native task work");
     expect(data.tasks[0].description).toContain("Auto-created from loop #");
@@ -930,7 +938,7 @@ describe("native task fallback", () => {
     await Promise.resolve();
 
     const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
-    const data = JSON.parse(readFileSync(taskPath, "utf-8"));
+    const data = readJsonFile(taskPath);
     expect(data.tasks).toHaveLength(0);
     expect(sentMessages).toHaveLength(0);
   });
@@ -990,7 +998,7 @@ describe("native task fallback", () => {
     await Promise.resolve();
 
     const taskPath = join(cwd, ".pi", "tasks", "tasks-test-session.json");
-    const data = JSON.parse(readFileSync(taskPath, "utf-8"));
+    const data = readJsonFile(taskPath);
     expect(data.tasks).toHaveLength(0);
     expect(sentCustomMessages).toHaveLength(0);
     expect(sentMessages).toHaveLength(0);
@@ -1043,11 +1051,59 @@ describe("dynamic loop pump", () => {
 
   function makeCtx() {
     return {
-      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
       hasPendingMessages: () => false,
       sessionManager: { getSessionId: () => "test-session" },
     };
   }
+
+  it("idle-driven dynamic loops fire on idle, gate while awaiting LoopUpdate, then refire after continue", async () => {
+    const { pi, commandMap, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = makeCtx();
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const loopCommand = commandMap.get("loop");
+    await loopCommand!.handler?.("finish idle dynamic loop", ctx);
+
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await Promise.resolve();
+
+    expect(sentCustomMessages).toHaveLength(1);
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("finish idle dynamic loop");
+
+    const storePath = resolveLoopStorePath({ loopScope: "session", cwd }, "test-session")!;
+    let data = readJsonFile(storePath);
+    expect(data.loops[0].dynamic.awaitingUpdate).toBe(true);
+    expect(data.loops[0].dynamic.nextWakeAt).toBeUndefined();
+
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    expect(sentCustomMessages).toHaveLength(1);
+
+    const loopUpdate = toolMap.get("LoopUpdate");
+    await loopUpdate!.execute?.("2", { id: "1", status: "continue", state: "one slice done" });
+
+    data = readJsonFile(storePath);
+    expect(data.loops[0].dynamic.awaitingUpdate).toBe(false);
+    expect(data.loops[0].dynamic.nextWakeAt).toBeUndefined();
+
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await Promise.resolve();
+
+    expect(sentCustomMessages).toHaveLength(2);
+  });
 
   it("fires a due cron loop once via the heartbeat, without double-firing on a later agent_end pump", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();

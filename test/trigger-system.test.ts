@@ -49,6 +49,17 @@ describe("TriggerSystem", () => {
     expect(store.get("1")!.trigger.type).toBe("cron");
   });
 
+  it("adds dynamic triggers to scheduler without event subscriptions", () => {
+    const entry = store.create({ type: "dynamic" }, "dynamic test", {
+      recurring: true,
+      dynamic: { goal: "dynamic test", iteration: 0, nextWakeAt: Date.now() + 1000 },
+    });
+    system.add(entry);
+
+    expect(scheduler.nextFire(entry.id)).toBeDefined();
+    expect(pi.events.on).not.toHaveBeenCalled();
+  });
+
   it("adds event triggers as pi event subscriptions", () => {
     const eventTrigger: Trigger = { type: "event", source: "tool_execution_start" };
     const entry = store.create(eventTrigger, "event test", { recurring: true });

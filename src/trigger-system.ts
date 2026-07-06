@@ -31,7 +31,7 @@ export class TriggerSystem {
   }
 
   add(entry: LoopEntry): void {
-    if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid") {
+    if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic") {
       this.scheduler.add(entry);
     }
     if (entry.trigger.type === "event" || entry.trigger.type === "hybrid") {

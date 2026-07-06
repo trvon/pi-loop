@@ -3,13 +3,21 @@ import type {
   ExtensionCommandContext,
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
+import { formatTrigger } from "../loop-format.js";
 import { parseInterval } from "../loop-parse.js";
-import type { LoopEntry, Trigger } from "../types.js";
+import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
 
 interface LoopStoreLike {
   list(): LoopEntry[];
   get(id: string): LoopEntry | undefined;
-  create(trigger: Trigger, prompt: string, options?: Partial<LoopEntry>): LoopEntry;
+  create(trigger: Trigger, prompt: string, options: {
+    recurring: boolean;
+    autoTask?: boolean;
+    taskBacklog?: boolean;
+    readOnly?: boolean;
+    maxFires?: number;
+    dynamic?: Partial<DynamicLoopState>;
+  }): LoopEntry;
   pause(id: string): LoopEntry | undefined;
   resume(id: string): LoopEntry | undefined;
   delete(id: string): boolean;
@@ -27,8 +35,54 @@ export interface LoopCommandOptions {
   updateWidget: () => void;
 }
 
+type LoopCommandRoute =
+  | { type: "menu" }
+  | { type: "event"; source: string; prompt: string }
+  | { type: "cron"; interval: string; prompt: string; notifyEvery: boolean }
+  | { type: "missing-interval-prompt" }
+  | { type: "dynamic"; goal: string };
+
+function parseLoopCommandRoute(input: string): LoopCommandRoute {
+  const trimmed = input.trim();
+  if (!trimmed) return { type: "menu" };
+
+  const eventMatch = trimmed.match(/^(?:event|when)\s+(\S+)\s+(.+)$/i);
+  if (eventMatch?.[1] && eventMatch[2]) {
+    return { type: "event", source: eventMatch[1], prompt: eventMatch[2].trim() };
+  }
+
+  const cronMatch = trimmed.match(/^([*\d][^\s]*\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.+)$/);
+  if (cronMatch?.[1] && cronMatch[2]) {
+    return { type: "cron", interval: cronMatch[1], prompt: cronMatch[2].trim(), notifyEvery: false };
+  }
+
+  const intervalMatch = trimmed.match(/^(\d+\s*[smhdS]\b)/i);
+  if (intervalMatch) {
+    const interval = intervalMatch[1] ?? intervalMatch[0];
+    const prompt = trimmed.slice(intervalMatch[0].length).trim();
+    if (!prompt) return { type: "missing-interval-prompt" };
+    return { type: "cron", interval, prompt, notifyEvery: true };
+  }
+
+  return { type: "dynamic", goal: trimmed };
+}
+
 export function registerLoopCommand(options: LoopCommandOptions): void {
   const { pi, getStore, getTriggerSystem, updateWidget } = options;
+
+  function createCronLoop(ui: ExtensionUIContext, interval: string, prompt: string, notifyEvery: boolean) {
+    try {
+      const parsed = parseInterval(interval);
+      const trigger: Trigger = { type: "cron", schedule: parsed.cron };
+      const entry = getStore().create(trigger, prompt, { recurring: true });
+      getTriggerSystem().add(entry);
+      updateWidget();
+      const cadence = notifyEvery ? `every ${parsed.description}` : parsed.description;
+      ui.notify(`Loop #${entry.id} created: ${cadence} — ${prompt.slice(0, 50)}`, "info");
+    } catch (err: unknown) {
+      ui.notify((err as Error).message, "error");
+    }
+  }
 
   async function scheduleLoop(ui: ExtensionUIContext, prompt?: string) {
     const p = prompt || await ui.input("Prompt (what should the agent check?)");
@@ -37,23 +91,14 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
     const interval = await ui.input("Interval (e.g., 5m, 2h, 1d)");
     if (!interval) return;
 
-    try {
-      const parsed = parseInterval(interval);
-      const trigger: Trigger = { type: "cron", schedule: parsed.cron };
-      const entry = getStore().create(trigger, p, { recurring: true });
-      getTriggerSystem().add(entry);
-      updateWidget();
-      ui.notify(`Loop #${entry.id} created: every ${parsed.description}`, "info");
-    } catch (err: unknown) {
-      ui.notify((err as Error).message, "error");
-    }
+    createCronLoop(ui, interval, p, true);
   }
 
-  async function eventLoop(ui: ExtensionUIContext, prompt?: string) {
+  async function eventLoop(ui: ExtensionUIContext, prompt?: string, sourceOverride?: string) {
     const p = prompt || await ui.input("Prompt");
     if (!p) return;
 
-    const source = await ui.input("Pi event source (e.g., tool_execution_start, before_agent_start)");
+    const source = sourceOverride || await ui.input("Pi event source (e.g., tool_execution_start, before_agent_start)");
     if (!source) return;
 
     const trigger: Trigger = { type: "event", source };
@@ -61,6 +106,18 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
     getTriggerSystem().add(entry);
     updateWidget();
     ui.notify(`Event loop #${entry.id} created: fires on "${source}"`, "info");
+  }
+
+  function dynamicLoop(ui: ExtensionUIContext, goal: string) {
+    const trigger: Trigger = { type: "dynamic" };
+    const entry = getStore().create(trigger, goal, {
+      recurring: true,
+      maxFires: 20,
+      dynamic: { goal, iteration: 0 },
+    });
+    getTriggerSystem().add(entry);
+    updateWidget();
+    ui.notify(`Dynamic loop #${entry.id} created — ${goal.slice(0, 50)}`, "info");
   }
 
   async function viewLoops(ui: ExtensionUIContext) {
@@ -72,12 +129,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
 
     const choices = loops.map((l) => {
       const icon = l.status === "active" ? "*" : l.status === "paused" ? "-" : "x";
-      const triggerDesc = l.trigger.type === "cron"
-        ? `cron: ${l.trigger.schedule}`
-        : l.trigger.type === "event"
-          ? `event: ${l.trigger.source}`
-          : `hybrid: ${l.trigger.cron}`;
-      return `${icon} #${l.id} [${l.status}] ${l.prompt.slice(0, 50)} (${triggerDesc})`;
+      return `${icon} #${l.id} [${l.status}] ${l.prompt.slice(0, 50)} (${formatTrigger(l.trigger, "command")})`;
     });
     choices.push("< Back");
 
@@ -127,12 +179,12 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
   }
 
   pi.registerCommand("loop", {
-    description: "Create a repeating scheduled task: /loop [interval] [prompt]. E.g., /loop 5m check the deploy, /loop 30s am I still here",
+    description: "Create a loop. Use /loop [interval] [prompt] for scheduled loops, /loop event <source> <prompt> for event loops, or /loop <goal> for a dynamic goal loop.",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
-      const trimmed = args.trim();
       const ui = ctx.ui;
+      const route = parseLoopCommandRoute(args);
 
-      if (!trimmed) {
+      if (route.type === "menu") {
         const choice = await ui.select("Loop", [
           "Create scheduled loop",
           "Create event-triggered loop",
@@ -147,37 +199,13 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
         return settings(ui);
       }
 
-      const intervalMatch = trimmed.match(/^(\d+\s*[smhdS]\b)/i);
-      if (intervalMatch) {
-        const interval = intervalMatch[1] ?? intervalMatch[0];
-        const prompt = trimmed.slice(intervalMatch[0].length).trim();
-
-        if (!prompt) {
-          ui.notify("Provide a prompt after the interval, e.g., /loop 5m check the deploy", "warning");
-          return;
-        }
-
-        try {
-          const parsed = parseInterval(interval);
-          const trigger: Trigger = { type: "cron", schedule: parsed.cron };
-          const entry = getStore().create(trigger, prompt, { recurring: true });
-          getTriggerSystem().add(entry);
-          updateWidget();
-          ui.notify(`Loop #${entry.id} created: every ${parsed.description} — ${prompt.slice(0, 50)}`, "info");
-        } catch (err: unknown) {
-          ui.notify((err as Error).message, "error");
-        }
+      if (route.type === "event") return eventLoop(ui, route.prompt, route.source);
+      if (route.type === "cron") return createCronLoop(ui, route.interval, route.prompt, route.notifyEvery);
+      if (route.type === "missing-interval-prompt") {
+        ui.notify("Provide a prompt after the interval, e.g., /loop 5m check the deploy", "warning");
         return;
       }
-
-      const choice = await ui.select("Loop mode", [
-        `Scheduled: "${trimmed.slice(0, 50)}"`,
-        `Event-triggered: "${trimmed.slice(0, 50)}"`,
-      ]);
-
-      if (!choice) return;
-      if (choice.startsWith("Event")) return eventLoop(ui, trimmed);
-      return scheduleLoop(ui, trimmed);
+      return dynamicLoop(ui, route.goal);
     },
   });
 }

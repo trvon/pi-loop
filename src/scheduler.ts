@@ -8,6 +8,9 @@ function computeNextFire(entry: LoopEntry): Date {
   if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid") {
     return cronToNextFire(entry.trigger.type === "hybrid" ? entry.trigger.cron : entry.trigger.schedule);
   }
+  if (entry.trigger.type === "dynamic") {
+    return new Date(entry.dynamic?.nextWakeAt ?? Date.now());
+  }
   return new Date(Date.now() + 60000);
 }
 
@@ -22,7 +25,7 @@ export class CronScheduler {
   start(): void {
     for (const entry of this.store.list()) {
       if (entry.status !== "active") continue;
-      if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid") {
+      if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic") {
         this.armTimer(entry);
       }
     }
@@ -33,7 +36,7 @@ export class CronScheduler {
   }
 
   add(entry: LoopEntry): void {
-    if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid") {
+    if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic") {
       this.armTimer(entry);
     }
   }
@@ -47,12 +50,14 @@ export class CronScheduler {
   }
 
   private armTimer(entry: LoopEntry): void {
-    const _scheduleExpr = entry.trigger.type === "hybrid" ? entry.trigger.cron : (entry.trigger as { schedule: string }).schedule;
-
     const nextFire = computeNextFire(entry);
-    const minuteField = _scheduleExpr.trim().split(/\s+/)[0] ?? "";
-    const minuteStep = minuteField.startsWith("*/") ? parseInt(minuteField.slice(2), 10) || 30 : 30;
-    const jitter = computeJitter(entry.id, entry.recurring, minuteStep);
+    let jitter = 0;
+    if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid") {
+      const scheduleExpr = entry.trigger.type === "hybrid" ? entry.trigger.cron : entry.trigger.schedule;
+      const minuteField = scheduleExpr.trim().split(/\s+/)[0] ?? "";
+      const minuteStep = minuteField.startsWith("*/") ? parseInt(minuteField.slice(2), 10) || 30 : 30;
+      jitter = computeJitter(entry.id, entry.recurring, minuteStep);
+    }
     const fireTime = nextFire.getTime() + jitter;
 
     if (fireTime > entry.expiresAt) {
@@ -72,6 +77,8 @@ export class CronScheduler {
         this.fireTimes.delete(id);
         continue;
       }
+
+      if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate) continue;
 
       if (filter && !filter(entry)) continue;
 

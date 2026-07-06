@@ -184,6 +184,37 @@ describe("LoopStore (in-memory)", () => {
     expect((l.trigger as any).debounceMs).toBe(30000);
   });
 
+  it("stores dynamic loop state", () => {
+    const dynamicTrigger: Trigger = { type: "dynamic" };
+    const l = store.create(dynamicTrigger, "finish release", {
+      recurring: true,
+      maxFires: 20,
+      dynamic: {
+        goal: "finish release",
+        state: "tests pending",
+        metrics: "0/3 checks passing",
+        doneCriteria: "lint/typecheck/test pass",
+      },
+    });
+
+    expect(l.trigger.type).toBe("dynamic");
+    expect(l.dynamic).toMatchObject({
+      goal: "finish release",
+      state: "tests pending",
+      metrics: "0/3 checks passing",
+      doneCriteria: "lint/typecheck/test pass",
+      iteration: 0,
+      awaitingUpdate: false,
+    });
+    expect(l.dynamic?.lastUpdatedAt).toBe(l.createdAt);
+  });
+
+  it("defaults dynamic goal to the prompt", () => {
+    const l = store.create({ type: "dynamic" }, "ship the fix", { recurring: true });
+    expect(l.dynamic?.goal).toBe("ship the fix");
+    expect(l.dynamic?.iteration).toBe(0);
+  });
+
   it("stores autoTask flag", () => {
     const l = store.create(cronTrigger, "test", { recurring: true, autoTask: true });
     expect(l.autoTask).toBe(true);
@@ -193,6 +224,33 @@ describe("LoopStore (in-memory)", () => {
     const l = store.create(cronTrigger, "limited", { recurring: true, maxFires: 5 });
     expect(l.maxFires).toBe(5);
     expect(l.fireCount).toBe(0);
+  });
+
+  it("keeps short-lived deletion tombstones", () => {
+    store.create(cronTrigger, "auto worker", { recurring: true });
+    const tombstone = store.recordDeletionTombstone("1", { reason: "task_backlog_empty", pendingCount: 0 });
+    store.delete("1");
+
+    expect(tombstone).toMatchObject({
+      id: "1",
+      reason: "task_backlog_empty",
+      prompt: "auto worker",
+      pendingCount: 0,
+    });
+    expect(store.getDeletionTombstone("1")?.reason).toBe("task_backlog_empty");
+  });
+
+  it("drops stale deletion tombstones", () => {
+    store.create(cronTrigger, "auto worker", { recurring: true });
+    const tombstone = store.recordDeletionTombstone("1", { reason: "task_backlog_empty", pendingCount: 0 })!;
+    store.delete("1");
+    tombstone.deletedAt = Date.now() - 11 * 60 * 1000;
+
+    expect(store.getDeletionTombstone("1")).toBeUndefined();
+  });
+
+  it("does not record deletion tombstones for missing loops", () => {
+    expect(store.recordDeletionTombstone("404", { reason: "task_backlog_empty", pendingCount: 0 })).toBeUndefined();
   });
 
   it("increments fireCount via explicit fire", () => {
@@ -223,6 +281,37 @@ describe("LoopStore (file-backed)", () => {
     const loops = store2.list();
     expect(loops).toHaveLength(1);
     expect(loops[0].prompt).toBe("persist test");
+  });
+
+  it("persists dynamic loop state to disk", () => {
+    const store1 = new LoopStore(testListId);
+    store1.create({ type: "dynamic" }, "finish dynamic loop", {
+      recurring: true,
+      dynamic: {
+        goal: "finish dynamic loop",
+        state: "router done",
+        metrics: "1/5 tasks complete",
+      },
+    });
+
+    const store2 = new LoopStore(testListId);
+    expect(store2.get("1")?.dynamic).toMatchObject({
+      goal: "finish dynamic loop",
+      state: "router done",
+      metrics: "1/5 tasks complete",
+      iteration: 0,
+    });
+  });
+
+  it("keeps deletion tombstones process-local", () => {
+    const store1 = new LoopStore(testListId);
+    store1.create(cronTrigger, "auto worker", { recurring: true });
+    store1.recordDeletionTombstone("1", { reason: "task_backlog_empty", pendingCount: 0 });
+    store1.delete("1");
+
+    const store2 = new LoopStore(testListId);
+    expect(store1.getDeletionTombstone("1")?.reason).toBe("task_backlog_empty");
+    expect(store2.getDeletionTombstone("1")).toBeUndefined();
   });
 
   it("persists ID counter across instances", () => {

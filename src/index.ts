@@ -67,15 +67,26 @@ export default function (pi: ExtensionAPI) {
     // Once pi-tasks owns the channels, any native store created during the
     // detection window is a shadow — never surface it in the status line.
     if (tasksAvailable || !nativeTaskStore) return { count: 0 };
-    const tasks = nativeTaskStore.list().filter(t => t.status === "pending" || t.status === "in_progress");
-    const active = tasks.find(t => t.status === "in_progress");
-    const next = tasks.find(t => t.status === "pending");
-    const focus = active
-      ? `active: ${active.subject.slice(0, 50)}`
-      : next
-        ? `next: ${next.subject.slice(0, 50)}`
+
+    let count = 0;
+    let activeSubject: string | undefined;
+    let nextSubject: string | undefined;
+    for (const task of nativeTaskStore.list()) {
+      if (task.status === "in_progress") {
+        count++;
+        activeSubject ??= task.subject;
+      } else if (task.status === "pending") {
+        count++;
+        nextSubject ??= task.subject;
+      }
+    }
+
+    const focus = activeSubject
+      ? `active: ${activeSubject.slice(0, 50)}`
+      : nextSubject
+        ? `next: ${nextSubject.slice(0, 50)}`
         : undefined;
-    return { count: tasks.length, focusText: focus };
+    return { count, focusText: focus };
   });
 
   scheduler = new CronScheduler(store, onLoopFire);
@@ -199,6 +210,9 @@ export default function (pi: ExtensionAPI) {
     deleteLoop: (id) => {
       store.delete(id);
     },
+    recordDeletionTombstone: (id, tombstone) => {
+      store.recordDeletionTombstone(id, tombstone);
+    },
     addTrigger: (entry) => {
       triggerSystem.add(entry);
     },
@@ -237,6 +251,17 @@ export default function (pi: ExtensionAPI) {
     }
     store.fire(entry.id);
 
+    const firedAt = Date.now();
+    const firedEntry = entry.trigger.type === "dynamic"
+      ? store.updateDynamic(entry.id, {
+          dynamic: {
+            awaitingUpdate: true,
+            nextWakeAt: undefined,
+            lastUpdatedAt: firedAt,
+          },
+        }) ?? entry
+      : entry;
+
     if (entry.autoTask) {
       autoCreateTask(entry).then((taskId) => {
         if (taskId) debug(`loop #${entry.id} → task #${taskId}`);
@@ -244,13 +269,14 @@ export default function (pi: ExtensionAPI) {
     }
 
     pi.events.emit("loop:fire", {
-      loopId: entry.id,
-      prompt: entry.prompt,
-      trigger: entry.trigger,
-      timestamp: Date.now(),
-      readOnly: entry.readOnly,
-      recurring: entry.recurring,
-      autoTask: entry.autoTask,
+      loopId: firedEntry.id,
+      prompt: firedEntry.prompt,
+      trigger: firedEntry.trigger,
+      timestamp: firedAt,
+      readOnly: firedEntry.readOnly,
+      recurring: firedEntry.recurring,
+      autoTask: firedEntry.autoTask,
+      dynamic: firedEntry.dynamic,
     });
   }
 

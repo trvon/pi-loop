@@ -1,3 +1,5 @@
+import type { DynamicLoopState } from "./types.js";
+
 type ReducerSource = "tool" | "command" | "scheduler" | "eventbus" | "monitor" | "session" | "coordinator" | "system";
 
 export interface ReducerNotification {
@@ -9,6 +11,7 @@ export interface ReducerNotification {
   recurring?: boolean;
   autoTask?: boolean;
   readOnly?: boolean;
+  dynamic?: DynamicLoopState;
 }
 
 export interface NotificationReducerState {

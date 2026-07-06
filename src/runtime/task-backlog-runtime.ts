@@ -8,7 +8,7 @@ import {
   type TaskBacklogEvent,
 } from "../task-backlog-coordinator.js";
 import type { TaskStore } from "../task-store.js";
-import type { LoopEntry, Trigger } from "../types.js";
+import type { LoopDeletionTombstoneInput, LoopEntry, Trigger } from "../types.js";
 import {
   buildLoopAutodeletedPayload,
   buildTaskBacklogEmptyPayload,
@@ -27,6 +27,7 @@ export interface TaskBacklogRuntimeOptions {
     maxFires?: number;
   }) => LoopEntry;
   deleteLoop: (id: string) => void;
+  recordDeletionTombstone?: (id: string, tombstone: LoopDeletionTombstoneInput) => void;
   addTrigger: (entry: LoopEntry) => void;
   removeTrigger: (id: string) => void;
   updateWidget: () => void;
@@ -52,6 +53,7 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     getLoops,
     createLoop,
     deleteLoop,
+    recordDeletionTombstone,
     addTrigger,
     removeTrigger,
     updateWidget,
@@ -79,6 +81,14 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     return getLoops().find(isAutoTaskWorkerLoop);
   }
 
+  function deleteTaskBacklogLoop(entry: LoopEntry, pendingCount: number): void {
+    debug?.(`task backlog loop #${entry.id} — no pending tasks remain, deleting`);
+    removeTrigger(entry.id);
+    recordDeletionTombstone?.(entry.id, { reason: "task_backlog_empty", pendingCount });
+    deleteLoop(entry.id);
+    emitLoopAutodeleted?.(buildLoopAutodeletedPayload(entry, pendingCount));
+  }
+
   async function cleanupTaskBacklogLoops(): Promise<number> {
     const backlogLoops = getLoops().filter(isTaskBacklogLoop);
     if (backlogLoops.length === 0) return 0;
@@ -86,15 +96,9 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     const pending = await hasPendingTasks();
     if (pending < 0 || pending > 0) return 0;
 
-    emitTaskBacklogEmpty?.(
-      buildTaskBacklogEmptyPayload(backlogLoops.map((entry) => entry.id)),
-    );
-    for (const entry of backlogLoops) {
-      debug?.(`task backlog loop #${entry.id} — no pending tasks remain, deleting`);
-      removeTrigger(entry.id);
-      deleteLoop(entry.id);
-      emitLoopAutodeleted?.(buildLoopAutodeletedPayload(entry, pending));
-    }
+    const deletedLoopIds = backlogLoops.map((entry) => entry.id);
+    emitTaskBacklogEmpty?.(buildTaskBacklogEmptyPayload(deletedLoopIds));
+    for (const entry of backlogLoops) deleteTaskBacklogLoop(entry, pending);
     updateWidget();
     return backlogLoops.length;
   }
@@ -107,7 +111,7 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
 
     const trigger: Trigger = {
       type: "hybrid",
-      cron: "*/5 * * * *",
+      cron: "*/3 * * * *",
       event: { source: "tasks:created" },
       debounceMs: 30000,
     };

@@ -50,6 +50,7 @@ function setup(overrides: Partial<TaskBacklogRuntimeOptions> = {}) {
     getLoops: () => loops,
     createLoop,
     deleteLoop,
+    recordDeletionTombstone: vi.fn(),
     addTrigger: vi.fn(),
     removeTrigger: vi.fn(),
     updateWidget: vi.fn(),
@@ -108,7 +109,7 @@ describe("ensureAutoTaskWorkerLoop", () => {
     expect(result.created).toBe(true);
     expect(result.entry?.trigger).toEqual({
       type: "hybrid",
-      cron: "*/5 * * * *",
+      cron: "*/3 * * * *",
       event: { source: "tasks:created" },
       debounceMs: 30000,
     });
@@ -135,6 +136,7 @@ describe("cleanupTaskBacklogLoops", () => {
     const cleaned = await runtime.cleanupTaskBacklogLoops();
     expect(cleaned).toBe(1);
     expect(opts.removeTrigger).toHaveBeenCalledWith("1");
+    expect(opts.recordDeletionTombstone).toHaveBeenCalledWith("1", { reason: "task_backlog_empty", pendingCount: 0 });
     expect(opts.deleteLoop).toHaveBeenCalledWith("1");
     expect(opts.emitTaskBacklogEmpty).toHaveBeenCalledWith({
       pendingCount: 0,
@@ -149,6 +151,12 @@ describe("cleanupTaskBacklogLoops", () => {
         pendingCount: 0,
       }),
     );
+
+    const callOrder = (fn: unknown) => (fn as { mock: { invocationCallOrder: number[] } }).mock.invocationCallOrder[0];
+    expect(callOrder(opts.emitTaskBacklogEmpty)).toBeLessThan(callOrder(opts.removeTrigger));
+    expect(callOrder(opts.removeTrigger)).toBeLessThan(callOrder(opts.recordDeletionTombstone));
+    expect(callOrder(opts.recordDeletionTombstone)).toBeLessThan(callOrder(opts.deleteLoop));
+    expect(callOrder(opts.deleteLoop)).toBeLessThan(callOrder(opts.emitLoopAutodeleted));
   });
 
   it("keeps backlog loops when tasks are still pending", async () => {

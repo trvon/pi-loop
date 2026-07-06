@@ -1,3 +1,15 @@
+export type LoopDeletionReason = "task_backlog_empty";
+
+export interface LoopDeletionTombstone {
+  id: string;
+  reason: LoopDeletionReason;
+  deletedAt: number;
+  prompt: string;
+  pendingCount?: number;
+}
+
+export type LoopDeletionTombstoneInput = Omit<LoopDeletionTombstone, "id" | "deletedAt" | "prompt">;
+
 export type LoopStatus = "active" | "paused";
 
 export interface CronTrigger {
@@ -18,7 +30,22 @@ export interface HybridTrigger {
   debounceMs: number;
 }
 
-export type Trigger = CronTrigger | EventTrigger | HybridTrigger;
+export interface DynamicTrigger {
+  type: "dynamic";
+}
+
+export type Trigger = CronTrigger | EventTrigger | HybridTrigger | DynamicTrigger;
+
+export interface DynamicLoopState {
+  goal: string;
+  state?: string;
+  metrics?: string;
+  doneCriteria?: string;
+  iteration: number;
+  nextWakeAt?: number;
+  awaitingUpdate?: boolean;
+  lastUpdatedAt?: number;
+}
 
 export interface LoopEntry {
   id: string;
@@ -34,6 +61,7 @@ export interface LoopEntry {
   readOnly?: boolean;
   maxFires?: number;
   fireCount?: number;
+  dynamic?: DynamicLoopState;
 }
 
 export interface LoopStoreData {

@@ -2,12 +2,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { LoopEntry, LoopStoreData, Trigger } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopStoreData, Trigger } from "./types.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
 const MAX_LOOPS = 25;
+const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
 
 export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, LoopReducerEvent, LoopStoreData> {
+  private tombstones = new Map<string, LoopDeletionTombstone>();
+
   constructor(listIdOrPath?: string) {
     super(
       {
@@ -22,7 +25,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     );
   }
 
-  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number }): LoopEntry {
+  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState> }): LoopEntry {
     return this.withLock(() => {
       if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
@@ -41,6 +44,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           taskBacklog: opts.taskBacklog,
           readOnly: opts.readOnly,
           maxFires: opts.maxFires,
+          dynamic: opts.dynamic,
         },
       });
       return this.entries.get(String(this.nextId - 1))!;
@@ -117,6 +121,43 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
 
       return { entry: this.entries.get(id), changedFields };
     });
+  }
+
+  updateDynamic(id: string, fields: { prompt?: string; dynamic: Partial<DynamicLoopState> }): LoopEntry | undefined {
+    return this.withLock(() => {
+      if (!this.entries.has(id)) return undefined;
+      this.applyReducerEvent({
+        type: "LOOP_DYNAMIC_UPDATED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "loop",
+        entityId: id,
+        payload: { id, prompt: fields.prompt, dynamic: fields.dynamic },
+      });
+      return this.entries.get(id);
+    });
+  }
+
+  getDeletionTombstone(id: string): LoopDeletionTombstone | undefined {
+    const tombstone = this.tombstones.get(id);
+    if (!tombstone) return undefined;
+    if (Date.now() - tombstone.deletedAt <= TOMBSTONE_TTL_MS) return tombstone;
+    this.tombstones.delete(id);
+    return undefined;
+  }
+
+  recordDeletionTombstone(id: string, input: LoopDeletionTombstoneInput): LoopDeletionTombstone | undefined {
+    const entry = this.entries.get(id);
+    if (!entry) return undefined;
+    const tombstone: LoopDeletionTombstone = {
+      id,
+      reason: input.reason,
+      pendingCount: input.pendingCount,
+      deletedAt: Date.now(),
+      prompt: entry.prompt,
+    };
+    this.tombstones.set(id, tombstone);
+    return tombstone;
   }
 
   delete(id: string): boolean {

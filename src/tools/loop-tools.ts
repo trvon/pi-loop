@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { formatTrigger } from "../loop-format.js";
 import { parseInterval } from "../loop-parse.js";
 import type { LoopEntry, Trigger } from "../types.js";
 import { textResult } from "./tool-result.js";
@@ -15,6 +16,8 @@ interface LoopStoreLike {
     maxFires?: number;
   }): LoopEntry;
   pause(id: string): LoopEntry | undefined;
+  updateDynamic(id: string, fields: { prompt?: string; dynamic: Partial<NonNullable<LoopEntry["dynamic"]>> }): LoopEntry | undefined;
+  getDeletionTombstone(id: string): { reason: string; pendingCount?: number } | undefined;
   delete(id: string): boolean;
 }
 
@@ -80,6 +83,89 @@ function formatRemaining(ms: number): string {
   if (ms < 60000) return `${Math.round(ms / 1000)}s`;
   if (ms < 3600000) return `${Math.round(ms / 60000)}m`;
   return `${Math.round(ms / 3600000)}h`;
+}
+
+function parseDelayMs(input: string): number | undefined {
+  const match = input.trim().match(/^(\d+)\s*(s|m|h|d)$/i);
+  if (!match) return undefined;
+  const value = Number.parseInt(match[1] ?? "", 10);
+  const unit = (match[2] ?? "").toLowerCase();
+  const multiplier = unit === "s" ? 1000 : unit === "m" ? 60000 : unit === "h" ? 3600000 : 86400000;
+  return value * multiplier;
+}
+
+interface LoopUpdateParams {
+  id: string;
+  status: "continue" | "completed" | "paused";
+  state?: string;
+  metrics?: string;
+  doneCriteria?: string;
+  nextInterval?: string;
+  prompt?: string;
+}
+
+function resolveNextWakeAt(nextInterval?: string): { nextWakeAt?: number; error?: string } {
+  if (!nextInterval) return { nextWakeAt: undefined };
+  const parsedDelayMs = parseDelayMs(nextInterval);
+  if (!parsedDelayMs) return { error: `Invalid nextInterval "${nextInterval}". Use formats like 3m, 30s, or 1h.` };
+  return { nextWakeAt: Date.now() + parsedDelayMs };
+}
+
+function formatDynamicUpdateResult(id: string, iteration: number | undefined, nextWakeAt: number | undefined): string {
+  const mode = nextWakeAt === undefined
+    ? "Next wake: when idle"
+    : `Next wake: ${formatRemaining(Math.max(0, nextWakeAt - Date.now()))}`;
+  return `Dynamic loop #${id} updated\n` +
+    `Iteration: ${iteration ?? "?"}` +
+    `\n${mode}`;
+}
+
+function formatDeletionTombstone(id: string, tombstone: { reason: string; pendingCount?: number }): string {
+  const detail = tombstone.pendingCount === undefined ? "" : ` (pending: ${tombstone.pendingCount})`;
+  return `Loop #${id} already auto-deleted: ${tombstone.reason}${detail}`;
+}
+
+function continueDynamicLoop(
+  params: LoopUpdateParams,
+  entry: LoopEntry & { dynamic: NonNullable<LoopEntry["dynamic"]> },
+  store: LoopStoreLike,
+  triggerSystem: TriggerSystemLike,
+): string {
+  const { nextWakeAt, error } = resolveNextWakeAt(params.nextInterval);
+  if (error) return error;
+
+  const updated = store.updateDynamic(params.id, {
+    prompt: params.prompt,
+    dynamic: {
+      goal: params.prompt ?? entry.dynamic.goal,
+      state: params.state,
+      metrics: params.metrics,
+      doneCriteria: params.doneCriteria,
+      iteration: (entry.dynamic.iteration ?? 0) + 1,
+      nextWakeAt,
+      awaitingUpdate: false,
+      lastUpdatedAt: Date.now(),
+    },
+  });
+  if (updated) {
+    triggerSystem.remove(params.id);
+    triggerSystem.add(updated);
+  }
+  return formatDynamicUpdateResult(params.id, updated?.dynamic?.iteration, nextWakeAt);
+}
+
+function stopDynamicLoop(
+  params: LoopUpdateParams,
+  store: LoopStoreLike,
+  triggerSystem: TriggerSystemLike,
+): string {
+  triggerSystem.remove(params.id);
+  if (params.status === "completed") {
+    store.delete(params.id);
+    return `Dynamic loop #${params.id} completed and deleted`;
+  }
+  store.pause(params.id);
+  return `Dynamic loop #${params.id} paused`;
 }
 
 export function registerLoopTools(options: LoopToolsOptions): void {
@@ -216,11 +302,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       const bootstrapped = await maybeBootstrapTaskLoop(entry);
       updateWidget();
 
-      const triggerDesc = trigger.type === "cron"
-        ? `schedule: ${trigger.schedule}`
-        : trigger.type === "event"
-          ? `event: ${trigger.source}`
-          : `hybrid: cron ${trigger.cron} + event ${trigger.event.source}`;
+      const triggerDesc = formatTrigger(trigger, "create");
 
       return Promise.resolve(textResult(
         `Loop #${entry.id} created: ${entry.prompt.slice(0, 60)}\n` +
@@ -248,13 +330,9 @@ Use this before creating new loops to avoid duplicates, or to find IDs for LoopD
 
       const lines: string[] = [];
       for (const entry of loops) {
-        const triggerDesc = entry.trigger.type === "cron"
-          ? `cron: ${entry.trigger.schedule}`
-          : entry.trigger.type === "event"
-            ? `event: ${entry.trigger.source}`
-            : `hybrid: ${entry.trigger.cron} + ${entry.trigger.event.source}`;
+        const triggerDesc = formatTrigger(entry.trigger, "list");
 
-        const nextFire = entry.trigger.type !== "event" ? getScheduler().nextFire(entry.id) : undefined;
+        const nextFire = entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.dynamic?.nextWakeAt !== undefined ? getScheduler().nextFire(entry.id) : undefined;
         const statusIcon = entry.status === "active" ? "*" : entry.status === "paused" ? "-" : "x";
         let line = `${statusIcon} #${entry.id} [${entry.status}] ${entry.prompt.slice(0, 60)}`;
         line += ` (${triggerDesc})`;
@@ -268,6 +346,38 @@ Use this before creating new loops to avoid duplicates, or to find IDs for LoopD
       }
 
       return Promise.resolve(textResult(lines.join("\n")));
+    },
+  });
+
+  pi.registerTool({
+    name: "LoopUpdate",
+    label: "LoopUpdate",
+    description: `Update progress for a dynamic loop.
+
+Use this after a dynamic loop wake. Mark status as "continue" with updated state/metrics and optional nextInterval, "completed" when the goal is done, or "paused" to stop temporarily.`,
+    parameters: Type.Object({
+      id: Type.String({ description: "Dynamic loop ID to update" }),
+      status: Type.String({ description: "continue, completed, or paused", enum: ["continue", "completed", "paused"] }),
+      state: Type.Optional(Type.String({ description: "Current progress/state summary" })),
+      metrics: Type.Optional(Type.String({ description: "Current metrics/check results" })),
+      doneCriteria: Type.Optional(Type.String({ description: "Definition of done for the dynamic loop" })),
+      nextInterval: Type.Optional(Type.String({ description: "When to wake next, e.g. 3m, 30s, 1h" })),
+      prompt: Type.Optional(Type.String({ description: "Optional updated goal/prompt text" })),
+    }),
+    execute(_toolCallId, params: LoopUpdateParams) {
+      const store = getStore();
+      const triggerSystem = getTriggerSystem();
+      const entry = store.get(params.id);
+      if (!entry) return Promise.resolve(textResult(`Loop #${params.id} not found`));
+      if (entry.trigger.type !== "dynamic" || !entry.dynamic) {
+        return Promise.resolve(textResult(`Loop #${params.id} is not a dynamic loop`));
+      }
+
+      const message = params.status === "continue"
+        ? continueDynamicLoop(params, entry as LoopEntry & { dynamic: NonNullable<LoopEntry["dynamic"]> }, store, triggerSystem)
+        : stopDynamicLoop(params, store, triggerSystem);
+      updateWidget();
+      return Promise.resolve(textResult(message));
     },
   });
 
@@ -286,7 +396,11 @@ Use "pause" to temporarily stop a loop without removing it. Use "delete" to perm
 
       if (action === "pause") {
         const entry = getStore().pause(id);
-        if (!entry) return Promise.resolve(textResult(`Loop #${id} not found`));
+        if (!entry) {
+          const tombstone = getStore().getDeletionTombstone(id);
+          if (tombstone) return Promise.resolve(textResult(formatDeletionTombstone(id, tombstone)));
+          return Promise.resolve(textResult(`Loop #${id} not found`));
+        }
         getTriggerSystem().remove(id);
         updateWidget();
         return Promise.resolve(textResult(`Loop #${id} paused`));
@@ -296,6 +410,8 @@ Use "pause" to temporarily stop a loop without removing it. Use "delete" to perm
       const deleted = getStore().delete(id);
       updateWidget();
       if (deleted) return Promise.resolve(textResult(`Loop #${id} deleted`));
+      const tombstone = getStore().getDeletionTombstone(id);
+      if (tombstone) return Promise.resolve(textResult(formatDeletionTombstone(id, tombstone)));
       return Promise.resolve(textResult(`Loop #${id} not found`));
     },
   });

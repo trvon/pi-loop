@@ -28,6 +28,40 @@ describe("loop:fire custom message delivery", () => {
     expect(sentMessages[0].message.content).toContain("Pick up the next task and work on it");
   });
 
+  it("renders dynamic loop progress and LoopUpdate guidance", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
+      loopId: "5",
+      prompt: "finish dynamic loops",
+      trigger: { type: "dynamic" },
+      timestamp: Date.now(),
+      recurring: true,
+      dynamic: {
+        goal: "finish dynamic loops",
+        state: "router done",
+        metrics: "2/5 tasks complete",
+        doneCriteria: "all tasks done",
+        iteration: 2,
+      },
+    });
+    await flushAsync();
+
+    expect(sentMessages).toHaveLength(1);
+    const content = sentMessages[0].message.content;
+    expect(content).toContain("Loop #5 fired (dynamic)");
+    expect(content).toContain("Goal: finish dynamic loops");
+    expect(content).toContain("State: router done");
+    expect(content).toContain("Metrics: 2/5 tasks complete");
+    expect(content).toContain("LoopUpdate");
+    expect(content).toContain("idle-driven rewake");
+  });
+
   it("includes the read-only constraint without advertising LoopCreate", async () => {
     const { pi, sentMessages, emitExtension } = createMockPi();
     const extension = await import("../src/index.js");
