@@ -59,7 +59,18 @@ describe("monitor-ondone-runtime", () => {
     expect(deleteLoop).toHaveBeenCalledWith("5");
   });
 
-  it("expires the loop when the monitor already finished in a non-completed state", async () => {
+  it("delivers immediately when the monitor already errored", async () => {
+    const manager = mockManager({ onCompleteReturns: false, status: "error" });
+    const { runtime, onLoopFire, deleteLoop } = setup(manager);
+
+    runtime.register(doneLoop, "3");
+    await flush();
+
+    expect(onLoopFire).toHaveBeenCalledWith(doneLoop);
+    expect(deleteLoop).toHaveBeenCalledWith("5");
+  });
+
+  it("expires the loop when the monitor already finished in a non-notifying state", async () => {
     const manager = mockManager({ onCompleteReturns: false, status: "stopped" });
     const { runtime, onLoopFire, deleteLoop } = setup(manager);
 

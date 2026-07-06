@@ -62,7 +62,7 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
 
     const monitor = monitorManager.get(monitorId);
     if (monitor && monitor.status !== "running") {
-      if (monitor.status === "completed") {
+      if (monitor.status === "completed" || monitor.status === "error") {
         deliver();
         return;
       }

@@ -270,7 +270,7 @@ export class MonitorManager {
   onComplete(id: string, callback: () => void): boolean {
     const bp = this.processes.get(id);
     if (!bp) return false;
-    if (bp.entry.status === "completed") {
+    if (bp.entry.status === "completed" || bp.entry.status === "error") {
       callback();
       return true;
     }

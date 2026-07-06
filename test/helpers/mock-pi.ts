@@ -199,31 +199,37 @@ export interface MockCtxOptions {
   cwd?: string;
   isIdle?: boolean;
   sessionId?: string;
+  modelRegistry?: unknown;
 }
 
 /**
  * Standard extension context used by lifecycle-handler tests. Superset of the
  * ctx shapes both pi-loop (setStatus/setWidget, hasPendingMessages) and
  * pi-orca (notify, cwd, isIdle) depend on. `notifications` records every
- * ui.notify call. Accepts a bare boolean for backward compatibility with
- * `createCtx(hasPendingMessages)` call sites.
+ * ui.notify call; `statuses` records every ui.setStatus call. Accepts a bare
+ * boolean for backward compatibility with `createCtx(hasPendingMessages)`.
  */
 export function createCtx(options: boolean | MockCtxOptions = false) {
   const opts = typeof options === "boolean" ? { hasPendingMessages: options } : options;
   const notifications: Array<{ message: string; level?: string }> = [];
+  const statuses: Array<{ key: string; text: string | undefined }> = [];
   return {
     ui: {
-      setStatus() {},
+      setStatus(key: string, text: string | undefined) {
+        statuses.push({ key, text });
+      },
       setWidget() {},
       notify(message: string, level?: string) {
         notifications.push({ message, level });
       },
     },
     notifications,
+    statuses,
     cwd: opts.cwd ?? process.cwd(),
     isIdle: () => opts.isIdle ?? true,
     hasPendingMessages: () => opts.hasPendingMessages ?? false,
     sessionManager: { getSessionId: () => opts.sessionId ?? "test-session" },
+    ...(opts.modelRegistry ? { modelRegistry: opts.modelRegistry } : {}),
   };
 }
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MonitorManager } from "../src/monitor-manager.js";
 import { createMockPi } from "./helpers/mock-pi.js";
+import { createMockChildProcess, createSequentialSpawn } from "./helpers/mock-spawn.js";
 
 describe("MonitorManager", () => {
   let manager: MonitorManager;
@@ -82,6 +83,25 @@ describe("MonitorManager", () => {
 
     expect(callback).toHaveBeenCalledTimes(1);
     expect(manager.getProcess(entry.id)?.completionCallbacks).toHaveLength(0);
+  });
+
+  it("invokes completion callbacks immediately for already errored monitors", async () => {
+    manager = new MonitorManager(
+      pi,
+      createSequentialSpawn(createMockChildProcess({ exitCode: 3 })),
+    );
+    const entry = manager.create("exit 3", "fast failure");
+
+    await new Promise<void>((resolve) => {
+      pi.events.on("monitor:error", (data: any) => {
+        if (data.monitorId === entry.id) resolve();
+      });
+    });
+    expect(manager.get(entry.id)?.status).toBe("error");
+
+    const callback = vi.fn();
+    expect(manager.onComplete(entry.id, callback)).toBe(true);
+    expect(callback).toHaveBeenCalledTimes(1);
   });
 
   it("prunes completed monitors after the retention callback runs", async () => {
