@@ -1057,7 +1057,7 @@ describe("dynamic loop pump", () => {
     };
   }
 
-  it("idle-driven dynamic loops fire on idle, gate while awaiting LoopUpdate, then refire after continue", async () => {
+  it("dynamic loops start immediately while idle, gate while awaiting LoopUpdate, then refire after continue", async () => {
     const { pi, commandMap, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 
     extension(pi as any);
@@ -1071,10 +1071,6 @@ describe("dynamic loop pump", () => {
 
     const loopCommand = commandMap.get("loop");
     await loopCommand!.handler?.("finish idle dynamic loop", ctx);
-
-    for (const handler of extensionHandlers.get("agent_end") ?? []) {
-      await handler(null, ctx);
-    }
     await Promise.resolve();
 
     expect(sentCustomMessages).toHaveLength(1);
@@ -1117,10 +1113,10 @@ describe("dynamic loop pump", () => {
       await handler(null, ctx);
     }
 
-    await commandMap.get("loop")!.handler?.("recover after session switch", ctx);
     for (const handler of extensionHandlers.get("agent_start") ?? []) {
       await handler(null, ctx);
     }
+    await commandMap.get("loop")!.handler?.("recover after session switch", ctx);
 
     await vi.advanceTimersByTimeAsync(30_000);
     expect(sentCustomMessages).toHaveLength(0);

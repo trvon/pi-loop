@@ -33,6 +33,7 @@ export interface LoopCommandOptions {
   getStore: () => LoopStoreLike;
   getTriggerSystem: () => TriggerSystemLike;
   updateWidget: () => void;
+  onDynamicLoopActivated?: (entry: LoopEntry) => void;
 }
 
 type LoopCommandRoute =
@@ -74,7 +75,7 @@ function parseLoopCommandRoute(input: string): LoopCommandRoute {
 }
 
 export function registerLoopCommand(options: LoopCommandOptions): void {
-  const { pi, getStore, getTriggerSystem, updateWidget } = options;
+  const { pi, getStore, getTriggerSystem, updateWidget, onDynamicLoopActivated } = options;
 
   function createCronLoop(ui: ExtensionUIContext, interval: string, prompt: string, notifyEvery: boolean) {
     let entry: LoopEntry | undefined;
@@ -130,6 +131,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
     getTriggerSystem().add(entry);
     updateWidget();
     ui.notify(`Dynamic loop #${entry.id} created — ${goal.slice(0, 50)}`, "info");
+    onDynamicLoopActivated?.(entry);
   }
 
   async function viewLoops(ui: ExtensionUIContext) {
@@ -178,6 +180,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
           getTriggerSystem().add(resumed);
           updateWidget();
           ui.notify(`Loop #${entry.id} resumed`, "info");
+          if (resumed.trigger.type === "dynamic") onDynamicLoopActivated?.(resumed);
         }
       }
     }

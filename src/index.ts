@@ -368,6 +368,9 @@ export default function (pi: ExtensionAPI) {
     updateWidget: () => {
       widget.update();
     },
+    onDynamicLoopActivated: (entry) => {
+      onLoopFire(entry);
+    },
   });
 
   // ── Native task tools (only when pi-tasks is absent) ──

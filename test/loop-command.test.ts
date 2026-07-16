@@ -8,14 +8,16 @@ function setup() {
   const store = new LoopStore(); // memory mode, no file I/O
   const triggerSystem = { add: vi.fn(), remove: vi.fn() };
   const updateWidget = vi.fn();
+  const onDynamicLoopActivated = vi.fn();
   registerLoopCommand({
     pi,
     getStore: () => store as any,
     getTriggerSystem: () => triggerSystem as any,
     updateWidget,
+    onDynamicLoopActivated,
   });
   const command = commandMap.get("loop")!;
-  return { store, triggerSystem, updateWidget, command };
+  return { store, triggerSystem, updateWidget, onDynamicLoopActivated, command };
 }
 
 describe("registerLoopCommand", () => {
@@ -181,6 +183,7 @@ describe("registerLoopCommand", () => {
     });
     expect(h.store.get("1")?.dynamic?.nextWakeAt).toBeUndefined();
     expect(h.triggerSystem.add).toHaveBeenCalledTimes(1);
+    expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(h.store.get("1"));
     expect(ctx.notifications[0].message).toContain("Dynamic loop #1 created");
   });
 
@@ -192,6 +195,7 @@ describe("registerLoopCommand", () => {
     expect(h.store.list()).toHaveLength(1);
     expect(h.store.get("1")?.trigger).toEqual({ type: "dynamic" });
     expect(h.store.get("1")?.prompt).toBe("2026 release must ship by Friday");
+    expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(h.store.get("1"));
     expect(ctx.notifications[0].message).toContain("Dynamic loop #1 created");
   });
 
@@ -316,6 +320,7 @@ describe("registerLoopCommand", () => {
     expect(resumed?.status).toBe("active");
     expect(resumed?.dynamic?.awaitingUpdate).toBe(false);
     expect(h.triggerSystem.add).toHaveBeenLastCalledWith(resumed);
+    expect(h.onDynamicLoopActivated).toHaveBeenLastCalledWith(resumed);
     expect(ui.notify).toHaveBeenCalledWith("Loop #1 resumed", "info");
   });
 });

@@ -13,7 +13,7 @@ pi install npm:@trevonistrevon/pi-loop
 
 ```text
 LoopCreate trigger="5m" prompt="Check if the build passed"
-LoopCreate trigger="tool_execution_start" prompt="Log the tool being used" triggerType="event"
+LoopCreate trigger="tool_execution_start" prompt="Log the tool being used" triggerType="event" recurring=true
 LoopList
 LoopDelete id="1"
 ```
@@ -36,7 +36,7 @@ TaskDelete id="1"
 
 ## Commands
 
-`/loop` creates scheduled, event-triggered, or self-paced dynamic goal loops.
+`/loop` creates scheduled, event-triggered, or self-paced dynamic goal loops. Dynamic goals use `/loop <goal>`; there is no `/goal` command.
 
 ```text
 /loop                                      # menu
@@ -45,7 +45,7 @@ TaskDelete id="1"
 /loop finish the release                   # dynamic goal loop
 ```
 
-Dynamic goal loops wake immediately when the agent is idle. After each iteration, the agent calls `LoopUpdate` with one of:
+Dynamic goal loops start immediately. If the agent is busy, the wake is queued until idle. After each iteration, the agent calls `LoopUpdate` with one of:
 
 - `status="continue"` to save progress and wake again when idle
 - `status="continue" nextInterval="3m"` to schedule a timed next wake
@@ -77,7 +77,7 @@ Paused dynamic loops can be resumed from the `/loop` menu. Dynamic loops recover
 | `TaskUpdate` | Update native fallback task status/details |
 | `TaskDelete` | Delete a native fallback task |
 
-Trigger types: `cron` (`5m`, `1h`, `0 9 * * 1-5`), `event` (any pi event source), `hybrid` (both, debounced), or `dynamic` (self-paced goal loops created with `/loop <goal>`).
+Trigger types: `cron` (`5m`, `1h`, `0 9 * * 1-5`), `event` (any pi event source), `hybrid` (both, debounced), or `dynamic` (self-paced goal loops created with `/loop <goal>`). `LoopCreate` event loops default to one-shot; pass `recurring=true` to keep listening.
 
 ## Tasks
 
@@ -113,6 +113,7 @@ Payloads carry `previousStatus`. Transition events (`tasks:started` /
 `tasks:updated` (a details edit) reports the status current at edit time — so a
 combined status+details update never fabricates a second transition. (Changed
 in 0.6.0: the tool path previously reused the pre-transition status.)
+
 - `tasks:backlog_empty` — emitted when a task-backlog worker observes zero pending tasks and is about to auto-delete
 - `loops:autodeleted` — emitted for each loop that `pi-loop` auto-deletes, including backlog workers removed because the task queue drained
 
@@ -176,8 +177,6 @@ Keep `PI_LOOP_SCOPE=session` as the default.
 - `session` is the best balance for normal use: it preserves loops/tasks across a session restart while isolating concurrent sessions and worktrees.
 - `memory` is best for disposable scratch work, tests, or situations where you explicitly do not want any persisted loop/task state.
 - `project` should be opt-in for intentionally shared automation, because it allows multiple sessions in the same repo to see the same persisted state.
-
-
 
 ## Limits
 
