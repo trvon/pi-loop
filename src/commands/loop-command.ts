@@ -4,7 +4,7 @@ import type {
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { formatTrigger } from "../loop-format.js";
-import { parseInterval } from "../loop-parse.js";
+import { isValidCronExpression, parseInterval } from "../loop-parse.js";
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
 
 interface LoopStoreLike {
@@ -39,6 +39,7 @@ type LoopCommandRoute =
   | { type: "menu" }
   | { type: "event"; source: string; prompt: string }
   | { type: "cron"; interval: string; prompt: string; notifyEvery: boolean }
+  | { type: "invalid-cron"; interval: string }
   | { type: "missing-interval-prompt" }
   | { type: "dynamic"; goal: string };
 
@@ -51,9 +52,14 @@ function parseLoopCommandRoute(input: string): LoopCommandRoute {
     return { type: "event", source: eventMatch[1], prompt: eventMatch[2].trim() };
   }
 
-  const cronMatch = trimmed.match(/^([*\d][^\s]*\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.+)$/);
-  if (cronMatch?.[1] && cronMatch[2]) {
-    return { type: "cron", interval: cronMatch[1], prompt: cronMatch[2].trim(), notifyEvery: false };
+  const parts = trimmed.split(/\s+/);
+  if (parts.length > 5) {
+    const interval = parts.slice(0, 5).join(" ");
+    const cronShaped = parts.slice(0, 5).every((part) => /^[\d*/,-]+$/.test(part));
+    if (cronShaped) {
+      if (!isValidCronExpression(interval)) return { type: "invalid-cron", interval };
+      return { type: "cron", interval, prompt: parts.slice(5).join(" "), notifyEvery: false };
+    }
   }
 
   const intervalMatch = trimmed.match(/^(\d+\s*[smhdS]\b)/i);
@@ -71,15 +77,21 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
   const { pi, getStore, getTriggerSystem, updateWidget } = options;
 
   function createCronLoop(ui: ExtensionUIContext, interval: string, prompt: string, notifyEvery: boolean) {
+    let entry: LoopEntry | undefined;
     try {
       const parsed = parseInterval(interval);
       const trigger: Trigger = { type: "cron", schedule: parsed.cron };
-      const entry = getStore().create(trigger, prompt, { recurring: true });
+      entry = getStore().create(trigger, prompt, { recurring: true });
       getTriggerSystem().add(entry);
       updateWidget();
       const cadence = notifyEvery ? `every ${parsed.description}` : parsed.description;
       ui.notify(`Loop #${entry.id} created: ${cadence} — ${prompt.slice(0, 50)}`, "info");
     } catch (err: unknown) {
+      if (entry) {
+        getTriggerSystem().remove(entry.id);
+        getStore().delete(entry.id);
+        updateWidget();
+      }
       ui.notify((err as Error).message, "error");
     }
   }
@@ -161,8 +173,9 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
           updateWidget();
           ui.notify(`Loop #${entry.id} paused`, "info");
         } else if (action === "* Resume") {
-          getStore().resume(entry.id);
-          getTriggerSystem().add(entry);
+          const resumed = getStore().resume(entry.id);
+          if (!resumed) return viewLoops(ui);
+          getTriggerSystem().add(resumed);
           updateWidget();
           ui.notify(`Loop #${entry.id} resumed`, "info");
         }
@@ -201,6 +214,10 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
 
       if (route.type === "event") return eventLoop(ui, route.prompt, route.source);
       if (route.type === "cron") return createCronLoop(ui, route.interval, route.prompt, route.notifyEvery);
+      if (route.type === "invalid-cron") {
+        ui.notify(`Invalid cron expression: ${route.interval}`, "error");
+        return;
+      }
       if (route.type === "missing-interval-prompt") {
         ui.notify("Provide a prompt after the interval, e.g., /loop 5m check the deploy", "warning");
         return;

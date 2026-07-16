@@ -53,10 +53,53 @@ function isFullCron(expr: string): boolean {
   return parts.length === 5;
 }
 
+function parseCronNumber(input: string, min: number, max: number): number | undefined {
+  if (!/^\d+$/.test(input)) return undefined;
+  const value = Number.parseInt(input, 10);
+  return value >= min && value <= max ? value : undefined;
+}
+
+function isValidCronField(field: string, min: number, max: number): boolean {
+  return field.split(",").every((part) => {
+    const [base, step, extra] = part.split("/");
+    if (extra !== undefined || base === undefined) return false;
+    if (step !== undefined && (parseCronNumber(step, 1, max - min + 1) === undefined)) return false;
+    if (base === "*") return true;
+
+    const range = base.split("-");
+    if (range.length === 1) return step === undefined && parseCronNumber(base, min, max) !== undefined;
+    if (range.length !== 2) return false;
+
+    const start = parseCronNumber(range[0] ?? "", min, max);
+    const end = parseCronNumber(range[1] ?? "", min, max);
+    return start !== undefined && end !== undefined && start <= end;
+  });
+}
+
+export function isValidCronExpression(expr: string): boolean {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5) return false;
+
+  const ranges = [
+    [0, 59],
+    [0, 23],
+    [1, 31],
+    [1, 12],
+    [0, 6],
+  ] as const;
+  return fields.every((field, index) => {
+    const range = ranges[index];
+    return range !== undefined && isValidCronField(field, range[0], range[1]);
+  });
+}
+
 export function parseInterval(input: string): { cron: string; description: string } {
   const trimmed = input.trim();
 
   if (isFullCron(trimmed)) {
+    if (!isValidCronExpression(trimmed)) {
+      throw new Error(`Invalid cron expression: ${trimmed}`);
+    }
     return { cron: trimmed, description: `cron: ${trimmed}` };
   }
 
@@ -80,7 +123,7 @@ export function parseInterval(input: string): { cron: string; description: strin
 
 export function cronToNextFire(cronExpr: string, fromDate: Date = new Date()): Date {
   const parts = cronExpr.trim().split(/\s+/);
-  if (parts.length !== 5) throw new Error(`Invalid cron expression: ${cronExpr}`);
+  if (!isValidCronExpression(cronExpr)) throw new Error(`Invalid cron expression: ${cronExpr}`);
 
   const [minF, hourF, dayF, monthF, dowF] = parts;
   if (

@@ -4,13 +4,14 @@
  * Tools:
  *   LoopCreate    — Create a scheduled or event-triggered re-wake loop
  *   LoopList      — List all active loops with status and next-fire times
+ *   LoopUpdate    — Continue, pause, or complete a dynamic goal loop
  *   LoopDelete    — Delete or pause a loop by ID
  *   MonitorCreate — Start a background command that streams output via pi events
  *   MonitorList   — List running monitors
  *   MonitorStop   — Stop a running monitor
  *
  * Commands:
- *   /loop    — Schedule or manage re-wake loops: /loop [interval] [prompt]
+ *   /loop    — Schedule or manage re-wake loops, including /loop <goal>
  *   /tasks   — View or manage native fallback tasks when pi-tasks is absent
  */
 

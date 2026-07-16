@@ -1,6 +1,6 @@
 <p align="center">
 <h1 align="center">@trevonistrevon/pi-loop</h1>
-<h6 align="center">Cron and event loops for the pi coding agent. Background monitors, scheduled re-wakes, pi-tasks integration, and native task fallback.</h6>
+<h6 align="center">Cron, event, and dynamic goal loops for the pi coding agent. Background monitors, scheduled re-wakes, pi-tasks integration, and native task fallback.</h6>
 </p>
 
 ## Install
@@ -36,12 +36,23 @@ TaskDelete id="1"
 
 ## Commands
 
-`/loop [interval] [prompt]` — interactive loop creation.
+`/loop` creates scheduled, event-triggered, or self-paced dynamic goal loops.
 
 ```text
-/loop                         # menu
-/loop 5m check the deploy     # 5-minute cron loop
+/loop                                      # menu
+/loop 5m check the deploy                  # 5-minute cron loop
+/loop event tasks:created process backlog  # event loop
+/loop finish the release                   # dynamic goal loop
 ```
+
+Dynamic goal loops wake immediately when the agent is idle. After each iteration, the agent calls `LoopUpdate` with one of:
+
+- `status="continue"` to save progress and wake again when idle
+- `status="continue" nextInterval="3m"` to schedule a timed next wake
+- `status="paused"` when blocked
+- `status="completed"` to finish and delete the loop
+
+Paused dynamic loops can be resumed from the `/loop` menu. Dynamic loops recover their wake after a process restart or session switch if an in-memory notification was lost.
 
 `/tasks` — interactive native task viewer/manager, only registered when `pi-tasks` is absent.
 
@@ -56,6 +67,7 @@ TaskDelete id="1"
 |---|---|
 | `LoopCreate` | Schedule a prompt on a cron timer, a pi event, or both with debounce |
 | `LoopList` | Show active loops with IDs, triggers, and next-fire times |
+| `LoopUpdate` | Continue, pause, or complete a dynamic goal loop and save its progress |
 | `LoopDelete` | Delete or pause a loop |
 | `MonitorCreate` | Run a background command, stream output as `monitor:output` events. Use `onDone` for auto-notify on completion |
 | `MonitorList` | Show monitors with status, uptime, and output line count |
@@ -65,7 +77,7 @@ TaskDelete id="1"
 | `TaskUpdate` | Update native fallback task status/details |
 | `TaskDelete` | Delete a native fallback task |
 
-Trigger types: `cron` (`5m`, `1h`, `0 9 * * 1-5`), `event` (any pi event source), or `hybrid` (both, debounced).
+Trigger types: `cron` (`5m`, `1h`, `0 9 * * 1-5`), `event` (any pi event source), `hybrid` (both, debounced), or `dynamic` (self-paced goal loops created with `/loop <goal>`).
 
 ## Tasks
 

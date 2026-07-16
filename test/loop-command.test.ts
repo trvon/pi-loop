@@ -184,6 +184,48 @@ describe("registerLoopCommand", () => {
     expect(ctx.notifications[0].message).toContain("Dynamic loop #1 created");
   });
 
+  it("keeps numeric free-text goals in dynamic mode", async () => {
+    const ctx = createCtx();
+
+    await h.command.handler!("2026 release must ship by Friday", ctx);
+
+    expect(h.store.list()).toHaveLength(1);
+    expect(h.store.get("1")?.trigger).toEqual({ type: "dynamic" });
+    expect(h.store.get("1")?.prompt).toBe("2026 release must ship by Friday");
+    expect(ctx.notifications[0].message).toContain("Dynamic loop #1 created");
+  });
+
+  it("rejects cron-shaped invalid expressions without persisting a loop", async () => {
+    const ctx = createCtx();
+
+    await h.command.handler!("99 * * * * check metrics", ctx);
+
+    expect(h.store.list()).toHaveLength(0);
+    expect(h.triggerSystem.add).not.toHaveBeenCalled();
+    expect(ctx.notifications).toEqual([
+      expect.objectContaining({
+        level: "error",
+        message: expect.stringContaining("Invalid cron expression"),
+      }),
+    ]);
+  });
+
+  it("rolls back a cron loop when trigger registration fails", async () => {
+    const ctx = createCtx();
+    h.triggerSystem.add.mockImplementationOnce(() => {
+      throw new Error("arm failed");
+    });
+
+    await h.command.handler!("5m check metrics", ctx);
+
+    expect(h.store.list()).toHaveLength(0);
+    expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
+    expect(ctx.notifications[0]).toEqual({
+      level: "error",
+      message: "arm failed",
+    });
+  });
+
   it("explicit event syntax creates an event loop without mode selection", async () => {
     const ctx = createCtx();
 
@@ -246,5 +288,34 @@ describe("registerLoopCommand", () => {
     expect(h.store.get("1")?.status).toBe("paused");
     expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
     expect(ui.notify).toHaveBeenCalledWith("Loop #1 paused", "info");
+  });
+
+  it("resumes a blocked dynamic loop and clears its awaiting-update gate", async () => {
+    await h.command.handler!("finish release", createCtx());
+    h.store.updateDynamic("1", { dynamic: { awaitingUpdate: true } });
+    h.store.pause("1");
+
+    const ui = {
+      select: vi.fn(async (title: string) => {
+        if (title === "Loop") return "View loops";
+        if (title === "Loops") {
+          return h.store.get("1")?.status === "paused"
+            ? "- #1 [paused] finish release (dynamic)"
+            : "< Back";
+        }
+        if (title.startsWith("#1")) return "* Resume";
+        return undefined;
+      }),
+      input: vi.fn(),
+      notify: vi.fn(),
+    };
+
+    await h.command.handler!("", { ui } as any);
+
+    const resumed = h.store.get("1");
+    expect(resumed?.status).toBe("active");
+    expect(resumed?.dynamic?.awaitingUpdate).toBe(false);
+    expect(h.triggerSystem.add).toHaveBeenLastCalledWith(resumed);
+    expect(ui.notify).toHaveBeenCalledWith("Loop #1 resumed", "info");
   });
 });

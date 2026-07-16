@@ -110,6 +110,33 @@ describe("CronScheduler", () => {
     expect(fired).toHaveLength(0);
   });
 
+  it("recovers persisted awaiting dynamic loops when the scheduler starts", () => {
+    store.create({ type: "dynamic" }, "recover goal", {
+      recurring: true,
+      dynamic: { goal: "recover goal", iteration: 2, awaitingUpdate: true },
+    });
+
+    scheduler.start();
+    scheduler.pump(Date.now());
+
+    expect(fired).toEqual(["1"]);
+    expect(store.get("1")?.dynamic?.awaitingUpdate).toBe(false);
+  });
+
+  it("does not recover awaiting dynamic loops already armed in the current runtime", () => {
+    const entry = store.create({ type: "dynamic" }, "current goal", {
+      recurring: true,
+      dynamic: { goal: "current goal", iteration: 1, awaitingUpdate: true },
+    });
+    scheduler.add(entry);
+
+    scheduler.start();
+    scheduler.pump(Date.now());
+
+    expect(fired).toHaveLength(0);
+    expect(store.get("1")?.dynamic?.awaitingUpdate).toBe(true);
+  });
+
   it("uses dynamic nextWakeAt when provided", () => {
     const entry = store.create({ type: "dynamic" }, "finish goal", {
       recurring: true,

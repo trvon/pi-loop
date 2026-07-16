@@ -23,9 +23,19 @@ export class CronScheduler {
   ) {}
 
   start(): void {
-    for (const entry of this.store.list()) {
+    for (const storedEntry of this.store.list()) {
+      let entry = storedEntry;
       if (entry.status !== "active") continue;
       if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic") {
+        if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate && !this.fireTimes.has(entry.id)) {
+          entry = this.store.updateDynamic(entry.id, {
+            dynamic: {
+              awaitingUpdate: false,
+              nextWakeAt: undefined,
+              lastUpdatedAt: Date.now(),
+            },
+          }) ?? entry;
+        }
         this.armTimer(entry);
       }
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cronToNextFire, parseInterval } from "../src/loop-parse.js";
+import { cronToNextFire, isValidCronExpression, parseInterval } from "../src/loop-parse.js";
 
 describe("parseInterval", () => {
   describe("human-readable intervals", () => {
@@ -96,6 +96,20 @@ describe("parseInterval", () => {
     it("passes through specific time", () => {
       const result = parseInterval("30 14 15 3 *");
       expect(result.cron).toBe("30 14 15 3 *");
+    });
+
+    it("rejects out-of-range fields", () => {
+      expect(() => parseInterval("99 * * * *")).toThrow("Invalid cron expression");
+      expect(() => parseInterval("0 24 * * *")).toThrow("Invalid cron expression");
+      expect(() => parseInterval("0 0 0 * *")).toThrow("Invalid cron expression");
+    });
+
+    it("recognizes supported cron syntax without accepting prose", () => {
+      expect(isValidCronExpression("0 9 * * 1-5")).toBe(true);
+      expect(isValidCronExpression("*/15 * * * *")).toBe(true);
+      expect(isValidCronExpression("2026 release must ship by")).toBe(false);
+      expect(isValidCronExpression("99 * * * *")).toBe(false);
+      expect(isValidCronExpression("5/10 * * * *")).toBe(false);
     });
   });
 });

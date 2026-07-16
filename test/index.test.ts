@@ -1105,6 +1105,41 @@ describe("dynamic loop pump", () => {
     expect(sentCustomMessages).toHaveLength(2);
   });
 
+  it("recovers a queued dynamic wake after a session switch clears in-memory notifications", async () => {
+    const { pi, commandMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = makeCtx();
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await commandMap.get("loop")!.handler?.("recover after session switch", ctx);
+    for (const handler of extensionHandlers.get("agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sentCustomMessages).toHaveLength(0);
+
+    const storePath = resolveLoopStorePath({ loopScope: "session", cwd }, "test-session")!;
+    expect(readJsonFile(storePath).loops[0].dynamic.awaitingUpdate).toBe(true);
+
+    for (const handler of extensionHandlers.get("session_switch") ?? []) {
+      await handler({ reason: "resume" }, ctx);
+    }
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+    await Promise.resolve();
+
+    expect(sentCustomMessages).toHaveLength(1);
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("recover after session switch");
+  });
+
   it("fires a due cron loop once via the heartbeat, without double-firing on a later agent_end pump", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 

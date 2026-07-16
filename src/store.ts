@@ -79,6 +79,22 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         entityId: id,
         payload: { id },
       });
+      if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate) {
+        this.applyReducerEvent({
+          type: "LOOP_DYNAMIC_UPDATED",
+          at: Date.now(),
+          source: "tool",
+          entityType: "loop",
+          entityId: id,
+          payload: {
+            id,
+            dynamic: {
+              awaitingUpdate: false,
+              lastUpdatedAt: Date.now(),
+            },
+          },
+        });
+      }
       return this.entries.get(id);
     });
   }

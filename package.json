@@ -17,6 +17,13 @@
     "monitor",
     "scheduler"
   ],
+  "files": [
+    "src/",
+    "dist/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "exports": {
     ".": "./src/index.ts",
     "./api": "./src/api.ts",
@@ -30,7 +37,8 @@
     "typebox": "^1.1.34"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run test && npm run build",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
