@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.1](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.0...pi-loop-v0.6.1) (2026-07-16)
+
+
+### Features
+
+* **loop:** add dynamic goal loops ([44e578f](https://github.com/trvon/pi-loop/commit/44e578f5e7cdeaf6aee765835892dd975d2fe913))
+
+
+### Bug Fixes
+
+* fast failing monitor hit error before onDone registered. Orca/agent never woke. ([56cd43d](https://github.com/trvon/pi-loop/commit/56cd43d2b41a6b0df5c10cccb11c0fa04981d83a))
+* **loop:** harden dynamic goal loops ([036fbaf](https://github.com/trvon/pi-loop/commit/036fbaff9a8c7c60acefce4dec757bfc1e6ff8d0))
+
 ## [0.6.0](https://github.com/trvon/pi-loop/compare/pi-loop-v0.5.8...pi-loop-v0.6.0) (2026-07-02)
 
 
