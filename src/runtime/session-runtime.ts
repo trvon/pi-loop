@@ -62,8 +62,11 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     if (heartbeatTimer) return;
     heartbeatTimer = setInterval(() => {
       // Swallow pump failures so a transient error never surfaces as an
-      // unhandled rejection; the next tick retries.
-      void pumpLoops().catch(() => {});
+      // unhandled rejection; repaint still runs so cleared harness UI heals.
+      void pumpLoops()
+        .catch(() => {})
+        .then(() => widget.update())
+        .catch(() => {});
     }, HEARTBEAT_MS);
     heartbeatTimer.unref?.();
   }
@@ -92,7 +95,6 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
       getStore().expireEventLoops(sessionStartedAt);
       getTriggerSystem().start();
       ensureHeartbeat();
-      widget.update();
     }
   }
 
@@ -109,6 +111,16 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     }
     getScheduler().pump(Date.now(), (entry) => !pendingTasks.has(entry.id));
   }
+
+  pi.on("session_start", async (_event, ctx) => {
+    setLatestCtx(ctx);
+    setSessionId(ctx.sessionManager.getSessionId());
+    widget.setUICtx(ctx.ui);
+    upgradeStoreIfNeeded(ctx);
+    ensureHeartbeat();
+    showPersistedLoops();
+    widget.update();
+  });
 
   pi.on("turn_start", async (_event, ctx) => {
     setLatestCtx(ctx);

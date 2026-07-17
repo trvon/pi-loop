@@ -54,6 +54,30 @@ describe("session-runtime heartbeat lifecycle", () => {
     expect(unref).toHaveBeenCalledTimes(1); // never keeps a `pi -p` process alive
   });
 
+  it("repaints the widget on session_start after the harness resets extension UI", async () => {
+    const widget = { setUICtx: vi.fn(), update: vi.fn() };
+    const setSessionId = vi.fn();
+    const { drive } = setup({ widget, setSessionId });
+
+    await drive("session_start");
+
+    expect(setSessionId).toHaveBeenCalledWith("test-session");
+    expect(widget.setUICtx).toHaveBeenCalledTimes(1);
+    expect(widget.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("repaints the widget on heartbeat to recover an externally cleared status", async () => {
+    vi.useFakeTimers();
+    const widget = { setUICtx: vi.fn(), update: vi.fn() };
+    const { drive } = setup({ widget });
+
+    await drive("turn_start");
+    widget.update.mockClear();
+    await vi.advanceTimersByTimeAsync(30000);
+
+    expect(widget.update).toHaveBeenCalledTimes(1);
+  });
+
   it("is idempotent — does not start a second interval across turn boundaries", async () => {
     const setIntervalSpy = vi.spyOn(global, "setInterval").mockReturnValue({ unref: vi.fn() } as any);
 
@@ -85,14 +109,17 @@ describe("session-runtime heartbeat lifecycle", () => {
         throw new Error("pump boom");
       }),
     };
-    const { drive } = setup({ getScheduler: () => scheduler as any });
+    const widget = { setUICtx: vi.fn(), update: vi.fn() };
+    const { drive } = setup({ getScheduler: () => scheduler as any, widget });
 
     // before_agent_start starts the heartbeat without itself calling pumpLoops.
     await drive("before_agent_start");
+    widget.update.mockClear();
     // Fire one heartbeat tick → its pumpLoops() rejects. With the `.catch`, this
     // is swallowed; without it, vitest fails the test on the unhandled rejection.
     await vi.advanceTimersByTimeAsync(30000);
 
     expect(scheduler.pump).toHaveBeenCalled();
+    expect(widget.update).toHaveBeenCalledTimes(1);
   });
 });
