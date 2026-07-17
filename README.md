@@ -1,6 +1,6 @@
 <p align="center">
 <h1 align="center">@trevonistrevon/pi-loop</h1>
-<h6 align="center">Cron, event, and dynamic goal loops for the pi coding agent. Background monitors, scheduled re-wakes, pi-tasks integration, and native task fallback.</h6>
+<h6 align="center">Scheduled and event-driven agent re-wakes for pi, with dynamic goals and background process monitoring.</h6>
 </p>
 
 ## Install
@@ -11,176 +11,50 @@ pi install npm:@trevonistrevon/pi-loop
 
 ## Quick start
 
+Create scheduled, event-driven, or self-paced loops:
+
 ```text
-LoopCreate trigger="5m" prompt="Check if the build passed"
-LoopCreate trigger="tool_execution_start" prompt="Log the tool being used" triggerType="event" recurring=true
+/loop 5m check the deploy
+/loop event tasks:created process the backlog
+/loop finish the release
+```
+
+Or use the tools directly:
+
+```text
+LoopCreate trigger="5m" prompt="Check if the build passed" maxFires=12
+LoopCreate trigger="tool_execution_start" prompt="Log the tool" triggerType="event" recurring=true
 LoopList
 LoopDelete id="1"
 ```
 
+Run work in the background and wake the agent when it succeeds, fails, or times out:
+
 ```text
-MonitorCreate command="tail -n0 -f build.log" description="Watch build"
 MonitorCreate command="python train.py" onDone="Analyze results and report best loss"
 MonitorList
 MonitorStop monitorId="1"
 ```
 
-When `pi-tasks` is not installed, `pi-loop` also exposes native task tools after startup detection:
+## What it provides
 
-```text
-TaskCreate subject="Fix deploy polling" description="Switch deploy check to event-driven loop"
-TaskList
-TaskUpdate id="1" status="in_progress"
-TaskDelete id="1"
-```
+- Cron, event, hybrid, and dynamic goal loops
+- Idle-safe agent re-wakes with dynamic-loop restart/session-switch recovery
+- Background command monitoring with buffered output and `onDone` wakes
+- Optional `pi-tasks` integration and a native task fallback
+- Session-isolated persistence and a compact TUI status line
 
-## Commands
+## Commands and tools
 
-`/loop` creates scheduled, event-triggered, or self-paced dynamic goal loops. Dynamic goals use `/loop <goal>`; there is no `/goal` command.
-
-```text
-/loop                                      # menu
-/loop 5m check the deploy                  # 5-minute cron loop
-/loop event tasks:created process backlog  # event loop
-/loop finish the release                   # dynamic goal loop
-```
-
-Dynamic goal loops start immediately. If the agent is busy, the wake is queued until idle. After each iteration, the agent calls `LoopUpdate` with one of:
-
-- `status="continue"` to save progress and wake again when idle
-- `status="continue" nextInterval="3m"` to schedule a timed next wake
-- `status="paused"` when blocked
-- `status="completed"` to finish and delete the loop
-
-Paused dynamic loops can be resumed from the `/loop` menu. Dynamic loops recover their wake after a process restart or session switch if an in-memory notification was lost.
-
-`/tasks` — interactive native task viewer/manager, only registered when `pi-tasks` is absent.
-
-```text
-/tasks                        # open native task viewer
-/tasks Write README updates   # quick-create native task
-```
-
-## Tools
-
-| Tool | What it does |
+| Surface | Purpose |
 |---|---|
-| `LoopCreate` | Schedule a prompt on a cron timer, a pi event, or both with debounce |
-| `LoopList` | Show active loops with IDs, triggers, and next-fire times |
-| `LoopUpdate` | Continue, pause, or complete a dynamic goal loop and save its progress |
-| `LoopDelete` | Delete or pause a loop |
-| `MonitorCreate` | Run a background command, stream output as `monitor:output` events. Use `onDone` for auto-notify on completion |
-| `MonitorList` | Show monitors with status, uptime, and output line count |
-| `MonitorStop` | Stop a monitor (SIGTERM → 5s → SIGKILL) |
-| `TaskCreate` | Create a native fallback task when `pi-tasks` is absent |
-| `TaskList` | List native fallback tasks |
-| `TaskUpdate` | Update native fallback task status/details |
-| `TaskDelete` | Delete a native fallback task |
+| `/loop` | Create or manage scheduled, event, and dynamic goal loops |
+| `/tasks` | Manage native fallback tasks when `pi-tasks` is absent |
+| `LoopCreate`, `LoopList`, `LoopUpdate`, `LoopDelete` | Create and control loops |
+| `MonitorCreate`, `MonitorList`, `MonitorStop` | Run and inspect background commands |
+| `TaskCreate`, `TaskList`, `TaskUpdate`, `TaskDelete` | Native fallback task management |
 
-Trigger types: `cron` (`5m`, `1h`, `0 9 * * 1-5`), `event` (any pi event source), `hybrid` (both, debounced), or `dynamic` (self-paced goal loops created with `/loop <goal>`). `LoopCreate` event loops default to one-shot; pass `recurring=true` to keep listening.
-
-## Tasks
-
-### With `pi-tasks`
-
-Works with [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks). Pass `autoTask: true` on `LoopCreate` and each loop fire auto-creates a tracked task. Detection happens over pi's event bus — no manual wiring.
-
-### Without `pi-tasks`
-
-If `pi-tasks` does not respond during startup detection, `pi-loop` registers a native fallback task system for the session:
-
-- session- or project-scoped task files under `.pi/tasks/` depending on `PI_LOOP_SCOPE`
-- `TaskCreate`, `TaskList`, `TaskUpdate`, `TaskDelete`
-- `/tasks` interactive viewer
-- compact status-line task tracking
-- native task RPC replies on `tasks:rpc:ping`, `tasks:rpc:create`, `tasks:rpc:pending`, `tasks:rpc:clean`, and `tasks:rpc:update`
-
-This fallback is session-sticky: `pi-loop` decides once at startup whether `pi-tasks` or native tasks own task management for that session.
-
-### Task and backlog events
-
-`pi-loop` emits native task lifecycle events that other extensions can consume directly:
-
-- `tasks:created`
-- `tasks:started`
-- `tasks:completed`
-- `tasks:reopened`
-- `tasks:updated`
-- `tasks:deleted`
-
-Payloads carry `previousStatus`. Transition events (`tasks:started` /
-`tasks:completed` / `tasks:reopened`) report the status before the transition;
-`tasks:updated` (a details edit) reports the status current at edit time — so a
-combined status+details update never fabricates a second transition. (Changed
-in 0.6.0: the tool path previously reused the pre-transition status.)
-
-- `tasks:backlog_empty` — emitted when a task-backlog worker observes zero pending tasks and is about to auto-delete
-- `loops:autodeleted` — emitted for each loop that `pi-loop` auto-deletes, including backlog workers removed because the task queue drained
-
-### Cross-extension task RPC
-
-Other extensions can create and manage native tasks without importing `pi-loop` internals. `pi-loop` answers `ping` over `pi.events` from extension init; the other verbs unlock once the pi-tasks detection probe settles (a few seconds at most, immediate when no provider replies race it). The whole server stands down (silent no-op) once an external `pi-tasks` is detected:
-
-| Channel | Request | Reply |
-|---|---|---|
-| `tasks:rpc:ping` | `{}` | `{ version, provider }` |
-| `tasks:rpc:pending` | `{}` | `{ pending }` |
-| `tasks:rpc:create` | `{ subject, description, metadata? }` | `{ id, task }` |
-| `tasks:rpc:clean` | `{}` | `{ pruned }` |
-| `tasks:rpc:update` | `{ id, status?, subject?, description? }` | `{ task }` |
-
-Every request/reply pair follows the same contract: emit `{ requestId, ...params }` on the channel, receive an envelope on `<channel>:reply:<requestId>` — `{ success: true, data }` or `{ success: false, error }`.
-
-`@trevonistrevon/pi-loop/api` exports typed channel constants and a client helper so consumers don't hand-roll the envelope:
-
-```ts
-import { TASKS_RPC, rpcCall } from "@trevonistrevon/pi-loop/api";
-
-const { id, task } = await rpcCall(pi.events, TASKS_RPC.create, {
-  subject: "Fix deploy polling",
-  description: "Switch deploy check to event-driven loop",
-});
-```
-
-`rpcCall` rejects on failure or timeout instead of returning a sentinel; wrap it in `try/catch` if you want fallback behavior. Import only from `@trevonistrevon/pi-loop/api` — the package's `exports` map blocks deep `src/` imports.
-
-## Status line
-
-`pi-loop` keeps a compact persistent status line in the TUI.
-
-When active work exists, it shows a single focus-friendly line such as:
-
-```text
-1 loop · 1 monitor
-2 tasks | active: Fix deploy polling
-1 loop · 2 monitors · 3 tasks | next: Update README
-```
-
-When no loops, monitors, or native tasks are active, the status line clears completely.
-
-Only task counts and the single active/next task are shown there so attention stays on what is currently happening. Use `LoopList`, `MonitorList`, and `/tasks` for detail.
-
-## Configuration
-
-| Variable | Effect | Default |
-|---|---|---|
-| `PI_LOOP` | Store path override. `off` to disable, absolute or project-relative path | unset → derived from `PI_LOOP_SCOPE` |
-| `PI_LOOP_SCOPE` | `memory` (ephemeral), `session` (per-session file), `project` (shared) | `session` |
-| `PI_LOOP_DEBUG` | Debug logging to stderr | unset |
-
-In `session` scope (default), loop and task files are saved per session ID (e.g. `.pi/loops/loops-<sessionId>.json` and `.pi/tasks/tasks-<sessionId>.json`) so concurrent sessions and worktree agents do not share state. In `memory` scope nothing persists to disk.
-
-### Recommended scope policy
-
-Keep `PI_LOOP_SCOPE=session` as the default.
-
-- `session` is the best balance for normal use: it preserves loops/tasks across a session restart while isolating concurrent sessions and worktrees.
-- `memory` is best for disposable scratch work, tests, or situations where you explicitly do not want any persisted loop/task state.
-- `project` should be opt-in for intentionally shared automation, because it allows multiple sessions in the same repo to see the same persisted state.
-
-## Limits
-
-25 active loops, 25 running monitors. Recurring loops expire after 7 days.
+See the [usage guide](./docs/USAGE_GUIDE.md) for trigger types, dynamic loop lifecycle, monitor behavior, task integration, configuration, events, and the public RPC API.
 
 ## Development
 

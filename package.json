@@ -20,6 +20,7 @@
   "files": [
     "src/",
     "dist/",
+    "docs/USAGE_GUIDE.md",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
