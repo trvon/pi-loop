@@ -21,7 +21,7 @@ function setup() {
   });
   const text = async (name: string, args: any) =>
     (await toolMap.get(name)!.execute!("t", args)).content[0].text as string;
-  return { store, triggerSystem, text };
+  return { store, triggerSystem, text, toolMap };
 }
 
 describe("LoopCreate", () => {
@@ -79,6 +79,22 @@ describe("LoopCreate", () => {
     const entry = h.store.get("1");
     expect(entry?.readOnly).toBe(true);
     expect(entry?.maxFires).toBe(20);
+  });
+
+  it("tells agents to preserve recurring and dynamic loop controllers", () => {
+    const loopCreate = h.toolMap.get("LoopCreate")!;
+    const loopUpdate = h.toolMap.get("LoopUpdate")!;
+    const loopDelete = h.toolMap.get("LoopDelete")!;
+
+    expect(loopCreate.description).toContain("A completed iteration, unchanged result, or temporarily empty check is not a reason to delete the loop");
+    expect(loopCreate.promptGuidelines).toContain(
+      "Recurring loops are persistent controllers. Do not call LoopDelete after a normal fire, an unchanged check, or one completed iteration; only delete when the user explicitly asks to cancel or the loop's stated stop condition is satisfied.",
+    );
+    expect(loopCreate.promptGuidelines).toContain(
+      "For taskBacklog loops, do not instruct the agent to delete the loop; pi-loop auto-deletes it when the pending count reaches zero.",
+    );
+    expect(loopUpdate.description).toContain("Do not use LoopDelete to finish an iteration");
+    expect(loopDelete.description).toContain("Do not use this after a normal loop fire");
   });
 });
 

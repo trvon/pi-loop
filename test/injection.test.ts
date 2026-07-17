@@ -15,6 +15,7 @@ describe("loop:fire custom message delivery", () => {
       prompt: "Pick up the next task and work on it",
       trigger: { type: "cron", schedule: "*/1 * * * *" },
       timestamp: Date.now(),
+      recurring: true,
     });
     await flushAsync();
 
@@ -26,6 +27,9 @@ describe("loop:fire custom message delivery", () => {
     expect(sentMessages[0].message.content).toContain("[pi-loop]");
     expect(sentMessages[0].message.content).toContain("Loop #42 fired");
     expect(sentMessages[0].message.content).toContain("Pick up the next task and work on it");
+    expect(sentMessages[0].message.content).toContain("remains active after this iteration");
+    expect(sentMessages[0].message.content).toContain("Do not call LoopDelete or pause it");
+    expect(sentMessages[0].message.content).toContain("found no changes");
   });
 
   it("renders dynamic loop progress and LoopUpdate guidance", async () => {
@@ -60,6 +64,35 @@ describe("loop:fire custom message delivery", () => {
     expect(content).toContain("Metrics: 2/5 tasks complete");
     expect(content).toContain("LoopUpdate");
     expect(content).toContain("idle-driven rewake");
+    expect(content).toContain("persistent controller for the overall goal");
+    expect(content).toContain("Do not call LoopDelete after this iteration");
+    expect(content).toContain("call LoopUpdate exactly once");
+    expect(content).toContain("only when the overall goal and done criteria are satisfied");
+  });
+
+  it("keeps backlog cleanup under pi-loop control", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
+      loopId: "6",
+      prompt: "Process the pending task backlog",
+      trigger: { type: "event", source: "tasks:created" },
+      timestamp: Date.now(),
+      recurring: true,
+      taskBacklog: true,
+    });
+    await flushAsync();
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].message.content).toContain("managed automatically");
+    expect(sentMessages[0].message.content).toContain("Do not call LoopDelete");
+    expect(sentMessages[0].message.content).toContain("report that and end this iteration");
+    expect(sentMessages[0].message.details.taskBacklog).toBe(true);
   });
 
   it("includes the read-only constraint without advertising LoopCreate", async () => {
@@ -168,6 +201,8 @@ describe("loop:fire custom message delivery", () => {
 
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0].message.content).toContain("Monitor completed");
+    expect(sentMessages[0].message.content).toContain("one-shot wake and cleanup is automatic");
+    expect(sentMessages[0].message.content).toContain("Do not call LoopDelete");
   });
 
   it("keeps one-shot buffered wakes independent even for the same loop id", async () => {

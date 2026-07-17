@@ -9,7 +9,9 @@ export interface ReducerNotification {
   timestamp: number;
   trigger: unknown;
   recurring?: boolean;
+  persistent?: boolean;
   autoTask?: boolean;
+  taskBacklog?: boolean;
   readOnly?: boolean;
   dynamic?: DynamicLoopState;
 }

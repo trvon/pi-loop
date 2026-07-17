@@ -552,6 +552,8 @@ describe("native task fallback", () => {
     expect(sentCustomMessages).toHaveLength(1);
     expect(sentCustomMessages[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
     expect((sentCustomMessages[0].message as { content: string }).content).toContain("Run TaskList, pick next pending task");
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("managed automatically");
+    expect((sentCustomMessages[0].message as { content: string }).content).not.toContain("one-shot wake");
   });
 
   it("auto-deletes the worker loop after all native tasks are completed", async () => {

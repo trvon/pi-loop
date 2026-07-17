@@ -21,7 +21,9 @@ export interface LoopFireEvent {
   timestamp: number;
   readOnly?: boolean;
   recurring?: boolean;
+  persistent?: boolean;
   autoTask?: boolean;
+  taskBacklog?: boolean;
   dynamic?: DynamicLoopState;
 }
 
@@ -115,14 +117,22 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       if (dynamic?.metrics) lines.push(`Metrics: ${dynamic.metrics}`);
       if (dynamic?.doneCriteria) lines.push(`Done criteria: ${dynamic.doneCriteria}`);
       lines.push(
-        "Continue toward the goal. When done call LoopUpdate with status=\"completed\". If more work remains, call LoopUpdate with status=\"continue\" plus state/metrics. Omit nextInterval for idle-driven rewake; include nextInterval for a timed wake. If blocked, use status=\"paused\".",
+        `Loop lifecycle: Loop #${loopId} is the persistent controller for the overall goal. Do not call LoopDelete after this iteration.`,
+        "Before ending this turn, call LoopUpdate exactly once: use status=\"completed\" only when the overall goal and done criteria are satisfied; use status=\"continue\" when any work remains, with state/metrics and optional nextInterval; use status=\"paused\" only when genuinely blocked. Omit nextInterval for an idle-driven rewake.",
       );
       return lines.join("\n");
     }
 
+    const lifecycle = data.taskBacklog
+      ? `Backlog lifecycle: Loop #${loopId} is managed automatically. Do not call LoopDelete; when no pending tasks remain, report that and end this iteration.`
+      : (data.persistent ?? data.recurring)
+        ? `Loop lifecycle: Loop #${loopId} is recurring and remains active after this iteration. Do not call LoopDelete or pause it merely because this run finished, found no changes, or has no immediate work. Stop it only when the user or the loop prompt explicitly requires cancellation.`
+        : `Loop lifecycle: Loop #${loopId} is a one-shot wake and cleanup is automatic. Do not call LoopDelete.`;
+
     return [
       `[pi-loop] Loop #${loopId} fired (${triggerInfo}).${constraint}`,
       prompt,
+      lifecycle,
     ].join("\n");
   }
 
@@ -154,8 +164,10 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
         loopId: notification.loopId,
         trigger: notification.trigger,
         recurring: notification.recurring,
+        persistent: notification.persistent,
         readOnly: notification.readOnly,
         autoTask: notification.autoTask,
+        taskBacklog: notification.taskBacklog,
         dynamic: notification.dynamic,
         timestamp: notification.timestamp,
       },

@@ -200,7 +200,9 @@ export default function (pi: ExtensionAPI) {
       timestamp: Date.now(),
       readOnly: entry.readOnly,
       recurring: false,
+      persistent: entry.recurring,
       autoTask: true,
+      taskBacklog: entry.taskBacklog,
     });
     return true;
   }
@@ -276,7 +278,9 @@ export default function (pi: ExtensionAPI) {
       timestamp: firedAt,
       readOnly: firedEntry.readOnly,
       recurring: firedEntry.recurring,
+      persistent: firedEntry.recurring,
       autoTask: firedEntry.autoTask,
+      taskBacklog: firedEntry.taskBacklog,
       dynamic: firedEntry.dynamic,
     });
   }

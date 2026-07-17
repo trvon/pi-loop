@@ -214,7 +214,11 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
 - **autoTask**: when pi-tasks is loaded or native task fallback is active, auto-create a task on each fire
 - **taskBacklog**: mark this as a task-backlog worker loop so it auto-deletes when pending tasks reach zero
 - **readOnly**: restrict the agent to read-only tools when this loop fires (default: false)
-- **maxFires**: auto-stop after N fires — prevents infinite token burn on polling loops`,
+- **maxFires**: auto-stop after N fires — prevents infinite token burn on polling loops
+
+## Loop Lifecycle
+
+Recurring loops persist across fires. A completed iteration, unchanged result, or temporarily empty check is not a reason to delete the loop. Delete only when the user explicitly cancels it or its stated stop condition is satisfied. Dynamic loops must be advanced with LoopUpdate, not LoopDelete.`,
     promptGuidelines: [
       "Use LoopCreate when the user asks for a repeating task, periodic check, scheduled reminder, or 'every X' — never use raw Bash for/sleep/while.",
       "## Choosing trigger type",
@@ -226,14 +230,14 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
       "Default to 5m unless the user specifies differently. Use shorter intervals only when time-sensitive.",
       "## maxFires — prevent infinite token burn",
       "Always set maxFires on polling loops so they don't run forever. For task-continuation loops, use maxFires: 20-50.",
-      "When a loop fires and finds nothing to do, call LoopDelete on its own ID to stop it — don't keep polling.",
+      "Recurring loops are persistent controllers. Do not call LoopDelete after a normal fire, an unchanged check, or one completed iteration; only delete when the user explicitly asks to cancel or the loop's stated stop condition is satisfied.",
       "## readOnly mode",
       "Set readOnly: true for loops that only observe and report (checks, status polls). This prevents unintended changes.",
       "## Task-driven workflows",
       "Do not rely on a past 'tasks:created' event to replay. If tasks already exist, bootstrap the first pass in the current turn or use a hybrid/event loop that can catch future task creation and a cron safety-net.",
       "Use autoTask only when you want the loop itself to create a task on each fire. For processing an existing task backlog, leave autoTask off and have the loop run TaskList to pick the next pending task.",
       "Set taskBacklog: true for backlog worker loops that process the existing pending queue. Backlog worker loops bootstrap against existing pending tasks and auto-delete when the queue reaches zero.",
-      "When no tasks are pending, the loop should stop itself or skip the wake entirely — no tokens burned on empty polls.",
+      "For taskBacklog loops, do not instruct the agent to delete the loop; pi-loop auto-deletes it when the pending count reaches zero.",
       "After creating a loop, tell the user the loop ID so they can cancel it with LoopDelete.",
     ],
     parameters: Type.Object({
@@ -312,7 +316,7 @@ Skip this tool when the task is a one-off check (just do it directly) or when th
         (entry.taskBacklog ? "Backlog worker: enabled\n" : "") +
         (bootstrapped ? "Backlog: initial wake queued for existing pending tasks\n" : "") +
         (isTaskSystemReady() ? "" : "Task system: not ready yet — autoTask may not fire until native fallback or pi-tasks becomes available\n") +
-        `ID: ${entry.id} (use LoopDelete to cancel)`
+        `ID: ${entry.id} (persists until explicitly canceled or a configured stop condition is met)`
       ));
     },
   });
@@ -354,7 +358,7 @@ Use this before creating new loops to avoid duplicates, or to find IDs for LoopD
     label: "LoopUpdate",
     description: `Update progress for a dynamic loop.
 
-Use this after a dynamic loop wake. Mark status as "continue" with updated state/metrics and optional nextInterval, "completed" when the goal is done, or "paused" to stop temporarily.`,
+Use this exactly once after each dynamic loop wake. Mark status as "continue" with updated state/metrics and optional nextInterval whenever any work remains, "completed" only when the overall goal and done criteria are satisfied, or "paused" when genuinely blocked. Do not use LoopDelete to finish an iteration.`,
     parameters: Type.Object({
       id: Type.String({ description: "Dynamic loop ID to update" }),
       status: Type.String({ description: "continue, completed, or paused", enum: ["continue", "completed", "paused"] }),
@@ -386,7 +390,9 @@ Use this after a dynamic loop wake. Mark status as "continue" with updated state
     label: "LoopDelete",
     description: `Delete or pause a loop by its ID.
 
-Use "pause" to temporarily stop a loop without removing it. Use "delete" to permanently remove it.`,
+Use "pause" to temporarily stop a loop without removing it. Use "delete" to permanently remove it.
+
+Do not use this after a normal loop fire, an unchanged check, an empty iteration, or one step of a dynamic goal. Recurring loops remain active across iterations; dynamic loops use LoopUpdate. Delete only when the user explicitly asks to cancel the loop or its stated stop condition is satisfied.`,
     parameters: Type.Object({
       id: Type.String({ description: "Loop ID to delete or pause" }),
       action: Type.Optional(Type.String({ description: "delete or pause (default: delete)", enum: ["delete", "pause"], default: "delete" })),
