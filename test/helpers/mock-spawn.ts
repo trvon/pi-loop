@@ -2,7 +2,7 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 
 export interface MockChildProcessOptions {
-  exitCode?: number;
+  exitCode?: number | null;
   stdout?: string[];
   stderr?: string[];
 }
@@ -17,7 +17,7 @@ export interface MockChildProcessOptions {
 export function createMockChildProcess(
   opts: MockChildProcessOptions = {},
 ): ChildProcess {
-  const exitCode = opts.exitCode ?? 0;
+  const exitCode = opts.exitCode === undefined ? 0 : opts.exitCode;
   const stdoutLines = opts.stdout ?? [];
   const stderrLines = opts.stderr ?? [];
 

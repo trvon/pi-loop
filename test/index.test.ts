@@ -1755,6 +1755,41 @@ describe("monitor tool wrappers", () => {
     expect((sentCustomMessages[0].message as { content: string }).content).toContain("Monitor failed in idle session");
   }, 10000);
 
+  it("delivers monitor completion wake when the command times out", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const monitorCreate = toolMap.get("MonitorCreate");
+    const loopList = toolMap.get("LoopList");
+    await monitorCreate!.execute?.("1", {
+      command: "sleep 30",
+      timeout: 50,
+      onDone: "Monitor timed out — inspect the buffered output and continue",
+    });
+
+    await new Promise(r => setTimeout(r, 500));
+
+    expect(sentCustomMessages).toHaveLength(1);
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Monitor timed out");
+    const loops = await loopList!.execute?.("2", {});
+    expect(loops.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+  }, 10000);
+
   it("does not deliver monitor completion wake if the completion loop is deleted", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 

@@ -211,7 +211,7 @@ export class MonitorManager {
     if (timeout > 0) {
       setTimeout(() => {
         if (bp.entry.status === "running") {
-          this.stop(id);
+          void this.stop(id, "timeout");
         }
       }, timeout);
     }
@@ -231,7 +231,7 @@ export class MonitorManager {
       .sort((a, b) => Number(a.id) - Number(b.id));
   }
 
-  async stop(id: string): Promise<boolean> {
+  async stop(id: string, reason: "manual" | "timeout" = "manual"): Promise<boolean> {
     const bp = this.processes.get(id);
     if (!bp || bp.entry.status !== "running") return false;
 
@@ -243,7 +243,7 @@ export class MonitorManager {
       entityId: id,
       payload: {
         id,
-        reason: "manual",
+        reason,
       },
     });
     this.schedulePrune(id);
@@ -261,6 +261,14 @@ export class MonitorManager {
       });
     });
 
+    if (reason === "timeout") {
+      this.pi.events.emit("monitor:error", {
+        monitorId: id,
+        error: `Timed out after ${bp.entry.timeout}ms`,
+        outputLines: bp.entry.outputLines,
+      });
+      for (const callback of bp.completionCallbacks) callback();
+    }
     bp.completionCallbacks = [];
     for (const resolve of bp.waiters) resolve();
     bp.waiters = [];

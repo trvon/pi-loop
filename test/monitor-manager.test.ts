@@ -293,6 +293,30 @@ describe("MonitorManager", () => {
     vi.useRealTimers();
   });
 
+  it("notifies completion callbacks when a monitor times out", async () => {
+    vi.useFakeTimers();
+    manager = new MonitorManager(
+      pi,
+      createSequentialSpawn(createMockChildProcess({ exitCode: null })),
+    );
+    const entry = manager.create("sleep 60", "timeout callback test", 500);
+    const callback = vi.fn();
+    const errors: any[] = [];
+    pi.events.on("monitor:error", (event: any) => errors.push(event));
+
+    expect(manager.onComplete(entry.id, callback)).toBe(true);
+    await vi.advanceTimersByTimeAsync(5600);
+
+    expect(manager.get(entry.id)?.status).toBe("stopped");
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(errors).toEqual([{
+      monitorId: entry.id,
+      error: "Timed out after 500ms",
+      outputLines: 0,
+    }]);
+    vi.useRealTimers();
+  });
+
   it("disables timeout when set to 0", async () => {
     manager.create("echo 'no timeout'", undefined, 0);
     await new Promise<void>((resolve) => {

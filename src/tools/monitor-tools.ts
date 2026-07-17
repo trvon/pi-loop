@@ -57,7 +57,7 @@ Default to MonitorCreate for any long-running or background work:\n- Watch a CI/
 
 ## onDone — auto-notify on completion
 
-Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fires when the process exits. The completion wake includes the exit code and output line count.\n\nExample: MonitorCreate command="python train.py" onDone="Check training results and report best loss"\nExample: MonitorCreate command="hut builds show 1769753" onDone="Analyze the build result and report status"`,
+Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fires when the process exits, fails, or times out. The completion wake lets the agent inspect the final status and buffered output.\n\nExample: MonitorCreate command="python train.py" onDone="Check training results and report best loss"\nExample: MonitorCreate command="hut builds show 1769753" onDone="Analyze the build result and report status"`,
     promptGuidelines: [
       "Default to MonitorCreate for any long-running or background command — releases the agent to keep working on other tasks in parallel.",
       "When the user asks to monitor CI builds, watch a build, check a remote job, or run an experiment, use MonitorCreate instead of inline bash/curl/wait.",
