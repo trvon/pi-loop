@@ -1777,7 +1777,7 @@ describe("monitor tool wrappers", () => {
     const monitorCreate = toolMap.get("MonitorCreate");
     const loopList = toolMap.get("LoopList");
     await monitorCreate!.execute?.("1", {
-      command: "sleep 30",
+      command: "exec sleep 30",
       timeout: 50,
       onDone: "Monitor timed out — inspect the buffered output and continue",
     });
