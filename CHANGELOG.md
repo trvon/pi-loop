@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.3](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.2...pi-loop-v0.6.3) (2026-07-17)
+
+
+### Bug Fixes
+
+* **loop:** prevent premature self-deletion ([6049e15](https://github.com/trvon/pi-loop/commit/6049e1599d9c6c1ab99a9eada72ec75307f25ca1))
+* **ui:** restore loop status after resets ([da580f0](https://github.com/trvon/pi-loop/commit/da580f0d2f5ac414bc3cd884e27b757decd44b5d))
+
 ## [0.6.2](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.1...pi-loop-v0.6.2) (2026-07-17)
 
 
