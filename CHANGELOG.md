@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.2](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.1...pi-loop-v0.6.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* **deps:** require patched pi runtime ([459a44a](https://github.com/trvon/pi-loop/commit/459a44af75dce174e53d70ef0427ca773845a912))
+* **loop:** start dynamic goals immediately ([790959c](https://github.com/trvon/pi-loop/commit/790959c02d3c2b301526f780122aacf533429bc5))
+* **monitor:** wake after timeouts ([478535b](https://github.com/trvon/pi-loop/commit/478535b3c837e74074dc022ea35ec3ba9b18f533))
+
 ## [0.6.1](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.0...pi-loop-v0.6.1) (2026-07-16)
 
 
