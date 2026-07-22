@@ -1,4 +1,4 @@
-import type { DynamicLoopState } from "./types.js";
+import type { DynamicLoopState, WorkflowRunState } from "./types.js";
 
 type ReducerSource = "tool" | "command" | "scheduler" | "eventbus" | "monitor" | "session" | "coordinator" | "system";
 
@@ -14,6 +14,7 @@ export interface ReducerNotification {
   taskBacklog?: boolean;
   readOnly?: boolean;
   dynamic?: DynamicLoopState;
+  workflow?: WorkflowRunState;
 }
 
 export interface NotificationReducerState {

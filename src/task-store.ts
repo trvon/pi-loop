@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
 import { reduceTaskState, type TaskReducerEvent, type TaskReducerState } from "./task-reducer.js";
-import type { TaskEntry, TaskStoreData } from "./task-types.js";
+import type { TaskEntry, TaskStoreData, TaskWorkflowLink } from "./task-types.js";
 
 const TASKS_DIR = join(homedir(), ".pi", "tasks");
 const MAX_TASKS = 200;
@@ -22,7 +22,7 @@ export class TaskStore extends ReducerBackedStore<TaskEntry, TaskReducerState, T
     );
   }
 
-  create(subject: string, description: string, metadata?: Record<string, unknown>): TaskEntry {
+  create(subject: string, description: string, metadata?: Record<string, unknown>, workflow?: TaskWorkflowLink): TaskEntry {
     return this.withLock(() => {
       if (this.entries.size >= MAX_TASKS) {
         throw new Error(`Maximum of ${MAX_TASKS} tasks reached. Delete some before creating new ones.`);
@@ -33,7 +33,7 @@ export class TaskStore extends ReducerBackedStore<TaskEntry, TaskReducerState, T
         at: now,
         source: "tool",
         entityType: "task",
-        payload: { subject, description, metadata },
+        payload: { subject, description, metadata, workflow },
       });
       return this.entries.get(String(this.nextId - 1))!;
     });

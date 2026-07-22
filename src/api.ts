@@ -33,4 +33,12 @@ export {
 export { NATIVE_TASKS_PROVIDER } from "./runtime/native-task-rpc.js";
 export { resolveLoopStorePath, resolveTaskStorePath } from "./runtime/scope.js";
 export { TaskStore } from "./task-store.js";
-export type { TaskEntry, TaskStatus, TaskStoreData } from "./task-types.js";
+export type { TaskEntry, TaskStatus, TaskStoreData, TaskWorkflowLink } from "./task-types.js";
+export type {
+  WorkflowDefinition,
+  WorkflowRunState,
+  WorkflowStateDefinition,
+  WorkflowTaskDefinition,
+  WorkflowTerminalStatus,
+  WorkflowTransitionRecord,
+} from "./types.js";

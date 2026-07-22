@@ -60,6 +60,47 @@ LoopUpdate id="1" status="completed"
 
 Paused dynamic loops can be resumed from the `/loop` menu. If an in-memory wake is lost during a restart or session switch, persisted dynamic state recovers it.
 
+### Opt-in workflow loops
+
+Use a workflow only when work has stable named phases and outcomes. Ordinary reminders, polling, event hooks, and flat task backlogs should continue to use `LoopCreate` or the task tools.
+
+```text
+WorkflowCreate goal="Fix the regression" definition='{
+  "version": 1,
+  "initialState": "investigate",
+  "states": {
+    "investigate": {
+      "prompt": "Find and verify the root cause.",
+      "task": { "subject": "Investigate regression", "description": "Find the root cause and reproduce it." },
+      "on": { "root_cause_found": "fix", "blocked": "blocked" }
+    },
+    "fix": {
+      "prompt": "Implement and validate the fix.",
+      "task": { "subject": "Implement fix", "description": "Make the smallest fix and run targeted validation." },
+      "on": { "tests_pass": "done", "regression_found": "investigate" },
+      "maxAttempts": 2
+    },
+    "done": { "prompt": "Report completion.", "terminal": "completed" },
+    "blocked": { "prompt": "Report the blocker.", "terminal": "paused" }
+  }
+}'
+```
+
+Each wake presents the current state, state instructions, active task, and allowed outcomes. The agent finishes the state by selecting one declared outcome:
+
+```text
+WorkflowTransition id="1" outcome="root_cause_found" evidence="A null config reaches the parser."
+WorkflowTransition id="1" outcome="tests_pass" evidence="Targeted and full test suites pass."
+```
+
+`WorkflowTransition` validates the branch, records evidence, creates the next state's optional task, and queues the next wake. Reaching a `completed` terminal state deletes the workflow loop; reaching a `paused` terminal state preserves it in paused state. Task completion does not guess an outcome—the model selects one explicitly.
+
+```text
+WorkflowList
+```
+
+Lists only workflow loops, including their active state, active task, and valid outcomes.
+
 ### Inspecting and stopping loops
 
 ```text

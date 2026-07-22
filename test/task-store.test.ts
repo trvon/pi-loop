@@ -1,5 +1,5 @@
 import { rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TaskStore } from "../src/task-store.js";
@@ -77,9 +77,7 @@ describe("TaskStore (in-memory)", () => {
 });
 
 describe("TaskStore (file-backed)", () => {
-  const testListId = `test-tasks-${Date.now()}`;
-  const tasksDir = join(homedir(), ".pi", "tasks");
-  const filePath = join(tasksDir, `${testListId}.json`);
+  const filePath = join(tmpdir(), `pi-loop-tasks-${Date.now()}.json`);
 
   afterEach(() => {
     rmSync(filePath, { force: true });
@@ -88,19 +86,19 @@ describe("TaskStore (file-backed)", () => {
   });
 
   it("persists explicit lifecycle and detail updates", () => {
-    const store1 = new TaskStore(testListId);
+    const store1 = new TaskStore(filePath);
     store1.create("task", "desc");
     store1.start("1");
     store1.updateDetails("1", { subject: "updated" });
 
-    const store2 = new TaskStore(testListId);
+    const store2 = new TaskStore(filePath);
     expect(store2.get("1")?.status).toBe("in_progress");
     expect(store2.get("1")?.subject).toBe("updated");
   });
 
   it("refreshes reads only when the backing file changes", () => {
-    const store1 = new TaskStore(testListId);
-    const store2 = new TaskStore(testListId);
+    const store1 = new TaskStore(filePath);
+    const store2 = new TaskStore(filePath);
 
     store1.create("first", "desc");
     expect(store2.list()).toHaveLength(1);
@@ -111,7 +109,7 @@ describe("TaskStore (file-backed)", () => {
   });
 
   it("preserves monotonic ids after prune", () => {
-    const store1 = new TaskStore(testListId);
+    const store1 = new TaskStore(filePath);
     store1.create("done", "desc");
     store1.complete("1");
     store1.pruneCompleted();

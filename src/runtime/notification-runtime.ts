@@ -12,7 +12,7 @@ import {
   type ReducerNotification,
   reduceNotificationState,
 } from "../notification-reducer.js";
-import type { DynamicLoopState, Trigger } from "../types.js";
+import type { DynamicLoopState, Trigger, WorkflowRunState } from "../types.js";
 
 export interface LoopFireEvent {
   loopId: string;
@@ -25,6 +25,7 @@ export interface LoopFireEvent {
   autoTask?: boolean;
   taskBacklog?: boolean;
   dynamic?: DynamicLoopState;
+  workflow?: WorkflowRunState;
 }
 
 export interface PendingNotification extends LoopFireEvent {
@@ -106,6 +107,24 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       ? "\n\nREAD-ONLY MODE — use only read tools (Read, TaskList, LoopList, MonitorList, etc.). No file writes, shell execution, or destructive changes."
       : "";
 
+    if (data.workflow) {
+      const state = data.workflow.definition.states[data.workflow.currentState];
+      const outcomes = Object.keys(state?.on ?? {});
+      const lines = [
+        `[pi-loop] Loop #${loopId} fired (workflow).${constraint}`,
+        `Goal: ${data.prompt || data.workflow.definition.initialState}`,
+        `State: ${data.workflow.currentState}`,
+      ];
+      if (state?.prompt) lines.push(`State instructions: ${state.prompt}`);
+      if (data.workflow.activeTaskId) lines.push(`Active task: #${data.workflow.activeTaskId}`);
+      if (outcomes.length > 0) lines.push(`Allowed outcomes: ${outcomes.join(", ")}`);
+      lines.push(
+        `Workflow lifecycle: Loop #${loopId} is an opt-in state controller. Do not call LoopDelete after this state.`,
+        "Before ending this turn, call WorkflowTransition exactly once with this workflow id and one allowed outcome. Include evidence for the branch decision. Terminal outcomes complete or pause the workflow automatically.",
+      );
+      return lines.join("\n");
+    }
+
     if (data.dynamic || (typeof data.trigger !== "string" && data.trigger?.type === "dynamic")) {
       const dynamic = data.dynamic;
       const lines = [
@@ -169,6 +188,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
         autoTask: notification.autoTask,
         taskBacklog: notification.taskBacklog,
         dynamic: notification.dynamic,
+        workflow: notification.workflow,
         timestamp: notification.timestamp,
       },
     }, {

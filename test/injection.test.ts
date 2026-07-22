@@ -70,6 +70,49 @@ describe("loop:fire custom message delivery", () => {
     expect(content).toContain("only when the overall goal and done criteria are satisfied");
   });
 
+  it("renders workflow state, declared outcomes, and WorkflowTransition guidance", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
+      loopId: "8",
+      prompt: "Fix the regression",
+      trigger: { type: "dynamic" },
+      timestamp: Date.now(),
+      recurring: true,
+      workflow: {
+        definition: {
+          version: 1,
+          initialState: "investigate",
+          states: {
+            investigate: { prompt: "Find the cause.", on: { found: "fix", blocked: "blocked" } },
+            fix: { prompt: "Implement the fix." },
+            blocked: { prompt: "Report the blocker.", terminal: "paused" },
+          },
+        },
+        currentState: "investigate",
+        transitionSeq: 0,
+        stateEnteredAt: Date.now(),
+        attemptsByState: { investigate: 1 },
+        activeTaskId: "12",
+      },
+    });
+    await flushAsync();
+
+    const content = sentMessages[0].message.content;
+    expect(content).toContain("fired (workflow)");
+    expect(content).toContain("State: investigate");
+    expect(content).toContain("Find the cause.");
+    expect(content).toContain("Active task: #12");
+    expect(content).toContain("Allowed outcomes: found, blocked");
+    expect(content).toContain("WorkflowTransition");
+    expect(content).not.toContain("call LoopUpdate exactly once");
+  });
+
   it("keeps backlog cleanup under pi-loop control", async () => {
     const { pi, sentMessages, emitExtension } = createMockPi();
     const extension = await import("../src/index.js");

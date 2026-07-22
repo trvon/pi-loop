@@ -38,7 +38,7 @@ MonitorStop monitorId="1"
 
 ## What it provides
 
-- Cron, event, hybrid, and dynamic goal loops
+- Cron, event, hybrid, dynamic goal, and opt-in workflow loops
 - Idle-safe agent re-wakes with dynamic-loop restart/session-switch recovery
 - Background command monitoring with buffered output and `onDone` wakes
 - Optional `pi-tasks` integration and a native task fallback
@@ -50,7 +50,8 @@ MonitorStop monitorId="1"
 |---|---|
 | `/loop` | Create or manage scheduled, event, and dynamic goal loops |
 | `/tasks` | Manage native fallback tasks when `pi-tasks` is absent |
-| `LoopCreate`, `LoopList`, `LoopUpdate`, `LoopDelete` | Create and control loops |
+| `LoopCreate`, `LoopList`, `LoopUpdate`, `LoopDelete` | Create and control ordinary loops |
+| `WorkflowCreate`, `WorkflowList`, `WorkflowTransition` | Create and advance opt-in task-driven workflows |
 | `MonitorCreate`, `MonitorList`, `MonitorStop` | Run and inspect background commands |
 | `TaskCreate`, `TaskList`, `TaskUpdate`, `TaskDelete` | Native fallback task management |
 

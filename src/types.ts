@@ -47,6 +47,46 @@ export interface DynamicLoopState {
   lastUpdatedAt?: number;
 }
 
+export type WorkflowTerminalStatus = "completed" | "paused";
+
+export interface WorkflowTaskDefinition {
+  subject: string;
+  description: string;
+}
+
+export interface WorkflowStateDefinition {
+  prompt: string;
+  task?: WorkflowTaskDefinition;
+  on?: Record<string, string>;
+  terminal?: WorkflowTerminalStatus;
+  maxAttempts?: number;
+}
+
+export interface WorkflowDefinition {
+  version: 1;
+  initialState: string;
+  states: Record<string, WorkflowStateDefinition>;
+}
+
+export interface WorkflowTransitionRecord {
+  from: string;
+  to: string;
+  outcome: string;
+  evidence?: string;
+  at: number;
+  sequence: number;
+}
+
+export interface WorkflowRunState {
+  definition: WorkflowDefinition;
+  currentState: string;
+  transitionSeq: number;
+  stateEnteredAt: number;
+  attemptsByState: Record<string, number>;
+  activeTaskId?: string;
+  lastTransition?: WorkflowTransitionRecord;
+}
+
 export interface LoopEntry {
   id: string;
   prompt: string;
@@ -62,6 +102,7 @@ export interface LoopEntry {
   maxFires?: number;
   fireCount?: number;
   dynamic?: DynamicLoopState;
+  workflow?: WorkflowRunState;
 }
 
 export interface LoopStoreData {

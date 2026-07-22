@@ -1,4 +1,5 @@
-import type { DynamicLoopState, LoopEntry, Trigger } from "./types.js";
+import type { DynamicLoopState, LoopEntry, Trigger, WorkflowDefinition } from "./types.js";
+import { createWorkflowRun, transitionWorkflowRun } from "./workflow-reducer.js";
 
 export const MAX_LOOP_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -35,6 +36,7 @@ export type LoopReducerEvent =
       readOnly?: boolean;
       maxFires?: number;
       dynamic?: Partial<DynamicLoopState>;
+      workflow?: WorkflowDefinition;
     };
   }
   | {
@@ -73,6 +75,27 @@ export type LoopReducerEvent =
       prompt?: string;
       dynamic: Partial<DynamicLoopState>;
     };
+  }
+  | {
+    type: "LOOP_WORKFLOW_TRANSITION";
+    at: number;
+    source: ReducerSource;
+    entityType?: "loop";
+    entityId?: string;
+    payload: {
+      id: string;
+      outcome: string;
+      evidence?: string;
+      activeTaskId?: string;
+    };
+  }
+  | {
+    type: "LOOP_WORKFLOW_TASK_SET";
+    at: number;
+    source: ReducerSource;
+    entityType?: "loop";
+    entityId?: string;
+    payload: { id: string; taskId?: string };
   };
 
 export type LoopReducerEffect =
@@ -131,6 +154,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
             lastUpdatedAt: event.payload.dynamic?.lastUpdatedAt ?? event.at,
           }
         : undefined,
+      workflow: event.payload.workflow ? createWorkflowRun(event.payload.workflow, event.at) : undefined,
     };
     next.loopsById[id] = loop;
     return {
@@ -187,6 +211,34 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
       awaitingUpdate: event.payload.dynamic.awaitingUpdate ?? loop.dynamic?.awaitingUpdate ?? false,
       lastUpdatedAt: event.payload.dynamic.lastUpdatedAt ?? event.at,
     };
+    loop.updatedAt = event.at;
+  }
+
+  if (event.type === "LOOP_WORKFLOW_TRANSITION") {
+    if (!loop.workflow) return { state, effects: [] };
+    const result = transitionWorkflowRun(loop.workflow, {
+      outcome: event.payload.outcome,
+      evidence: event.payload.evidence,
+      activeTaskId: event.payload.activeTaskId,
+    }, event.at);
+    if (!result.applied) return { state, effects: [] };
+    loop.workflow = result.run;
+    loop.dynamic = {
+      goal: loop.dynamic?.goal ?? loop.prompt,
+      state: result.run.currentState,
+      metrics: loop.dynamic?.metrics,
+      doneCriteria: loop.dynamic?.doneCriteria,
+      iteration: (loop.dynamic?.iteration ?? 0) + 1,
+      nextWakeAt: undefined,
+      awaitingUpdate: false,
+      lastUpdatedAt: event.at,
+    };
+    loop.updatedAt = event.at;
+  }
+
+  if (event.type === "LOOP_WORKFLOW_TASK_SET") {
+    if (!loop.workflow) return { state, effects: [] };
+    loop.workflow = { ...loop.workflow, activeTaskId: event.payload.taskId };
     loop.updatedAt = event.at;
   }
 

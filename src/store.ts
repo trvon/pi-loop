@@ -2,7 +2,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopStoreData, Trigger } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopStoreData, Trigger, WorkflowDefinition, WorkflowTerminalStatus } from "./types.js";
+import { transitionWorkflowRun, validateWorkflowDefinition, type WorkflowTransitionInput } from "./workflow-reducer.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
 const MAX_LOOPS = 25;
@@ -25,10 +26,15 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     );
   }
 
-  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState> }): LoopEntry {
+  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition }): LoopEntry {
     return this.withLock(() => {
       if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
+      }
+      if (opts.workflow) {
+        if (trigger.type !== "dynamic") throw new Error("Workflow loops require a dynamic trigger.");
+        const validationError = validateWorkflowDefinition(opts.workflow);
+        if (validationError) throw new Error(`Invalid workflow: ${validationError}`);
       }
       const now = Date.now();
       this.applyReducerEvent({
@@ -45,6 +51,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           readOnly: opts.readOnly,
           maxFires: opts.maxFires,
           dynamic: opts.dynamic,
+          workflow: opts.workflow,
         },
       });
       return this.entries.get(String(this.nextId - 1))!;
@@ -149,6 +156,48 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         entityType: "loop",
         entityId: id,
         payload: { id, prompt: fields.prompt, dynamic: fields.dynamic },
+      });
+      return this.entries.get(id);
+    });
+  }
+
+  transitionWorkflow(id: string, input: WorkflowTransitionInput): { entry?: LoopEntry; applied: boolean; error?: string; terminal?: WorkflowTerminalStatus } {
+    return this.withLock(() => {
+      const entry = this.entries.get(id);
+      if (!entry) return { applied: false, error: `Loop #${id} not found` };
+      if (!entry.workflow) return { applied: false, error: `Loop #${id} is not a workflow loop` };
+
+      const result = transitionWorkflowRun(entry.workflow, input, Date.now());
+      if (!result.applied) return { applied: false, error: result.error };
+
+      this.applyReducerEvent({
+        type: "LOOP_WORKFLOW_TRANSITION",
+        at: result.run.stateEnteredAt,
+        source: "tool",
+        entityType: "loop",
+        entityId: id,
+        payload: {
+          id,
+          outcome: input.outcome,
+          evidence: input.evidence,
+          activeTaskId: input.activeTaskId,
+        },
+      });
+      return { entry: this.entries.get(id), applied: true, terminal: result.terminal };
+    });
+  }
+
+  setWorkflowActiveTask(id: string, taskId?: string): LoopEntry | undefined {
+    return this.withLock(() => {
+      const entry = this.entries.get(id);
+      if (!entry?.workflow) return undefined;
+      this.applyReducerEvent({
+        type: "LOOP_WORKFLOW_TASK_SET",
+        at: Date.now(),
+        source: "tool",
+        entityType: "loop",
+        entityId: id,
+        payload: { id, taskId },
       });
       return this.entries.get(id);
     });

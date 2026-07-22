@@ -1,5 +1,5 @@
 import { rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LoopStore } from "../src/store.js";
@@ -263,9 +263,7 @@ describe("LoopStore (in-memory)", () => {
 });
 
 describe("LoopStore (file-backed)", () => {
-  const testListId = `test-loops-${Date.now()}`;
-  const loopsDir = join(homedir(), ".pi", "loops");
-  const filePath = join(loopsDir, `${testListId}.json`);
+  const filePath = join(tmpdir(), `pi-loop-store-${Date.now()}.json`);
 
   afterEach(() => {
     rmSync(filePath, { force: true });
@@ -274,17 +272,17 @@ describe("LoopStore (file-backed)", () => {
   });
 
   it("persists loops to disk", () => {
-    const store1 = new LoopStore(testListId);
+    const store1 = new LoopStore(filePath);
     store1.create(cronTrigger, "persist test", { recurring: true });
 
-    const store2 = new LoopStore(testListId);
+    const store2 = new LoopStore(filePath);
     const loops = store2.list();
     expect(loops).toHaveLength(1);
     expect(loops[0].prompt).toBe("persist test");
   });
 
   it("persists dynamic loop state to disk", () => {
-    const store1 = new LoopStore(testListId);
+    const store1 = new LoopStore(filePath);
     store1.create({ type: "dynamic" }, "finish dynamic loop", {
       recurring: true,
       dynamic: {
@@ -294,7 +292,7 @@ describe("LoopStore (file-backed)", () => {
       },
     });
 
-    const store2 = new LoopStore(testListId);
+    const store2 = new LoopStore(filePath);
     expect(store2.get("1")?.dynamic).toMatchObject({
       goal: "finish dynamic loop",
       state: "router done",
@@ -304,28 +302,28 @@ describe("LoopStore (file-backed)", () => {
   });
 
   it("keeps deletion tombstones process-local", () => {
-    const store1 = new LoopStore(testListId);
+    const store1 = new LoopStore(filePath);
     store1.create(cronTrigger, "auto worker", { recurring: true });
     store1.recordDeletionTombstone("1", { reason: "task_backlog_empty", pendingCount: 0 });
     store1.delete("1");
 
-    const store2 = new LoopStore(testListId);
+    const store2 = new LoopStore(filePath);
     expect(store1.getDeletionTombstone("1")?.reason).toBe("task_backlog_empty");
     expect(store2.getDeletionTombstone("1")).toBeUndefined();
   });
 
   it("persists ID counter across instances", () => {
-    const store1 = new LoopStore(testListId);
+    const store1 = new LoopStore(filePath);
     store1.create(cronTrigger, "first", { recurring: true });
 
-    const store2 = new LoopStore(testListId);
+    const store2 = new LoopStore(filePath);
     const l = store2.create(cronTrigger, "second", { recurring: true });
     expect(l.id).toBe("2");
   });
 
   it("refreshes reads only when the backing file changes", () => {
-    const store1 = new LoopStore(testListId);
-    const store2 = new LoopStore(testListId);
+    const store1 = new LoopStore(filePath);
+    const store2 = new LoopStore(filePath);
 
     store1.create(cronTrigger, "first", { recurring: true });
     expect(store2.list()).toHaveLength(1);
@@ -336,20 +334,20 @@ describe("LoopStore (file-backed)", () => {
   });
 
   it("persists paused status updates", () => {
-    const store1 = new LoopStore(testListId);
+    const store1 = new LoopStore(filePath);
     store1.create(cronTrigger, "test", { recurring: true });
     store1.pause("1");
 
-    const store2 = new LoopStore(testListId);
+    const store2 = new LoopStore(filePath);
     expect(store2.get("1")!.status).toBe("paused");
   });
 
   it("persists deletions", () => {
-    const store1 = new LoopStore(testListId);
+    const store1 = new LoopStore(filePath);
     store1.create(cronTrigger, "test", { recurring: true });
     store1.delete("1");
 
-    const store2 = new LoopStore(testListId);
+    const store2 = new LoopStore(filePath);
     expect(store2.list()).toHaveLength(0);
   });
 });
