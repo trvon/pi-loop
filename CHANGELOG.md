@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.4](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.3...pi-loop-v0.6.4) (2026-07-22)
+
+
+### Features
+
+* **ui:** render compact status cards ([02925ae](https://github.com/trvon/pi-loop/commit/02925ae2af1404fd86f8daab4f5ecef3782550e3))
+* **workflow:** add state loop foundation ([2fddbe9](https://github.com/trvon/pi-loop/commit/2fddbe904cf3b413618572b8488e8aa9357590cd))
+* **workflow:** add task-driven state loops ([f174211](https://github.com/trvon/pi-loop/commit/f1742117a66c9700b08427aa6528234546f5b9cc))
+
+
+### Bug Fixes
+
+* **deps:** raise Pi security baseline ([5f538cf](https://github.com/trvon/pi-loop/commit/5f538cfb44cbb5e254ec87b5cd35f6ece1535fda))
+
 ## [0.6.3](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.2...pi-loop-v0.6.3) (2026-07-17)
 
 
