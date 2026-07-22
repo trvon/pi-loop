@@ -128,6 +128,10 @@ export default function (pi: ExtensionAPI) {
     onDetectionSettled: () => {
       tasksDetectionSettled = true;
     },
+    isDetectionSettled: () => tasksDetectionSettled,
+    onNativeTaskCompleted: () => {
+      widget.update();
+    },
     debug,
   });
 
@@ -282,6 +286,7 @@ export default function (pi: ExtensionAPI) {
       autoTask: firedEntry.autoTask,
       taskBacklog: firedEntry.taskBacklog,
       dynamic: firedEntry.dynamic,
+      workflow: firedEntry.workflow,
     });
   }
 
@@ -349,6 +354,11 @@ export default function (pi: ExtensionAPI) {
     },
     maybeBootstrapTaskLoop,
     isTaskSystemReady: () => tasksAvailable || nativeTasksRegistered,
+    onDynamicLoopActivated: (entry) => {
+      onLoopFire(entry);
+    },
+    createWorkflowTask: (entry) => taskRuntime.createWorkflowTask(entry),
+    completeWorkflowTask: (taskId) => taskRuntime.completeWorkflowTask(taskId),
   });
 
   function handleMonitorDoneLoop(doneLoop: LoopEntry, monitorId: string): void {

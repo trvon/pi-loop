@@ -20,6 +20,30 @@ function autoTaskLoop(overrides: Partial<LoopEntry> = {}): LoopEntry {
   };
 }
 
+function workflowLoop(overrides: Partial<LoopEntry> = {}): LoopEntry {
+  return {
+    ...autoTaskLoop({ autoTask: false }),
+    trigger: { type: "dynamic" },
+    workflow: {
+      definition: {
+        version: 1,
+        initialState: "investigate",
+        states: {
+          investigate: {
+            prompt: "Find the cause.",
+            task: { subject: "Investigate regression", description: "Find and reproduce the root cause." },
+          },
+        },
+      },
+      currentState: "investigate",
+      transitionSeq: 3,
+      stateEnteredAt: 10,
+      attemptsByState: { investigate: 1 },
+    },
+    ...overrides,
+  };
+}
+
 describe("task-rpc checkTasksVersion", () => {
   it("marks tasks available when pi-tasks replies with a version", async () => {
     const { pi } = createMockPi({ respondToTaskPing: true });
@@ -192,6 +216,121 @@ describe("task-rpc autoCreateTask", () => {
     expect(store.get(id!)?.subject).toBe("do the thing");
     expect(onNativeTaskCreated).toHaveBeenCalledWith(store);
     expect(emittedEvents.some((e) => e.name === "tasks:created" && e.payload.taskId === id)).toBe(true);
+  });
+});
+
+describe("task-rpc createWorkflowTask", () => {
+  it("creates a native task with typed workflow ownership", async () => {
+    const { pi, emittedEvents } = createMockPi();
+    const store = new TaskStore();
+    const bridge = createTaskRuntimeBridge({
+      pi,
+      isTasksAvailable: () => false,
+      setTasksAvailable: vi.fn(),
+      getNativeTaskStore: () => store,
+    });
+
+    const id = await bridge.createWorkflowTask(workflowLoop());
+
+    expect(store.get(id!)?.workflow).toEqual({ loopId: "1", stateId: "investigate", transitionSeq: 3 });
+    expect(store.get(id!)?.metadata).toEqual({ workflow: { loopId: "1", stateId: "investigate", transitionSeq: 3 } });
+    expect(emittedEvents.some((event) => event.name === "tasks:created" && event.payload.taskId === id)).toBe(true);
+  });
+
+  it("does not create a task for a state without a task definition", async () => {
+    const { pi } = createMockPi();
+    const bridge = createTaskRuntimeBridge({
+      pi,
+      isTasksAvailable: () => false,
+      setTasksAvailable: vi.fn(),
+      getNativeTaskStore: () => new TaskStore(),
+    });
+
+    expect(await bridge.createWorkflowTask(workflowLoop({
+      workflow: {
+        ...workflowLoop().workflow!,
+        definition: {
+          ...workflowLoop().workflow!.definition,
+          states: { investigate: { prompt: "Find the cause." } },
+        },
+      },
+    }))).toBeUndefined();
+  });
+
+  it("waits for provider detection before creating native workflow state", async () => {
+    const { pi } = createMockPi();
+    const store = new TaskStore();
+    const bridge = createTaskRuntimeBridge({
+      pi,
+      isTasksAvailable: () => false,
+      isDetectionSettled: () => false,
+      setTasksAvailable: vi.fn(),
+      getNativeTaskStore: () => store,
+    });
+
+    expect(await bridge.createWorkflowTask(workflowLoop())).toBeUndefined();
+    expect(store.list()).toHaveLength(0);
+  });
+});
+
+describe("task-rpc completeWorkflowTask", () => {
+  it("completes a native workflow task, emits its lifecycle event, and refreshes native state", async () => {
+    const { pi, emittedEvents } = createMockPi();
+    const store = new TaskStore();
+    const task = store.create("Investigate regression", "Find the cause.");
+    const onNativeTaskCompleted = vi.fn();
+    const bridge = createTaskRuntimeBridge({
+      pi,
+      isTasksAvailable: () => false,
+      setTasksAvailable: vi.fn(),
+      getNativeTaskStore: () => store,
+      onNativeTaskCompleted,
+    });
+
+    expect(await bridge.completeWorkflowTask(task.id)).toBe(true);
+    expect(store.get(task.id)?.status).toBe("completed");
+    expect(onNativeTaskCompleted).toHaveBeenCalledWith(store);
+    expect(emittedEvents.some((event) => event.name === "tasks:completed" && event.payload.taskId === task.id)).toBe(true);
+  });
+
+  it("uses the existing update RPC when pi-tasks owns workflow tasks", async () => {
+    const { pi, emittedEvents } = createMockPi({
+      respondToTaskUpdate: (request) => ({
+        task: {
+          id: request.id,
+          subject: "Investigate regression",
+          description: "Find the cause.",
+          status: request.status,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      }),
+    });
+    const bridge = createTaskRuntimeBridge({
+      pi,
+      isTasksAvailable: () => true,
+      setTasksAvailable: vi.fn(),
+      getNativeTaskStore: () => undefined,
+    });
+
+    expect(await bridge.completeWorkflowTask("external-7")).toBe(true);
+    expect(emittedEvents.some((event) => event.name === "tasks:rpc:update" && event.payload.id === "external-7" && event.payload.status === "completed")).toBe(true);
+  });
+
+  it("does not re-emit completion for an already completed native task", async () => {
+    const { pi, emittedEvents } = createMockPi();
+    const store = new TaskStore();
+    const task = store.create("Investigate regression", "Find the cause.");
+    store.complete(task.id);
+    const bridge = createTaskRuntimeBridge({
+      pi,
+      isTasksAvailable: () => false,
+      setTasksAvailable: vi.fn(),
+      getNativeTaskStore: () => store,
+    });
+
+    expect(await bridge.completeWorkflowTask(task.id)).toBe(true);
+    expect(emittedEvents.filter((event) => event.name === "tasks:completed")).toHaveLength(0);
   });
 });
 

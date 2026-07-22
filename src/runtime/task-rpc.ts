@@ -7,9 +7,11 @@ import {
   type PingReply,
   replyChannel,
   TASKS_RPC,
+  type UpdateTaskReply,
 } from "../rpc/channels.js";
 import { type RpcReply, rpcCall } from "../rpc/cross-extension-rpc.js";
 import type { TaskStore } from "../task-store.js";
+import type { TaskWorkflowLink } from "../task-types.js";
 import type { LoopEntry } from "../types.js";
 import { NATIVE_TASKS_PROVIDER } from "./native-task-rpc.js";
 import { emitNativeTaskEvent } from "./task-events.js";
@@ -20,7 +22,9 @@ export interface TaskRuntimeBridgeOptions {
   setTasksAvailable: (available: boolean) => void;
   getNativeTaskStore: () => TaskStore | undefined;
   onNativeTaskCreated?: (taskStore: TaskStore) => void;
+  onNativeTaskCompleted?: (taskStore: TaskStore) => Promise<void> | void;
   onNativeTasksPruned?: (taskStore: TaskStore) => Promise<void> | void;
+  isDetectionSettled?: () => boolean;
   /** Called when a detection window opens. */
   onDetectionStarted?: () => void;
   /** Called when a detection window closes (provider found or probe timed out). */
@@ -31,6 +35,8 @@ export interface TaskRuntimeBridgeOptions {
 export interface TaskRuntimeBridge {
   checkTasksVersion(): void;
   autoCreateTask(entry: LoopEntry): Promise<string | undefined>;
+  createWorkflowTask(entry: LoopEntry): Promise<string | undefined>;
+  completeWorkflowTask(taskId: string): Promise<boolean>;
   hasPendingTasks(): Promise<number>;
   cleanDoneTasks(): Promise<void>;
 }
@@ -42,7 +48,9 @@ export function createTaskRuntimeBridge(options: TaskRuntimeBridgeOptions): Task
     setTasksAvailable,
     getNativeTaskStore,
     onNativeTaskCreated,
+    onNativeTaskCompleted,
     onNativeTasksPruned,
+    isDetectionSettled,
     onDetectionStarted,
     onDetectionSettled,
     debug,
@@ -105,6 +113,62 @@ export function createTaskRuntimeBridge(options: TaskRuntimeBridgeOptions): Task
     return task.id;
   }
 
+  async function createWorkflowTask(entry: LoopEntry): Promise<string | undefined> {
+    const workflow = entry.workflow;
+    if (!workflow) return undefined;
+    const state = workflow.definition.states[workflow.currentState];
+    if (!state?.task || state.terminal) return undefined;
+
+    const link: TaskWorkflowLink = {
+      loopId: entry.id,
+      stateId: workflow.currentState,
+      transitionSeq: workflow.transitionSeq,
+    };
+    const metadata = { workflow: link };
+    if (isTasksAvailable()) {
+      try {
+        const reply = await rpcCall<CreateTaskReply>(pi.events, TASKS_RPC.create, {
+          subject: state.task.subject,
+          description: state.task.description,
+          metadata,
+        }, 5000);
+        return reply.id;
+      } catch {
+        return undefined;
+      }
+    }
+
+    if (isDetectionSettled && !isDetectionSettled()) return undefined;
+    const nativeTaskStore = getNativeTaskStore();
+    if (!nativeTaskStore) return undefined;
+    const task = nativeTaskStore.create(state.task.subject, state.task.description, metadata, link);
+    emitNativeTaskEvent(pi, "tasks:created", task);
+    onNativeTaskCreated?.(nativeTaskStore);
+    return task.id;
+  }
+
+  async function completeWorkflowTask(taskId: string): Promise<boolean> {
+    if (isTasksAvailable()) {
+      try {
+        await rpcCall<UpdateTaskReply>(pi.events, TASKS_RPC.update, { id: taskId, status: "completed" }, 5000);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    const nativeTaskStore = getNativeTaskStore();
+    const existing = nativeTaskStore?.get(taskId);
+    if (!nativeTaskStore || !existing) return false;
+    if (existing.status === "completed") return true;
+
+    const completed = nativeTaskStore.complete(taskId);
+    if (!completed) return false;
+    emitNativeTaskEvent(pi, "tasks:completed", completed, existing.status);
+    await onNativeTaskCompleted?.(nativeTaskStore);
+    return true;
+  }
+
   async function hasPendingTasks(): Promise<number> {
     if (isTasksAvailable()) {
       // -1 is this bridge's "unknown" sentinel, consumed by notification-runtime;
@@ -140,6 +204,8 @@ export function createTaskRuntimeBridge(options: TaskRuntimeBridgeOptions): Task
   return {
     checkTasksVersion,
     autoCreateTask,
+    createWorkflowTask,
+    completeWorkflowTask,
     hasPendingTasks,
     cleanDoneTasks,
   };
