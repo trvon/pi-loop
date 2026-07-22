@@ -8,8 +8,9 @@ function setup(backlog: NativeTaskToolsOptions["evaluateTaskBacklog"] = vi.fn(as
   const taskStore = new TaskStore();
   registerNativeTaskTools({ pi, taskStore, evaluateTaskBacklog: backlog, updateWidget: vi.fn() });
   const tool = (name: string) => toolMap.get(name)!;
-  const text = async (name: string, args: any) => (await tool(name).execute!("t", args)).content[0].text as string;
-  return { taskStore, tool, text, emittedEvents };
+  const result = async (name: string, args: any) => await tool(name).execute!("t", args);
+  const text = async (name: string, args: any) => (await result(name, args)).content[0].text as string;
+  return { taskStore, tool, text, result, emittedEvents };
 }
 
 describe("TaskCreate", () => {
@@ -19,6 +20,7 @@ describe("TaskCreate", () => {
     expect(out).toBe("Task #1 created: Fix bug");
     expect(taskStore.get("1")?.subject).toBe("Fix bug");
     expect(emittedEvents.some((e) => e.name === "tasks:created" && e.payload.taskId === "1")).toBe(true);
+    expect((setup().tool("TaskCreate") as any).renderResult).toBeTypeOf("function");
   });
 
   it("appends a backlog-worker note when one is created", async () => {
@@ -43,6 +45,19 @@ describe("TaskList", () => {
     expect(out).toContain("2 tasks (1 pending, 1 in progress, 0 done)");
     expect(out).toContain("#1");
     expect(out).toContain("[in_progress]");
+  });
+
+  it("keeps a 200-task display result compact while preserving the full text result", async () => {
+    const { taskStore, result } = setup();
+    for (let index = 0; index < 200; index++) taskStore.create(`task ${index + 1}`, "d");
+
+    const output = await result("TaskList", {});
+    const details = output.details as { summary: string; expanded: string[] };
+
+    expect(output.content[0].text).toContain("#200");
+    expect(details.summary).toBe("200 tasks · 200 pending · 0 active");
+    expect(details.expanded).toHaveLength(9);
+    expect(details.expanded.at(-1)).toBe("… 192 more");
   });
 });
 

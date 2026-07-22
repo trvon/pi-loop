@@ -9,7 +9,8 @@ import {
 } from "../runtime/task-mutations.js";
 import { TaskStore } from "../task-store.js";
 import type { TaskStatus } from "../task-types.js";
-import { textResult } from "./tool-result.js";
+import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
+import { displayRows, textResult } from "./tool-result.js";
 
 export type { TaskBacklogResult };
 
@@ -33,6 +34,8 @@ export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
   pi.registerTool({
     name: "TaskCreate",
     label: "TaskCreate",
+    renderCall: renderToolCall("Task", (args) => `create · ${String(toolArg(args, "subject") ?? "task").slice(0, 56)}`),
+    renderResult: renderToolResult,
     description: `Create a task for tracking work across turns. Use when you need to track progress on complex multi-step tasks or turn a broad user goal into a concrete backlog.
 
 Fields:
@@ -59,18 +62,33 @@ Fields:
         subject: params.subject,
         description: params.description,
       });
-      return textResult(`Task #${entry.id} created: ${entry.subject}${backlogSuffix(backlog)}`);
+      return textResult(`Task #${entry.id} created: ${entry.subject}${backlogSuffix(backlog)}`, {
+        kind: "task",
+        action: "create",
+        tone: "success",
+        summary: `Task #${entry.id} pending · ${entry.subject.slice(0, 56)}`,
+        expanded: [
+          `Description: ${entry.description}`,
+          backlog.created && backlog.entry ? `Backlog worker: loop #${backlog.entry.id} created` : "Backlog worker: unchanged",
+        ],
+      });
     },
   });
 
   pi.registerTool({
     name: "TaskList",
     label: "TaskList",
+    renderCall: renderToolCall("Task", () => "status"),
+    renderResult: renderToolResult,
     description: "List all tasks with status. Use to check progress and find available work.",
     parameters: Type.Object({}),
     execute() {
       const tasks = taskStore.list();
-      if (tasks.length === 0) return Promise.resolve(textResult("No tasks."));
+      if (tasks.length === 0) {
+        return Promise.resolve(textResult("No tasks.", {
+          kind: "task", action: "list", tone: "info", summary: "No tasks", expanded: ["Use TaskCreate for work that spans turns."],
+        }));
+      }
 
       const lines: string[] = [];
       const statuses: Record<"pending" | "in_progress" | "completed", number> = {
@@ -84,13 +102,21 @@ Fields:
         lines.push(`${icon} #${t.id} [${t.status}] ${t.subject.slice(0, 80)}`);
       }
       lines.unshift(`${tasks.length} tasks (${statuses.pending} pending, ${statuses.in_progress} in progress, ${statuses.completed} done)`);
-      return Promise.resolve(textResult(lines.join("\n")));
+      return Promise.resolve(textResult(lines.join("\n"), {
+        kind: "task",
+        action: "list",
+        tone: "info",
+        summary: `${tasks.length} task${tasks.length === 1 ? "" : "s"} · ${statuses.pending} pending · ${statuses.in_progress} active`,
+        expanded: displayRows(lines.slice(1)),
+      }));
     },
   });
 
   pi.registerTool({
     name: "TaskUpdate",
     label: "TaskUpdate",
+    renderCall: renderToolCall("Task", (args) => `update · #${String(toolArg(args, "id") ?? "?")}`),
+    renderResult: renderToolResult,
     description: `Update task status or details. Set status to "in_progress" before starting work, "completed" when done.
 
 Statuses: pending → in_progress → completed
@@ -114,23 +140,45 @@ Parameters: id (required), status, subject, description`,
         subject,
         description,
       });
-      if (!result) return textResult(`Task #${id} not found`);
+      if (!result) {
+        return textResult(`Task #${id} not found`, {
+          kind: "task", action: "update", tone: "error", summary: `Task #${id} not found`, expanded: ["Use TaskList to find valid task IDs."],
+        });
+      }
       const statusMsg = status ? ` → ${status}` : "";
-      return textResult(`Task #${id} updated${statusMsg}${backlogSuffix(result.backlog)}`);
+      return textResult(`Task #${id} updated${statusMsg}${backlogSuffix(result.backlog)}`, {
+        kind: "task",
+        action: "update",
+        tone: "success",
+        summary: `Task #${id}${status ? ` → ${status}` : " updated"}`,
+        expanded: [
+          `Subject: ${result.entry.subject}`,
+          `Status: ${result.entry.status}`,
+          result.backlog.created && result.backlog.entry ? `Backlog worker: loop #${result.backlog.entry.id} created` : "Backlog worker: unchanged",
+        ],
+      });
     },
   });
 
   pi.registerTool({
     name: "TaskDelete",
     label: "TaskDelete",
+    renderCall: renderToolCall("Task", (args) => `delete · #${String(toolArg(args, "id") ?? "?")}`),
+    renderResult: renderToolResult,
     description: "Delete a task by ID. Use for cleaning up completed or irrelevant tasks.",
     parameters: Type.Object({
       id: Type.String({ description: "Task ID to delete" }),
     }),
     async execute(_toolCallId, params) {
       const result = await deleteTask(mutationCtx, params.id);
-      if (!result) return textResult(`Task #${params.id} not found`);
-      return textResult(`Task #${params.id} deleted`);
+      if (!result) {
+        return textResult(`Task #${params.id} not found`, {
+          kind: "task", action: "delete", tone: "error", summary: `Task #${params.id} not found`, expanded: ["Use TaskList to find valid task IDs."],
+        });
+      }
+      return textResult(`Task #${params.id} deleted`, {
+        kind: "task", action: "delete", tone: "success", summary: `Task #${params.id} deleted`, expanded: [],
+      });
     },
   });
 }

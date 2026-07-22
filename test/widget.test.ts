@@ -60,7 +60,7 @@ describe("LoopWidget status rendering", () => {
     });
 
     widget.update();
-    expect(latestStatusCall()).toEqual(["loops", "1 monitor"]);
+    expect(latestStatusCall()).toEqual(["loops", "▶ 1 monitor"]);
   });
 
   it("shows compact loop and monitor counts in status", () => {
@@ -78,7 +78,7 @@ describe("LoopWidget status rendering", () => {
     });
 
     widget.update();
-    expect(latestStatusCall()).toEqual(["loops", "1 loop · 1 monitor"]);
+    expect(latestStatusCall()).toEqual(["loops", "↻ 1 loop · ▶ 1 monitor"]);
   });
 
   it("does not count one-shot monitor completion loops as visible loops in status", () => {
@@ -96,7 +96,16 @@ describe("LoopWidget status rendering", () => {
     });
 
     widget.update();
-    expect(latestStatusCall()).toEqual(["loops", "1 monitor"]);
+    expect(latestStatusCall()).toEqual(["loops", "▶ 1 monitor"]);
+  });
+
+  it("hides completed monitors from the live status bar", () => {
+    monitorManager._add({
+      id: "done", command: "npm test", status: "completed", startedAt: Date.now(), outputLines: 12,
+    });
+
+    widget.update();
+    expect(latestStatusCall()).toEqual(["loops", undefined]);
   });
 
   it("shows task counts and only the active task focus text", () => {
@@ -106,7 +115,7 @@ describe("LoopWidget status rendering", () => {
     }));
 
     widget.update();
-    expect(latestStatusCall()).toEqual(["loops", "2 tasks | active: Fix native task fallback"]);
+    expect(latestStatusCall()).toEqual(["loops", "□ 2 tasks | active: Fix native task fallback"]);
   });
 
   it("shows next task when no task is in progress", () => {
@@ -116,7 +125,7 @@ describe("LoopWidget status rendering", () => {
     }));
 
     widget.update();
-    expect(latestStatusCall()).toEqual(["loops", "3 tasks | next: Write README updates"]);
+    expect(latestStatusCall()).toEqual(["loops", "□ 3 tasks | next: Write README updates"]);
   });
 
   it("clears status after active content disappears", () => {
@@ -125,7 +134,7 @@ describe("LoopWidget status rendering", () => {
     });
 
     widget.update();
-    expect(latestStatusCall()).toEqual(["loops", "1 monitor"]);
+    expect(latestStatusCall()).toEqual(["loops", "▶ 1 monitor"]);
 
     monitorManager._clear();
     widget.update();

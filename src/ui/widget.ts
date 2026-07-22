@@ -36,7 +36,7 @@ export class LoopWidget {
 
   private computeStatus(): string | undefined {
     const loops = this.store.list().filter(isStatusVisibleLoop);
-    const monitors = this.monitorManager.list();
+    const monitors = this.monitorManager.list().filter((monitor) => monitor.status === "running");
     const taskSummary = this.taskSummaryProvider?.() ?? { count: 0 };
 
     if (loops.length === 0 && monitors.length === 0 && taskSummary.count === 0) {
@@ -44,9 +44,9 @@ export class LoopWidget {
     }
 
     const parts: string[] = [];
-    if (loops.length > 0) parts.push(formatCount(loops.length, "loop"));
-    if (monitors.length > 0) parts.push(formatCount(monitors.length, "monitor"));
-    if (taskSummary.count > 0) parts.push(formatCount(taskSummary.count, "task"));
+    if (loops.length > 0) parts.push(`↻ ${formatCount(loops.length, "loop")}`);
+    if (monitors.length > 0) parts.push(`▶ ${formatCount(monitors.length, "monitor")}`);
+    if (taskSummary.count > 0) parts.push(`□ ${formatCount(taskSummary.count, "task")}`);
 
     let line = parts.join(" · ");
     if (taskSummary.focusText) line += ` | ${taskSummary.focusText}`;

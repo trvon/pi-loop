@@ -36,7 +36,7 @@ function setup(managerOverrides: Partial<{ list: () => MonitorEntry[]; stop: (id
   });
   const text = async (name: string, args: any) =>
     (await toolMap.get(name)!.execute!("t", args)).content[0].text as string;
-  return { store, manager, handleMonitorDoneLoop, text };
+  return { store, manager, handleMonitorDoneLoop, text, toolMap };
 }
 
 describe("MonitorCreate", () => {
@@ -47,6 +47,7 @@ describe("MonitorCreate", () => {
     expect(out).toContain("Output stream: monitor:output");
     expect(h.manager.create).toHaveBeenCalledWith("npm test", undefined, undefined);
     expect(h.handleMonitorDoneLoop).not.toHaveBeenCalled();
+    expect(h.toolMap.get("MonitorCreate")?.renderResult).toBeTypeOf("function");
   });
 
   it("creates a one-shot completion loop and registers it when onDone is set", async () => {

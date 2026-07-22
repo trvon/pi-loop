@@ -1,7 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { LoopEntry, MonitorEntry, Trigger } from "../types.js";
-import { textResult } from "./tool-result.js";
+import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
+import { displayRows, textResult } from "./tool-result.js";
 
 interface MonitorManagerLike {
   list(): MonitorEntry[];
@@ -39,6 +40,8 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
   pi.registerTool({
     name: "MonitorCreate",
     label: "MonitorCreate",
+    renderCall: renderToolCall("Monitor", (args) => `start · ${String(toolArg(args, "description") ?? toolArg(args, "command") ?? "monitor").slice(0, 56)}`),
+    renderResult: renderToolResult,
     description: `Run a shell command in the background and get notified when it finishes. The core tool for async/parallel work.
 
 Fire off a build check, CI monitor, experiment, script, or any slow command — then keep working. Output streams back as "monitor:output" events. When the process exits, "monitor:done" fires (or "monitor:error" on failure).
@@ -71,7 +74,9 @@ Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fire
     }),
     execute(_toolCallId, params) {
       if (getMonitorManager().list().filter((m) => m.status === "running").length >= 25) {
-        return Promise.resolve(textResult("Maximum of 25 running monitors reached. Stop some before creating new ones."));
+        return Promise.resolve(textResult("Maximum of 25 running monitors reached. Stop some before creating new ones.", {
+          kind: "monitor", action: "create", tone: "error", summary: "Monitor limit reached", expanded: ["Stop a running monitor before starting another."],
+        }));
       }
 
       const entry = getMonitorManager().create(params.command, params.description, params.timeout);
@@ -97,7 +102,18 @@ Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fire
       return Promise.resolve(textResult(
         `Monitor #${entry.id} started: ${entry.command.slice(0, 60)}\n` +
         `Output stream: monitor:output (monitorId: ${entry.id})\n` +
-        `Timeout: ${params.timeout ? `${params.timeout / 1000}s` : "none"}${onDoneMsg}`
+        `Timeout: ${params.timeout ? `${params.timeout / 1000}s` : "none"}${onDoneMsg}`,
+        {
+          kind: "monitor",
+          action: "create",
+          tone: "success",
+          summary: `Monitor #${entry.id} running · ${params.description ?? entry.command.slice(0, 48)}`,
+          expanded: [
+            `Command: ${entry.command}`,
+            `Timeout: ${params.timeout ? `${params.timeout / 1000}s` : "none"}`,
+            params.onDone ? "Completion wake: enabled" : "Completion wake: off",
+          ],
+        },
       ));
     },
   });
@@ -105,11 +121,17 @@ Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fire
   pi.registerTool({
     name: "MonitorList",
     label: "MonitorList",
+    renderCall: renderToolCall("Monitor", () => "status"),
+    renderResult: renderToolResult,
     description: "List all monitors with their status, command, exit code, output line count, and last 5 lines of buffered output.",
     parameters: Type.Object({}),
     execute() {
       const monitors = getMonitorManager().list();
-      if (monitors.length === 0) return Promise.resolve(textResult("No monitors."));
+      if (monitors.length === 0) {
+        return Promise.resolve(textResult("No monitors.", {
+          kind: "monitor", action: "list", tone: "info", summary: "No monitors", expanded: ["Use MonitorCreate for long-running background work."],
+        }));
+      }
 
       const lines: string[] = [];
       for (const m of monitors) {
@@ -128,13 +150,22 @@ Pass onDone with a prompt and the monitor auto-creates a one-shot loop that fire
         }
       }
 
-      return Promise.resolve(textResult(lines.join("\n")));
+      const running = monitors.filter((monitor) => monitor.status === "running").length;
+      return Promise.resolve(textResult(lines.join("\n"), {
+        kind: "monitor",
+        action: "list",
+        tone: "info",
+        summary: `${monitors.length} monitor${monitors.length === 1 ? "" : "s"} · ${running} running`,
+        expanded: displayRows(lines),
+      }));
     },
   });
 
   pi.registerTool({
     name: "MonitorStop",
     label: "MonitorStop",
+    renderCall: renderToolCall("Monitor", (args) => `stop · #${String(toolArg(args, "monitorId") ?? "?")}`),
+    renderResult: renderToolResult,
     description: `Stop a running monitor. Sends SIGTERM, waits 5s, then SIGKILL.
 
 Use MonitorList to find the monitor ID, then stop it with this tool.`,
@@ -144,8 +175,14 @@ Use MonitorList to find the monitor ID, then stop it with this tool.`,
     async execute(_toolCallId, params) {
       const stopped = await getMonitorManager().stop(params.monitorId);
       updateWidget();
-      if (stopped) return textResult(`Monitor #${params.monitorId} stopped`);
-      return textResult(`Monitor #${params.monitorId} not found or not running`);
+      if (stopped) {
+        return textResult(`Monitor #${params.monitorId} stopped`, {
+          kind: "monitor", action: "stop", tone: "success", summary: `Monitor #${params.monitorId} stopped`, expanded: [],
+        });
+      }
+      return textResult(`Monitor #${params.monitorId} not found or not running`, {
+        kind: "monitor", action: "stop", tone: "error", summary: `Monitor #${params.monitorId} unavailable`, expanded: ["Use MonitorList to find running monitor IDs."],
+      });
     },
   });
 }
