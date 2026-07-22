@@ -31,8 +31,8 @@
     "./package.json": "./package.json"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.10",
-    "@earendil-works/pi-tui": "^0.80.10"
+    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "@earendil-works/pi-tui": "^0.81.1"
   },
   "dependencies": {
     "typebox": "^1.1.34"
