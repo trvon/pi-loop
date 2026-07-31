@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.6](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.5...pi-loop-v0.6.6) (2026-07-31)
+
+
+### Features
+
+* **monitor:** add structured progress and activity status ([c80df5c](https://github.com/trvon/pi-loop/commit/c80df5cf4d12193ea6b0f50b62f2cd5b54161d53))
+
+
+### Bug Fixes
+
+* **monitor:** bound and sample high-volume output ([aa3b4b0](https://github.com/trvon/pi-loop/commit/aa3b4b0f227f87cee89781b06bcfff8790789df5))
+
 ## [0.6.5](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.4...pi-loop-v0.6.5) (2026-07-31)
 
 
