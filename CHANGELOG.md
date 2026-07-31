@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.5](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.4...pi-loop-v0.6.5) (2026-07-31)
+
+
+### Features
+
+* add closed task status without completing ([f398b58](https://github.com/trvon/pi-loop/commit/f398b584d36272a274b29812f3e43c18d0d61f59))
+* **monitor:** hide tool cards and wake when idle ([ef9daf7](https://github.com/trvon/pi-loop/commit/ef9daf759826fe9de803e0b2aed6c765d4727f64))
+
+
+### Bug Fixes
+
+* **deps:** override postcss security vulnerability ([cd97d65](https://github.com/trvon/pi-loop/commit/cd97d65cee135ca4fe923a5e34d5965f90f2b5d6))
+* **monitor:** defer stale startup wakes ([7ed6f01](https://github.com/trvon/pi-loop/commit/7ed6f01234e061246464419faf1b9d12b4be4363))
+
 ## [0.6.4](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.3...pi-loop-v0.6.4) (2026-07-22)
 
 
