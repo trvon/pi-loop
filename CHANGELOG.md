@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.6.8](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.7...pi-loop-v0.6.8) (2026-08-01)
+
+
+### Features
+
+* **tasks:** add durable execution claims ([ef798f3](https://github.com/trvon/pi-loop/commit/ef798f3dea6628a33aa7620b740f4bf5575a7c56))
+
+
+### Bug Fixes
+
+* **package:** publish dist-only extension ([22c9f33](https://github.com/trvon/pi-loop/commit/22c9f332018170296d867c0ada17f90c1627e026))
+* **prompts:** preserve task goal context ([090e295](https://github.com/trvon/pi-loop/commit/090e2959bfafd821e1a66d3a82d052aa231d6b2b))
+* **scheduler:** retire cron one-shots ([c5ae360](https://github.com/trvon/pi-loop/commit/c5ae360eed76be5af422b4b2ce86394e4fb189c9))
+* **session:** bind task scope on switch ([172118a](https://github.com/trvon/pi-loop/commit/172118a44dbe2ae293c63c0397ee9b006ef0f9f2))
+* **store:** recover corrupt snapshots ([bc66935](https://github.com/trvon/pi-loop/commit/bc66935349f19f88bb4d98f43e6bb4456125bd67))
+* **tasks:** fence provider and session ownership ([fbdb9cd](https://github.com/trvon/pi-loop/commit/fbdb9cd101465ea27338ea0a6ac3906cab82e3f2))
+* **tasks:** resume stranded backlog work ([b1c0ea0](https://github.com/trvon/pi-loop/commit/b1c0ea089ff30d4f86385b42fbfb9b8ad32d9785))
+
+
+### Performance Improvements
+
+* **prompts:** halve registered tool copy ([ad34921](https://github.com/trvon/pi-loop/commit/ad349216bb7c65c0fa57fb42dcee97a2aaa86b20))
+
 ## [0.6.7](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.6...pi-loop-v0.6.7) (2026-08-01)
 
 
