@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.6.7](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.6...pi-loop-v0.6.7) (2026-08-01)
+
+
+### Features
+
+* **backlog:** teach worker to honor next-task sequencing ([f32c8f6](https://github.com/trvon/pi-loop/commit/f32c8f65a9a900a7b4e253c386366563b241df8d))
+* **loop:** add idle-driven LoopCreate mode ([8fed8bf](https://github.com/trvon/pi-loop/commit/8fed8bf398fa10a1039b6b397fdf799ca6b3f209))
+* **loop:** show elapsed running time in LoopList ([aac3f12](https://github.com/trvon/pi-loop/commit/aac3f12de2959b639d31afe27ab18ffff4f9a126))
+* **tasks:** add TaskGet for full task context reads ([86c5185](https://github.com/trvon/pi-loop/commit/86c518517f630bac1fb518253ffcd0805acc98f8))
+
+
+### Bug Fixes
+
+* **backlog:** enforce prerequisite-first task ordering ([f490785](https://github.com/trvon/pi-loop/commit/f490785a7316c47b54bb709ec6789c70d173746e))
+* **backlog:** recognize legacy-prompt worker loops ([96bf2c6](https://github.com/trvon/pi-loop/commit/96bf2c689c0f44dbc37b484edc6d23d234d55fe6))
+* **cron:** honor field origins and annual horizon ([4bb9a63](https://github.com/trvon/pi-loop/commit/4bb9a637dded5d6023e59c660676ca7e1473865c))
+* **loop,workflow:** harden state-wake and loop UX findings ([a63382c](https://github.com/trvon/pi-loop/commit/a63382c4e748482f353c504c401fe0065c9c322a))
+* **loop:** label wall-clock duration as age ([3de7e37](https://github.com/trvon/pi-loop/commit/3de7e37ad49cbb46038824945bb2254ae21aaf21))
+* updating pacing note for monitor ux ([da949f3](https://github.com/trvon/pi-loop/commit/da949f346fbaa3d4e616f427c44e4f0eb8f5a38c))
+* **workflow:** preserve outcomes after branch exhaustion ([d48ab78](https://github.com/trvon/pi-loop/commit/d48ab7867923d3386a62e3242a4ee8a1d8b88f2b))
+* **workflow:** prevent terminal resume dead ends ([a8eff61](https://github.com/trvon/pi-loop/commit/a8eff61f071156e6ea3d27e8b7a017a94874867a))
+* **workflow:** replay transition evidence in state wakes ([4bd6e72](https://github.com/trvon/pi-loop/commit/4bd6e7240ed928b306ccf9770a3fb0cbe9f99717))
+
 ## [0.6.6](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.5...pi-loop-v0.6.6) (2026-07-31)
 
 
