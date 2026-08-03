@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.8...pi-loop-v0.7.0) (2026-08-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** WorkflowTransition no longer accepts activeTaskId. Destination state tasks are created and bound by the workflow runtime.
+
+### Bug Fixes
+
+* **backlog:** adopt unfinished tasks ([52ab8c0](https://github.com/trvon/pi-loop/commit/52ab8c0e78abd457ad316c3a943325d1ca651e11))
+* **runtime:** harden mutation contracts ([03a3a53](https://github.com/trvon/pi-loop/commit/03a3a533da6dc96a699873160e6d308647c9d69c))
+* **workflow:** own linked task attempts ([8defedd](https://github.com/trvon/pi-loop/commit/8defedda760fc82e64c82a6c5d83cfa7402ae611))
+
 ## [0.6.8](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.7...pi-loop-v0.6.8) (2026-08-01)
 
 
