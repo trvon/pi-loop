@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.0...pi-loop-v0.7.1) (2026-08-04)
+
+
+### Bug Fixes
+
+* **backlog:** require action before status ([bf8b99b](https://github.com/trvon/pi-loop/commit/bf8b99bf00998273b6d7867e36cf19018f46a9ff))
+
 ## [0.7.0](https://github.com/trvon/pi-loop/compare/pi-loop-v0.6.8...pi-loop-v0.7.0) (2026-08-03)
 
 
