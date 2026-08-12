@@ -131,7 +131,16 @@ export abstract class ReducerBackedStore<TEntry extends { id: string }, TState, 
     if (!this.filePath) return;
     const fd = openSync(dirname(this.filePath), "r");
     try {
-      fsyncSync(fd);
+      // Directory fsync is best-effort dirent durability (POSIX only). Windows'
+      // FlushFileBuffers needs write access on the handle and throws EPERM on a
+      // read-only directory descriptor, and the file fsync in writeSnapshot()
+      // already made the bytes durable.
+      try {
+        fsyncSync(fd);
+      } catch (error) {
+        if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") return;
+        throw error;
+      }
     } finally {
       closeSync(fd);
     }
