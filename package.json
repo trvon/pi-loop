@@ -55,8 +55,9 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc",
+    "audit:all": "npm audit --audit-level=moderate",
     "audit:production": "npm audit --omit=dev --audit-level=moderate",
-    "prepublishOnly": "npm run audit:production && npm run lint && npm run typecheck && npm run test && npm run build && npm run test:package",
+    "prepublishOnly": "npm run audit:all && npm run lint && npm run typecheck && npm run test && npm run build && npm run test:package",
     "test:package": "node scripts/package-smoke.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -79,8 +80,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
-    "@earendil-works/pi-coding-agent": "0.83.0",
-    "@earendil-works/pi-tui": "0.83.0",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-tui": "0.84.1",
     "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.8",
     "fast-check": "^4.9.0",

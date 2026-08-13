@@ -41,6 +41,8 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run audit:all
+
       - run: npm run lint
 
       - run: npm run typecheck
