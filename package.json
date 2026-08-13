@@ -55,7 +55,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc",
-    "audit:all": "npm audit --audit-level=moderate",
+    "audit:all": "npm audit",
     "audit:production": "npm audit --omit=dev --audit-level=moderate",
     "prepublishOnly": "npm run audit:all && npm run lint && npm run typecheck && npm run test && npm run build && npm run test:package",
     "test:package": "node scripts/package-smoke.mjs",

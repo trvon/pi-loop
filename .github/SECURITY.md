@@ -12,7 +12,7 @@ Release and CI gates run:
 npm run audit:all
 ```
 
-This audits all direct and transitive dependencies and fails on moderate-or-higher findings. `pi-loop` ships one runtime dependency and receives Pi, Pi TUI, and TypeBox from the host through peer dependencies.
+This audits all direct and transitive dependencies and fails on any finding. `pi-loop` ships one runtime dependency and receives Pi, Pi TUI, and TypeBox from the host through peer dependencies.
 
 The production-only audit remains available for consumers that need to audit the published dependency set:
 
