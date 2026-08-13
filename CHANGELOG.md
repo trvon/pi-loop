@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.2](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.1...pi-loop-v0.7.2) (2026-08-13)
+
+
+### Bug Fixes
+
+* **loop:** clarify broad-goal backlog recovery ([0961807](https://github.com/trvon/pi-loop/commit/096180759d8a65e93621b9ddfc8966e38d839f22))
+* **monitor:** harden Windows completion wakes ([4d056a8](https://github.com/trvon/pi-loop/commit/4d056a814912c3eb3411f0ec8b44fb8ecd7073c7))
+* **security:** harden monitor completion wakes ([452fc55](https://github.com/trvon/pi-loop/commit/452fc55bd5e7dc048c8c2e341b7cc5b765b93340))
+* **store:** tolerate Windows directory-fsync EPERM ([#21](https://github.com/trvon/pi-loop/issues/21)) ([f904378](https://github.com/trvon/pi-loop/commit/f9043781317e33bdb065a8d08df684e9f97d485e))
+
 ## [0.7.1](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.0...pi-loop-v0.7.1) (2026-08-04)
 
 
