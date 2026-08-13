@@ -1989,6 +1989,7 @@ describe("monitor tool wrappers", () => {
 
     const monitorCreate = toolMap.get("MonitorCreate");
     const loopDelete = toolMap.get("LoopDelete");
+    const monitorStop = toolMap.get("MonitorStop");
 
     const result = await monitorCreate!.execute?.("1", {
       command: "sleep 10 && echo done",
@@ -2001,6 +2002,8 @@ describe("monitor tool wrappers", () => {
 
     await new Promise(r => setTimeout(r, 200));
     expect(sentCustomMessages).toHaveLength(0);
+
+    await monitorStop!.execute?.("3", { monitorId: "1" });
   }, 10000);
 
   it("monitor create list stop lifecycle reflects state changes", async () => {
