@@ -223,13 +223,14 @@ export function registerLoopTools(options: LoopToolsOptions): void {
     renderResult: renderToolResult,
     description: `Create a persistent cron, event, hybrid, or idle-driven loop. Use it for recurring checks, reminders, event reactions, or explicit task-backlog processing; never use shell sleep/while loops.
 
-Set triggerType to cron, event, hybrid, or idle. Polling loops need maxFires; observation-only loops should set readOnly. Use taskBacklog to adopt a queue until it drains; use autoTask to create one task per fire.
+Set triggerType to cron, event, hybrid, or idle. Polling loops need maxFires; observation-only loops should set readOnly. Use taskBacklog only for a native task queue; use an idle loop to continue a broad goal. Use autoTask to create one task per fire.
 
 A completed iteration, unchanged result, or temporarily empty check is not a reason to delete the loop. Recurring loops persist; dynamic loops advance through LoopUpdate.`,
     promptGuidelines: [
       "Prefer event triggers over cron; use triggerType `idle` with trigger `idle` for agent-paced continuation.",
       "Always set maxFires on polling loops and readOnly for observation-only work.",
       "For autonomous backlogs use event `tasks:created`, recurring true, taskBacklog true, and bounded maxFires. It adopts unfinished tasks until terminal. Do not use autoTask.",
+      "Use an idle loop, not taskBacklog, to continue a broad goal without a native task queue.",
       "Recurring loops are persistent controllers. Do not call LoopDelete after a normal fire, an unchanged check, or one completed iteration; only delete when the user explicitly asks to cancel or the loop's stated stop condition is satisfied.",
       "For taskBacklog loops, do not instruct the agent to delete the loop; pi-loop auto-deletes it when the pending count reaches zero.",
       "Report the created loop ID to the user.",
@@ -239,7 +240,7 @@ A completed iteration, unchanged result, or temporarily empty check is not a rea
       prompt: Type.String({ description: "Prompt to run when the loop fires" }),
       recurring: Type.Optional(Type.Boolean({ description: "Whether loop repeats (default: true)", default: true })),
       autoTask: Type.Optional(Type.Boolean({ description: "Auto-create pi-tasks task on fire", default: false })),
-      taskBacklog: Type.Optional(Type.Boolean({ description: "Mark as a task-backlog worker loop that auto-deletes when pending tasks reach zero", default: false })),
+      taskBacklog: Type.Optional(Type.Boolean({ description: "Native task queue worker only: requires recurring event trigger 'tasks:created' and auto-deletes when pending tasks reach zero", default: false })),
       triggerType: Type.Optional(Type.String({ description: "cron, event, hybrid, or idle (cron/event inferred from trigger string if omitted)", enum: ["cron", "event", "hybrid", "idle"] })),
       debounceMs: Type.Optional(Type.Number({ description: "Debounce for hybrid triggers (default: 30000)", default: 30000 })),
       readOnly: Type.Optional(Type.Boolean({ description: "Restrict the agent to read-only tools when this loop fires (default: false)", default: false })),
@@ -296,7 +297,7 @@ A completed iteration, unchanged result, or temporarily empty check is not a rea
       let backlogError: string | undefined;
       if (taskBacklog && recurring === false) backlogError = "taskBacklog loops must be recurring.";
       else if (taskBacklog && backlogEventSource !== "tasks:created") {
-        backlogError = 'taskBacklog loops require a "tasks:created" event trigger.';
+        backlogError = 'taskBacklog loops require a "tasks:created" event trigger. For a broad goal, use trigger "idle" with triggerType "idle" and omit taskBacklog.';
       }
       if (backlogError) {
         return Promise.resolve(textResult(backlogError, {

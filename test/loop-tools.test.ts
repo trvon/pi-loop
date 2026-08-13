@@ -97,6 +97,12 @@ describe("LoopCreate", () => {
       triggerType: "event",
       taskBacklog: true,
     })).toContain('taskBacklog loops require a "tasks:created" event trigger');
+    expect(await h.text("LoopCreate", {
+      trigger: "idle",
+      prompt: "continue a broad goal",
+      triggerType: "idle",
+      taskBacklog: true,
+    })).toContain('For a broad goal, use trigger "idle" with triggerType "idle" and omit taskBacklog.');
     expect(h.store.list()).toHaveLength(0);
   });
 
