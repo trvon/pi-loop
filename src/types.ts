@@ -140,7 +140,7 @@ export interface MonitorProcess {
   proc: import("node:child_process").ChildProcess;
   abortController: AbortController;
   waiters: Array<() => void>;
-  completionCallbacks: Array<() => void>;
+  completionCallbacks: Array<(monitor: MonitorEntry) => void>;
   lastOutputEventAt: number;
   lastProgressChangeAt: number;
   progressChangeTimer?: ReturnType<typeof setTimeout>;

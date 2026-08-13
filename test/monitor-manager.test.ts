@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MonitorManager } from "../src/monitor-manager.js";
+import { MONITOR_RETENTION_MS, MonitorManager } from "../src/monitor-manager.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 import { createMockChildProcess, createSequentialSpawn } from "./helpers/mock-spawn.js";
 
@@ -314,7 +314,7 @@ describe("MonitorManager", () => {
     const realSetTimeout = global.setTimeout;
     const retainedTimers: Array<() => void> = [];
     const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
-      if (ms === 30000) {
+      if (ms === MONITOR_RETENTION_MS) {
         retainedTimers.push(() => {
           if (typeof fn === "function") fn(...args);
         });
@@ -344,7 +344,7 @@ describe("MonitorManager", () => {
     const realSetTimeout = global.setTimeout;
     const unref = vi.fn();
     const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
-      if (ms === 30000) return { unref } as any;
+      if (ms === MONITOR_RETENTION_MS) return { unref } as any;
       return realSetTimeout(fn, ms, ...args);
     }) as typeof setTimeout);
 
@@ -359,7 +359,7 @@ describe("MonitorManager", () => {
     const realSetTimeout = global.setTimeout;
     const unref = vi.fn();
     const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
-      if (ms === 30000) return { unref } as any;
+      if (ms === MONITOR_RETENTION_MS) return { unref } as any;
       return realSetTimeout(fn, ms, ...args);
     }) as typeof setTimeout);
 
@@ -397,7 +397,7 @@ describe("MonitorManager", () => {
     const realSetTimeout = global.setTimeout;
     const retainedTimers: Array<() => void> = [];
     const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
-      if (ms === 30000) {
+      if (ms === MONITOR_RETENTION_MS) {
         retainedTimers.push(() => {
           if (typeof fn === "function") fn(...args);
         });
@@ -424,7 +424,7 @@ describe("MonitorManager", () => {
     const realSetTimeout = global.setTimeout;
     const retainedTimers: Array<() => void> = [];
     const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
-      if (ms === 30000) {
+      if (ms === MONITOR_RETENTION_MS) {
         retainedTimers.push(() => {
           if (typeof fn === "function") fn(...args);
         });
@@ -450,7 +450,7 @@ describe("MonitorManager", () => {
     const realSetTimeout = global.setTimeout;
     const retainedTimers: Array<() => void> = [];
     const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
-      if (ms === 30000) {
+      if (ms === MONITOR_RETENTION_MS) {
         retainedTimers.push(() => {
           if (typeof fn === "function") fn(...args);
         });
@@ -520,6 +520,40 @@ describe("MonitorManager", () => {
       error: "Timed out after 500ms",
       outputLines: 0,
     }]);
+    vi.useRealTimers();
+  });
+
+  it("notifies completion callbacks before a timed-out process is reaped", async () => {
+    vi.useFakeTimers();
+    manager = new MonitorManager(
+      pi,
+      createSequentialSpawn(createMockChildProcess({ exitCode: null })),
+    );
+    const entry = manager.create("sleep 60", "timeout wake test", 500);
+    const callback = vi.fn();
+
+    expect(manager.onComplete(entry.id, callback)).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(manager.get(entry.id)?.status).toBe("stopped");
+    expect(callback).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it("retains completed monitors for 15 minutes", async () => {
+    vi.useFakeTimers();
+    manager = new MonitorManager(
+      pi,
+      createSequentialSpawn(createMockChildProcess({ exitCode: 0 })),
+    );
+    const entry = manager.create("echo done", "retention test");
+    await vi.runAllTicks();
+
+    await vi.advanceTimersByTimeAsync(15 * 60 * 1000 - 1);
+    expect(manager.get(entry.id)?.status).toBe("completed");
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(manager.get(entry.id)).toBeUndefined();
     vi.useRealTimers();
   });
 

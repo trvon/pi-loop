@@ -9,7 +9,7 @@ import {
   reduceMonitorCompletionEvent,
 } from "../monitor-completion-coordinator.js";
 import type { MonitorManager } from "../monitor-manager.js";
-import type { LoopEntry } from "../types.js";
+import type { LoopEntry, MonitorEntry } from "../types.js";
 
 export interface MonitorOnDoneRuntimeOptions {
   monitorManager: MonitorManager;
@@ -21,6 +21,19 @@ export interface MonitorOnDoneRuntimeOptions {
 
 export interface MonitorOnDoneRuntime {
   register(doneLoop: LoopEntry, monitorId: string): void;
+}
+
+function appendMonitorOutcome(prompt: string, monitor: MonitorEntry | undefined): string {
+  if (!monitor) return prompt;
+
+  const lines = [
+    prompt,
+    "",
+    `Monitor #${monitor.id} outcome: status=${monitor.status}; exitCode=${monitor.exitCode ?? "unavailable"}; outputLines=${monitor.outputLines}.`,
+  ];
+  const outputTail = monitor.outputBuffer.slice(-5);
+  if (outputTail.length > 0) lines.push("Output tail:", ...outputTail.map(line => `  ${line}`));
+  return lines.join("\n");
 }
 
 export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions): MonitorOnDoneRuntime {
@@ -35,25 +48,32 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
     reducers: [monitorCompletionReducerHandler],
     effectHandlers: {
       DELIVER_MONITOR_ONDONE_WAKE: (effect: ReducerEffect) => {
-        const { loopId, monitorId } = effect.payload as { loopId: string; monitorId: string };
+        const { loopId, monitorId, monitor } = effect.payload as {
+          loopId: string;
+          monitorId: string;
+          monitor?: MonitorEntry;
+        };
         const current = getLoop(loopId);
         if (!current) return;
         debug?.(`onDone loop #${loopId} — monitor #${monitorId} completed, delivering through coordinator`);
-        onLoopFire(current);
+        onLoopFire({
+          ...current,
+          prompt: appendMonitorOutcome(current.prompt, monitor ?? monitorManager.get(monitorId)),
+        });
         deleteLoop(loopId);
       },
     },
   });
 
   function register(doneLoop: LoopEntry, monitorId: string): void {
-    const deliver = () => {
+    const deliver = (monitor?: MonitorEntry) => {
       void monitorCompletionCoordinator.dispatch({
         type: "MONITOR_ONDONE_TRIGGERED",
         at: Date.now(),
         source: "monitor",
         entityType: "monitor",
         entityId: monitorId,
-        payload: { loopId: doneLoop.id, monitorId },
+        payload: { loopId: doneLoop.id, monitorId, monitor },
       });
     };
 

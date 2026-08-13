@@ -14,6 +14,7 @@ export type SpawnFn = (command: string, args: string[], options: SpawnOptions) =
 const OUTPUT_EVENT_INTERVAL_MS = 1000;
 const MAX_OUTPUT_LINE_LENGTH = 4096;
 const OUTPUT_RATE_WINDOW_MS = 60000;
+export const MONITOR_RETENTION_MS = 15 * 60 * 1000;
 
 export class MonitorManager {
   private processes = new Map<string, MonitorProcess>();
@@ -70,10 +71,7 @@ export class MonitorManager {
     return result;
   }
 
-  // Remove a finished monitor (completed/errored/stopped) after a brief delay so
-  // tool consumers can still read its final state via MonitorList. Shared by
-  // finish() and stop() so every terminal status is pruned consistently — a
-  // stopped monitor that is never pruned lingers in list() and the widget count.
+  // Retain terminal state long enough for a completion wake to inspect it.
   private schedulePrune(id: string): void {
     // unref so a pending prune never keeps a one-shot (`pi -p`) process alive.
     const timer = setTimeout(() => {
@@ -85,7 +83,7 @@ export class MonitorManager {
         entityId: id,
         payload: { id },
       });
-    }, 30000);
+    }, MONITOR_RETENTION_MS);
     timer.unref?.();
   }
 
@@ -159,7 +157,7 @@ export class MonitorManager {
         exitCode: code,
         outputLines: current.outputLines,
       });
-      for (const callback of bp.completionCallbacks) callback();
+      for (const callback of bp.completionCallbacks) callback(current);
       bp.completionCallbacks = [];
       for (const resolve of bp.waiters) resolve();
       bp.waiters = [];
@@ -199,7 +197,7 @@ export class MonitorManager {
           monitorId: id,
           error: err.message,
         });
-        for (const callback of bp.completionCallbacks) callback();
+        for (const callback of bp.completionCallbacks) callback(current);
         bp.completionCallbacks = [];
         for (const resolve of bp.waiters) resolve();
         bp.waiters = [];
@@ -261,6 +259,16 @@ export class MonitorManager {
     this.schedulePrune(id);
     bp.proc.kill("SIGTERM");
 
+    if (reason === "timeout") {
+      this.pi.events.emit("monitor:error", {
+        monitorId: id,
+        error: `Timed out after ${bp.entry.timeout}ms`,
+        outputLines: bp.entry.outputLines,
+      });
+      for (const callback of bp.completionCallbacks) callback(bp.entry);
+      bp.completionCallbacks = [];
+    }
+
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
         try { bp.proc.kill("SIGKILL"); } catch { /* already dead */ }
@@ -273,25 +281,17 @@ export class MonitorManager {
       });
     });
 
-    if (reason === "timeout") {
-      this.pi.events.emit("monitor:error", {
-        monitorId: id,
-        error: `Timed out after ${bp.entry.timeout}ms`,
-        outputLines: bp.entry.outputLines,
-      });
-      for (const callback of bp.completionCallbacks) callback();
-    }
     bp.completionCallbacks = [];
     for (const resolve of bp.waiters) resolve();
     bp.waiters = [];
     return true;
   }
 
-  onComplete(id: string, callback: () => void): boolean {
+  onComplete(id: string, callback: (monitor: MonitorEntry) => void): boolean {
     const bp = this.processes.get(id);
     if (!bp) return false;
     if (bp.entry.status === "completed" || bp.entry.status === "error") {
-      callback();
+      callback(bp.entry);
       return true;
     }
     if (bp.entry.status !== "running") return false;

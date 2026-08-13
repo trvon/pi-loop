@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1657,12 +1658,12 @@ describe("monitor tool wrappers", () => {
     process.chdir(cwd);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     process.chdir(originalCwd);
     if (originalScope === undefined) delete process.env.PI_LOOP_SCOPE;
     else process.env.PI_LOOP_SCOPE = originalScope;
-    rmSync(cwd, { recursive: true, force: true });
     vi.useRealTimers();
+    await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it("MonitorCreate starts a monitor and returns expected output", async () => {
@@ -1786,7 +1787,10 @@ describe("monitor tool wrappers", () => {
     await new Promise(r => setTimeout(r, 500));
 
     expect(sentCustomMessages).toHaveLength(1);
-    expect((sentCustomMessages[0].message as { content: string }).content).toContain("Monitor finished");
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain(
+      "Monitor #1 outcome: status=completed; exitCode=0; outputLines=1.",
+    );
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain("monitor done");
   }, 10000);
 
   it("onDone monitor completion does not rely on monitor:done event dispatch", async () => {
