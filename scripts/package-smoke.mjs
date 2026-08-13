@@ -13,6 +13,7 @@ try {
   const rawReport = execFileSync(npmCommand, ["pack", "--json", "--ignore-scripts", "--pack-destination", temporaryDirectory], {
     cwd: rootDirectory,
     encoding: "utf8",
+    shell: process.platform === "win32",
   });
   let packReport;
   try {
