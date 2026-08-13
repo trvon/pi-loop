@@ -7,9 +7,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const rootDirectory = fileURLToPath(new URL("..", import.meta.url));
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "pi-loop-package-"));
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 try {
-  const rawReport = execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temporaryDirectory], {
+  const rawReport = execFileSync(npmCommand, ["pack", "--json", "--ignore-scripts", "--pack-destination", temporaryDirectory], {
     cwd: rootDirectory,
     encoding: "utf8",
   });
@@ -35,7 +36,7 @@ try {
 
   const tarball = join(temporaryDirectory, packageReport.filename);
   execFileSync("tar", ["-xzf", tarball], { cwd: temporaryDirectory });
-  symlinkSync(join(rootDirectory, "node_modules"), join(temporaryDirectory, "package", "node_modules"), "dir");
+  symlinkSync(join(rootDirectory, "node_modules"), join(temporaryDirectory, "package", "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const packedRoot = await import(pathToFileURL(join(temporaryDirectory, "package", "dist", "index.js")).href);
   const packedApi = await import(pathToFileURL(join(temporaryDirectory, "package", "dist", "api.js")).href);
   assert.equal(typeof packedRoot.default, "function", "packed root must load as the Pi extension");
