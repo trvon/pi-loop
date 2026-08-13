@@ -247,6 +247,8 @@ describe("MonitorManager", () => {
   });
 
   it("coalesces log-rate accounting into bounded one-second buckets", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-13T01:00:00.000Z"));
     manager = new MonitorManager(
       pi,
       createSequentialSpawn(createMockChildProcess({ exitCode: null })),
@@ -261,6 +263,7 @@ describe("MonitorManager", () => {
     expect(manager.getProcess(entry.id)?.outputBuckets).toHaveLength(1);
     expect(manager.get(entry.id)?.outputRatePerMinute).toBe(1000);
     manager.getProcess(entry.id)?.proc.emit("close", 0);
+    vi.useRealTimers();
   });
 
   it("emits monitor:done on clean exit", async () => {
