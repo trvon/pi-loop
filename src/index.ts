@@ -37,6 +37,7 @@ import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
 import type { LoopEntry, Trigger } from "./types.js";
 import { LoopWidget } from "./ui/widget.js";
+import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop } from "./workflow-reducer.js";
 
 const DEBUG = !!process.env.PI_LOOP_DEBUG;
 function debug(...args: unknown[]) {
@@ -191,7 +192,8 @@ export default function (pi: ExtensionAPI) {
     store.fire(entry.id);
 
     const firedAt = Date.now();
-    const firedEntry = entry.trigger.type === "dynamic"
+    const stateLoop = entry.workflow && getActiveWorkflowStateLoop(entry.workflow);
+    const firedEntry = entry.trigger.type === "dynamic" && !stateLoop
       ? store.updateDynamic(entry.id, {
           dynamic: {
             awaitingUpdate: true,
@@ -200,6 +202,12 @@ export default function (pi: ExtensionAPI) {
           },
         }) ?? entry
       : entry;
+
+    if (firedEntry.workflow && atWorkflowStateFireLimit(firedEntry.workflow)) {
+      triggerSystem.remove(firedEntry.id);
+      store.pause(firedEntry.id);
+      widget.update();
+    }
 
     if (entry.autoTask) {
       taskProvider?.autoCreateTask(entry).then((taskId) => {

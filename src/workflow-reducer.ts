@@ -1,6 +1,8 @@
+import { isValidCronExpression } from "./loop-parse.js";
 import type {
   WorkflowDefinition,
   WorkflowRunState,
+  WorkflowStateLoopDefinition,
   WorkflowTerminalStatus,
   WorkflowTransitionRecord,
 } from "./types.js";
@@ -9,6 +11,7 @@ export type {
   WorkflowDefinition,
   WorkflowRunState,
   WorkflowStateDefinition,
+  WorkflowStateLoopDefinition,
   WorkflowTerminalStatus,
   WorkflowTransitionRecord,
 } from "./types.js";
@@ -35,6 +38,15 @@ export interface WorkflowOutcomeAvailability {
   unavailable: Array<{ outcome: string; targetState: string; maxAttempts: number }>;
 }
 
+export function getActiveWorkflowStateLoop(run: WorkflowRunState): WorkflowStateLoopDefinition | undefined {
+  return run.definition.states[run.currentState]?.loop;
+}
+
+export function atWorkflowStateFireLimit(run: WorkflowRunState): boolean {
+  const loop = getActiveWorkflowStateLoop(run);
+  return loop?.maxFires !== undefined && (run.stateFireCounts?.[run.currentState] ?? 0) >= loop.maxFires;
+}
+
 export function getWorkflowOutcomeAvailability(run: WorkflowRunState): WorkflowOutcomeAvailability {
   const state = run.definition.states[run.currentState];
   const available: string[] = [];
@@ -50,7 +62,7 @@ export function getWorkflowOutcomeAvailability(run: WorkflowRunState): WorkflowO
 }
 
 export function validateWorkflowDefinition(definition: WorkflowDefinition): string | undefined {
-  if (!definition || definition.version !== 1) return "Workflow version must be 1";
+  if (definition?.version !== 1) return "Workflow version must be 1";
   if (!definition.states || typeof definition.states !== "object") return "Workflow states must be an object";
   if (!definition.initialState || !definition.states[definition.initialState]) {
     return `Initial state "${definition.initialState}" is not defined`;
@@ -73,6 +85,15 @@ export function validateWorkflowDefinition(definition: WorkflowDefinition): stri
     if (state.maxAttempts !== undefined && (!Number.isInteger(state.maxAttempts) || state.maxAttempts < 1)) {
       return `State "${stateId}" maxAttempts must be a positive integer`;
     }
+    if (state.loop) {
+      if (!isValidCronExpression(state.loop.schedule)) {
+        return `State "${stateId}" loop schedule must be a valid 5-field cron expression`;
+      }
+      if (state.loop.maxFires !== undefined && (!Number.isInteger(state.loop.maxFires) || state.loop.maxFires < 1)) {
+        return `State "${stateId}" loop maxFires must be a positive integer`;
+      }
+      if (state.terminal) return `Terminal state "${stateId}" cannot declare a loop policy`;
+    }
     for (const [outcome, target] of Object.entries(state.on ?? {})) {
       if (!outcome) return `State "${stateId}" has an empty outcome name`;
       if (typeof target !== "string") return `Transition "${stateId}.${outcome}" target must be a state ID`;
@@ -90,6 +111,7 @@ export function createWorkflowRun(definition: WorkflowDefinition, at: number): W
     transitionSeq: 0,
     stateEnteredAt: at,
     attemptsByState: { [definition.initialState]: 1 },
+    stateFireCounts: {},
   };
 }
 
@@ -141,6 +163,7 @@ export function transitionWorkflowRun(
     transitionSeq: sequence,
     stateEnteredAt: at,
     attemptsByState: { ...run.attemptsByState, [target]: nextAttempt },
+    stateFireCounts: run.stateFireCounts ?? {},
     activeTaskId: input.activeTaskId,
     lastTransition,
   };

@@ -107,10 +107,73 @@ describe("CronScheduler", () => {
       recurring: true,
       dynamic: { goal: "finish goal", iteration: 0 },
     });
+
     scheduler.add(entry);
 
     scheduler.pump(Date.now());
     expect(fired).toContain("1");
+  });
+
+  it("arms only the active workflow state's cron policy", () => {
+    scheduler = new CronScheduler(store, (entry) => {
+      fired.push(entry.id);
+      store.fire(entry.id);
+    });
+    const entry = store.create({ type: "dynamic" }, "Process records", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "collect",
+        states: {
+          collect: { prompt: "Collect records.", loop: { schedule: "0 7 * * *" }, on: { ready: "publish" } },
+          publish: { prompt: "Publish records.", loop: { schedule: "*/1 * * * *" }, on: { done: "complete" } },
+          complete: { prompt: "Finished.", terminal: "completed" },
+        },
+      },
+      dynamic: { goal: "Process records", iteration: 0 },
+    });
+    scheduler.add(entry);
+
+    vi.advanceTimersByTime(60 * 1000);
+    scheduler.pump(Date.now());
+    expect(fired).toHaveLength(0);
+
+    const transitioned = store.transitionWorkflow(entry.id, { outcome: "ready" });
+    if (!transitioned.entry) throw new Error("expected workflow transition");
+    scheduler.remove(entry.id);
+    scheduler.add(transitioned.entry);
+
+    vi.advanceTimersByTime(2 * 60 * 1000);
+    scheduler.pump(Date.now());
+    expect(fired).toEqual([entry.id]);
+    expect(store.get(entry.id)?.workflow?.stateFireCounts).toEqual({ publish: 1 });
+  });
+
+  it("pauses a workflow when its active state reaches its local fire cap", () => {
+    scheduler = new CronScheduler(store, (entry) => {
+      fired.push(entry.id);
+      store.fire(entry.id);
+    });
+    const entry = store.create({ type: "dynamic" }, "Process records", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "collect",
+        states: {
+          collect: { prompt: "Collect records.", loop: { schedule: "*/1 * * * *", maxFires: 1 }, on: { ready: "complete" } },
+          complete: { prompt: "Finished.", terminal: "completed" },
+        },
+      },
+      dynamic: { goal: "Process records", iteration: 0 },
+    });
+    scheduler.add(entry);
+
+    vi.advanceTimersByTime(2 * 60 * 1000);
+    scheduler.pump(Date.now());
+
+    expect(fired).toEqual([entry.id]);
+    expect(store.get(entry.id)?.status).toBe("paused");
+    expect(store.get(entry.id)?.workflow?.stateFireCounts).toEqual({ collect: 1 });
   });
 
   it("does not refire idle-driven dynamic loops while awaiting update", () => {

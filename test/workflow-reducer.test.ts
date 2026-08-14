@@ -32,6 +32,7 @@ describe("workflow reducer", () => {
       transitionSeq: 0,
       stateEnteredAt: 100,
       attemptsByState: { investigate: 1 },
+      stateFireCounts: {},
     });
   });
 
@@ -123,5 +124,36 @@ describe("workflow reducer", () => {
         investigate: { ...definition.states.investigate, on: { continue: "missing" } },
       },
     })).toBe('Transition "investigate.continue" targets unknown state "missing"');
+  });
+
+  it("validates optional cron loop policies only on nonterminal states", () => {
+    const scheduled: WorkflowDefinition = {
+      version: 1,
+      initialState: "collect",
+      states: {
+        collect: {
+          prompt: "Collect input.",
+          loop: { schedule: "0 7 * * *", maxFires: 4 },
+          on: { ready: "done" },
+        },
+        done: { prompt: "Publish output.", terminal: "completed" },
+      },
+    };
+
+    expect(validateWorkflowDefinition(scheduled)).toBeUndefined();
+    expect(validateWorkflowDefinition({
+      ...scheduled,
+      states: {
+        ...scheduled.states,
+        collect: { ...scheduled.states.collect, loop: { schedule: "not cron" } },
+      },
+    })).toBe('State "collect" loop schedule must be a valid 5-field cron expression');
+    expect(validateWorkflowDefinition({
+      ...scheduled,
+      states: {
+        ...scheduled.states,
+        done: { ...scheduled.states.done, loop: { schedule: "0 7 * * *" } },
+      },
+    })).toBe('Terminal state "done" cannot declare a loop policy');
   });
 });

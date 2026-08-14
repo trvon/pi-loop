@@ -44,6 +44,7 @@ export type {
   WorkflowDefinition,
   WorkflowRunState,
   WorkflowStateDefinition,
+  WorkflowStateLoopDefinition,
   WorkflowTaskDefinition,
   WorkflowTerminalStatus,
   WorkflowTransitionRecord,

@@ -401,10 +401,54 @@ describe("Workflow tools", () => {
       trigger: { type: "dynamic" },
       workflow: { currentState: "investigate", transitionSeq: 0 },
     });
+
     expect(h.triggerSystem.add).toHaveBeenCalledWith(h.store.get("1"));
     expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(h.store.get("1"));
     expect(h.toolMap.get("WorkflowCreate")?.renderCall).toBeTypeOf("function");
     expect(h.toolMap.get("WorkflowTransition")?.renderResult).toBeTypeOf("function");
+  });
+
+  it("creates a scheduled workflow state without an immediate wake", async () => {
+    const scheduledDefinition = JSON.stringify({
+      version: 1,
+      initialState: "collect",
+      states: {
+        collect: {
+          prompt: "Collect records.",
+          task: { subject: "Collect records", description: "Gather the required input." },
+          loop: { schedule: "0 7 * * *", maxFires: 4 },
+          on: { ready: "publish" },
+        },
+        publish: { prompt: "Publish records.", terminal: "completed" },
+      },
+    });
+
+    const out = await h.text("WorkflowCreate", { goal: "Process records", definition: scheduledDefinition });
+
+    expect(out).toContain("State cadence: 0 7 * * * · fires: 0/4");
+    expect(out).toContain("scheduled from the active state cadence");
+    expect(h.onDynamicLoopActivated).not.toHaveBeenCalled();
+    expect(h.triggerSystem.add).toHaveBeenCalledWith(h.store.get("1"));
+  });
+
+  it("immediately wakes a scheduled workflow state that requests it", async () => {
+    const scheduledDefinition = JSON.stringify({
+      version: 1,
+      initialState: "collect",
+      states: {
+        collect: {
+          prompt: "Collect records.",
+          loop: { schedule: "0 7 * * *", startImmediately: true },
+          on: { ready: "publish" },
+        },
+        publish: { prompt: "Publish records.", terminal: "completed" },
+      },
+    });
+
+    const out = await h.text("WorkflowCreate", { goal: "Process records", definition: scheduledDefinition });
+
+    expect(out).toContain("initial state wake queued now");
+    expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(h.store.get("1"));
   });
 
   it("rejects creation when its initial task cannot bind to the original state", async () => {
@@ -712,7 +756,7 @@ describe("Workflow tools", () => {
 
     expect(out).toContain("Workflow definition rejected: Workflow version must be 1");
     expect(out).toContain("Required fields: version: 1, initialState, and states.");
-    expect(out).toContain('"initialState":"investigate"');
+    expect(out).toContain('"initialState":"collect"');
     expect(out).toContain("Next: correct the JSON and call WorkflowCreate again.");
   });
 

@@ -1,8 +1,11 @@
 import { computeJitter, cronToNextFire } from "./loop-parse.js";
 import type { LoopStore } from "./store.js";
 import type { LoopEntry } from "./types.js";
+import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop } from "./workflow-reducer.js";
 
 function computeNextFire(entry: LoopEntry): Date {
+  const workflowLoop = entry.workflow && getActiveWorkflowStateLoop(entry.workflow);
+  if (workflowLoop) return cronToNextFire(workflowLoop.schedule);
   if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid") {
     return cronToNextFire(entry.trigger.type === "hybrid" ? entry.trigger.cron : entry.trigger.schedule);
   }
@@ -66,8 +69,10 @@ export class CronScheduler {
   private armTimer(entry: LoopEntry): void {
     const nextFire = computeNextFire(entry);
     let jitter = 0;
-    if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid") {
-      const scheduleExpr = entry.trigger.type === "hybrid" ? entry.trigger.cron : entry.trigger.schedule;
+    const workflowLoop = entry.workflow && getActiveWorkflowStateLoop(entry.workflow);
+    if (workflowLoop || entry.trigger.type === "cron" || entry.trigger.type === "hybrid") {
+      const scheduleExpr = workflowLoop?.schedule
+        ?? (entry.trigger.type === "hybrid" ? entry.trigger.cron : entry.trigger.type === "cron" ? entry.trigger.schedule : "");
       const minuteField = scheduleExpr.trim().split(/\s+/)[0] ?? "";
       const minuteStep = minuteField.startsWith("*/") ? parseInt(minuteField.slice(2), 10) || 30 : 30;
       jitter = computeJitter(entry.id, entry.recurring, minuteStep);
@@ -87,12 +92,12 @@ export class CronScheduler {
       if (now < fireTime) continue;
 
       const entry = this.store.get(id);
-      if (!entry || entry.status !== "active") {
+      if (entry?.status !== "active") {
         this.fireTimes.delete(id);
         continue;
       }
 
-      if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate) continue;
+      if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate && !entry.workflow) continue;
 
       if (filter && !filter(entry)) continue;
 
@@ -115,6 +120,11 @@ export class CronScheduler {
       }
 
       if (fresh.maxFires && (fresh.fireCount ?? 0) >= fresh.maxFires) {
+        this.retire(fresh);
+        continue;
+      }
+
+      if (fresh.workflow && atWorkflowStateFireLimit(fresh.workflow)) {
         this.retire(fresh);
         continue;
       }

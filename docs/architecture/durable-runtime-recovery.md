@@ -26,6 +26,8 @@ Session death and process death are different. A closed session can leave a live
 | Monitors | Memory-only `ChildProcess` map | Handles, output, result, timeout, and `onDone` delivery are lost. Descendants may outlive the shell. |
 | Deletion tombstones | Loop-store memory/snapshot lifecycle | Not sufficient to cancel a message already accepted by Pi. |
 
+Workflow snapshots include state-local loop fire counts. On recovery, the scheduler re-arms only the current nonterminal state's cron policy, retaining its linked task and local cap; inactive-state policies never fire until `WorkflowTransition` enters their state.
+
 ## Audit findings
 
 ### 1. Fire and delivery are not one recoverable operation

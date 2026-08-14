@@ -196,6 +196,16 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
 
   if (event.type === "LOOP_FIRED") {
     loop.fireCount = (loop.fireCount ?? 0) + 1;
+    if (loop.workflow) {
+      const stateId = loop.workflow.currentState;
+      loop.workflow = {
+        ...loop.workflow,
+        stateFireCounts: {
+          ...(loop.workflow.stateFireCounts ?? {}),
+          [stateId]: (loop.workflow.stateFireCounts?.[stateId] ?? 0) + 1,
+        },
+      };
+    }
     loop.updatedAt = event.at;
   }
 
