@@ -141,6 +141,38 @@ describe("MonitorManager", () => {
     await manager.shutdown();
   });
 
+  it("accepts new monitors after a session handoff", async () => {
+    vi.useFakeTimers();
+    const first = createMockChildProcess({ exitCode: null });
+    let child = first;
+    manager = new MonitorManager(pi, () => child);
+    manager.create("sleep 30", "first session");
+
+    const shutdown = manager.shutdown();
+    await vi.advanceTimersByTimeAsync(5000);
+    await shutdown;
+
+    const second = createMockChildProcess({ exitCode: null });
+    child = second;
+    const callback = vi.fn();
+    const next = manager.create("sleep 30", "next session");
+    try {
+      expect(manager.onComplete(next.id, callback)).toBe(true);
+
+      second.emit("close", 0);
+      expect(callback).toHaveBeenCalledOnce();
+      expect(pi.events.emit).toHaveBeenCalledWith("monitor:started", expect.objectContaining({
+        monitorId: next.id,
+        command: "sleep 30",
+      }));
+    } finally {
+      const stop = manager.stop(next.id);
+      await vi.advanceTimersByTimeAsync(5000);
+      await stop;
+      vi.useRealTimers();
+    }
+  });
+
   it("emits monitor:output event with stdout lines", async () => {
     const entry = manager.create("echo 'test output'");
 

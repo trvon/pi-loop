@@ -263,10 +263,9 @@ export class MonitorManager {
     if (this.shutdownPromise) return this.shutdownPromise;
 
     this.shuttingDown = true;
-    this.onChange = undefined;
     const processes = Array.from(this.processes.values());
     const running = processes.filter((bp) => bp.entry.status === "running");
-    this.shutdownPromise = Promise.allSettled(running.map((bp) => this.stop(bp.entry.id)))
+    const shutdown = Promise.allSettled(running.map((bp) => this.stop(bp.entry.id)))
       .then(() => {
         for (const bp of processes) {
           if (bp.progressChangeTimer) clearTimeout(bp.progressChangeTimer);
@@ -275,8 +274,11 @@ export class MonitorManager {
           bp.waiters = [];
         }
         this.processes.clear();
+        this.shuttingDown = false;
+        this.shutdownPromise = undefined;
       });
-    return this.shutdownPromise;
+    this.shutdownPromise = shutdown;
+    return shutdown;
   }
 
   async stop(id: string, reason: "manual" | "timeout" = "manual"): Promise<boolean> {
