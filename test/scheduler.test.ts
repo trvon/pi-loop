@@ -215,6 +215,26 @@ describe("CronScheduler", () => {
     expect(fired).toHaveLength(0);
   });
 
+  it("does not refire a loop-less workflow while awaiting transition", () => {
+    const entry = store.create({ type: "dynamic" }, "Validate", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "validate",
+        states: {
+          validate: { prompt: "Run validation.", on: { passed: "done" } },
+          done: { prompt: "Report success.", terminal: "completed" },
+        },
+      },
+      dynamic: { goal: "Validate", iteration: 0, awaitingUpdate: true },
+    });
+
+    scheduler.add(entry);
+    scheduler.pump(Date.now());
+
+    expect(fired).toEqual([]);
+  });
+
   it("recovers persisted awaiting dynamic loops when the scheduler starts", () => {
     store.create({ type: "dynamic" }, "recover goal", {
       recurring: true,

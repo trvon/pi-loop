@@ -1859,6 +1859,7 @@ describe("monitor tool wrappers", () => {
       await handler(null, createCtx());
     }
     sentCustomMessages.splice(0);
+    emittedEvents.splice(0);
 
     const monitor = await toolMap.get("MonitorCreate")!.execute!("workflow-monitor", {
       command: "sleep 0.1; echo monitor done",
@@ -1875,13 +1876,14 @@ describe("monitor tool wrappers", () => {
     }
     await flushAsync();
 
-    expect(emittedEvents).toContainEqual(expect.objectContaining({
+    const workflowMonitorWakes = emittedEvents.filter((event) => event.name === "loop:fire" && event.payload?.loopId === workflowId);
+    expect(workflowMonitorWakes).toEqual([expect.objectContaining({
       name: "loop:fire",
       payload: expect.objectContaining({
         loopId: workflowId,
         monitorOutcome: expect.objectContaining({ monitorId: "1", status: "completed" }),
       }),
-    }));
+    })]);
     expect(sentCustomMessages).toHaveLength(1);
     expect((sentCustomMessages[0].message as { content: string }).content).toContain(
       "Monitor #1 outcome: status=completed; exitCode=0; stopReason=unavailable; outputLines=1.",

@@ -98,7 +98,7 @@ export class CronScheduler {
         continue;
       }
 
-      if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate && !entry.workflow) continue;
+      if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate) continue;
 
       if (filter && !filter(entry)) continue;
 
