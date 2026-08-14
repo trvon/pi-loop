@@ -29,6 +29,7 @@ export interface SessionRuntimeOptions {
   cleanupTaskBacklogLoops: () => Promise<number>;
   adoptTaskBacklogLoops: (baselineFireCounts?: ReadonlyMap<string, number>) => Promise<number>;
   releaseTaskBacklogWakes: () => void;
+  shutdownMonitors: () => Promise<void>;
   hasPendingTasks: () => Promise<number>;
   cleanDoneTasks: () => Promise<void>;
 }
@@ -52,6 +53,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     cleanupTaskBacklogLoops,
     adoptTaskBacklogLoops,
     releaseTaskBacklogWakes,
+    shutdownMonitors,
     hasPendingTasks,
     cleanDoneTasks,
   } = options;
@@ -177,12 +179,14 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
   });
 
   pi.on("session_shutdown", async () => {
+    await shutdownMonitors();
     stopHeartbeat();
     releaseTaskBacklogWakes();
     notificationRuntime.clear("session_shutdown");
   });
 
   pi.on("session_switch" as never, async (event: SessionSwitchEvent, ctx: ExtensionContext) => {
+    await shutdownMonitors();
     setLatestCtx(ctx);
     widget.setUICtx(ctx.ui);
     getTriggerSystem().stop();

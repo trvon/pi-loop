@@ -94,6 +94,53 @@ describe("MonitorManager", () => {
     expect(monitors.map(m => m.id)).toEqual(["1", "2"]);
   });
 
+  it("swallows stale extension-context errors from delayed monitor output", () => {
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("sleep 30", "stale output test");
+    pi.events.emit.mockImplementation(() => {
+      throw new Error("This extension ctx is stale after session replacement or reload.");
+    });
+
+    expect(() => child.stdout?.emit("data", Buffer.from("late output\\n"))).not.toThrow();
+
+    child.emit("close", 0);
+    expect(manager.get(entry.id)?.status).toBe("completed");
+  });
+
+  it("stops monitors and ignores delayed child events during shutdown", async () => {
+    vi.useFakeTimers();
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const onChange = vi.fn();
+    const onComplete = vi.fn();
+    manager.setOnChange(onChange);
+    const entry = manager.create("sleep 30", "shutdown test");
+    expect(manager.onComplete(entry.id, onComplete)).toBe(true);
+
+    pi.events.emit.mockClear();
+    pi.events.emit.mockImplementation(() => {
+      throw new Error("This extension ctx is stale after session replacement or reload.");
+    });
+
+    const shutdown = manager.shutdown();
+    await vi.advanceTimersByTimeAsync(5000);
+    await shutdown;
+
+    expect(manager.list()).toEqual([]);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onComplete).not.toHaveBeenCalled();
+
+    expect(() => {
+      child.stdout?.emit("data", Buffer.from("late stdout\\n"));
+      child.stderr?.emit("data", Buffer.from("late stderr\\n"));
+      child.emit("error", new Error("late child error"));
+      child.emit("close", 0);
+    }).not.toThrow();
+    expect(pi.events.emit).not.toHaveBeenCalled();
+    await manager.shutdown();
+  });
+
   it("emits monitor:output event with stdout lines", async () => {
     const entry = manager.create("echo 'test output'");
 

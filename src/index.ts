@@ -27,6 +27,7 @@ import {
 } from "./runtime/notification-runtime.js";
 import { resolveLoopStorePath, resolveTaskStorePath } from "./runtime/scope.js";
 import { registerSessionRuntimeHooks } from "./runtime/session-runtime.js";
+import { isStaleExtensionContextError } from "./runtime/stale-context.js";
 import { createTaskBacklogRuntime } from "./runtime/task-backlog-runtime.js";
 import { createTaskProviderRuntime, type TaskProviderRuntime } from "./runtime/task-provider-runtime.js";
 import { CronScheduler } from "./scheduler.js";
@@ -42,10 +43,6 @@ import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop } from "./workflow
 const DEBUG = !!process.env.PI_LOOP_DEBUG;
 function debug(...args: unknown[]) {
   if (DEBUG) console.error("[pi-loop]", ...args);
-}
-
-function isStaleExtensionContextError(error: unknown): boolean {
-  return error instanceof Error && error.message.includes("extension ctx is stale");
 }
 
 export default function (pi: ExtensionAPI) {
@@ -271,6 +268,7 @@ export default function (pi: ExtensionAPI) {
     releaseTaskBacklogWakes: () => {
       activeTaskBacklogWakes.clear();
     },
+    shutdownMonitors: () => monitorManager.shutdown(),
     hasPendingTasks,
     cleanDoneTasks,
   });
