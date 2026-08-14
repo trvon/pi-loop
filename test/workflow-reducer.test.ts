@@ -155,5 +155,25 @@ describe("workflow reducer", () => {
         done: { ...scheduled.states.done, loop: { schedule: "0 7 * * *" } },
       },
     })).toBe('Terminal state "done" cannot declare a loop policy');
+
+    const nullLoop = {
+      ...scheduled,
+      states: {
+        ...scheduled.states,
+        collect: { ...scheduled.states.collect, loop: null },
+      },
+    } as unknown as WorkflowDefinition;
+    expect(validateWorkflowDefinition(nullLoop)).toBe('State "collect" loop must be an object');
+
+    const nonStringSchedule = {
+      ...scheduled,
+      states: {
+        ...scheduled.states,
+        collect: { ...scheduled.states.collect, loop: { schedule: 7 } },
+      },
+    } as unknown as WorkflowDefinition;
+    expect(validateWorkflowDefinition(nonStringSchedule)).toBe(
+      'State "collect" loop schedule must be a valid 5-field cron expression',
+    );
   });
 });

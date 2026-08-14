@@ -30,6 +30,8 @@ function setup(overrides: Partial<SessionRuntimeOptions> = {}) {
     cleanupTaskBacklogLoops: vi.fn(async () => 0),
     adoptTaskBacklogLoops: vi.fn(async () => 0),
     releaseTaskBacklogWakes: vi.fn(),
+    clearWorkflowMonitorWaits: vi.fn(),
+    shutdownMonitors: vi.fn(async () => {}),
     hasPendingTasks: vi.fn(async () => 0),
     cleanDoneTasks: vi.fn(async () => {}),
     ...overrides,
@@ -71,6 +73,7 @@ describe("session-runtime heartbeat lifecycle", () => {
     };
     const { drive } = setup({
       migrateTaskBacklogLoops,
+      clearWorkflowMonitorWaits: vi.fn(() => calls.push("clear monitor waits")),
       getStore: () => ({
         list: () => [{ id: "8", status: "active" }],
         clearExpired: vi.fn(),
@@ -82,7 +85,7 @@ describe("session-runtime heartbeat lifecycle", () => {
     await drive("session_start");
 
     expect(migrateTaskBacklogLoops).toHaveBeenCalledTimes(1);
-    expect(calls).toEqual(["migrate", "start"]);
+    expect(calls).toEqual(["migrate", "clear monitor waits", "start"]);
   });
 
   it("repaints the widget on session_start after the harness resets extension UI", async () => {
@@ -139,6 +142,47 @@ describe("session-runtime heartbeat lifecycle", () => {
     await drive("session_shutdown");
 
     expect(clearIntervalSpy).toHaveBeenCalledWith(timer);
+  });
+
+  it("clears workflow monitor waits before stopping monitors", async () => {
+    const calls: string[] = [];
+    const { drive } = setup({
+      clearWorkflowMonitorWaits: vi.fn(() => calls.push("clear")),
+      shutdownMonitors: vi.fn(async () => { calls.push("shutdown"); }),
+    });
+
+    await drive("session_shutdown");
+
+    expect(calls).toEqual(["clear", "shutdown"]);
+  });
+
+  it("awaits monitor shutdown before completing session shutdown", async () => {
+    let resolveShutdown: (() => void) | undefined;
+    const shutdownMonitors = vi.fn(() => new Promise<void>((resolve) => {
+      resolveShutdown = resolve;
+    }));
+    const { drive } = setup({ shutdownMonitors });
+    let completed = false;
+    const shutdown = drive("session_shutdown").then(() => {
+      completed = true;
+    });
+
+    await Promise.resolve();
+    expect(shutdownMonitors).toHaveBeenCalledOnce();
+    expect(completed).toBe(false);
+
+    resolveShutdown?.();
+    await shutdown;
+    expect(completed).toBe(true);
+  });
+
+  it("stops monitors when switching sessions", async () => {
+    const shutdownMonitors = vi.fn(async () => {});
+    const { drive } = setup({ shutdownMonitors });
+
+    await drive("session_switch");
+
+    expect(shutdownMonitors).toHaveBeenCalledOnce();
   });
 
   it("does not leak an unhandled rejection when a heartbeat pump throws", async () => {

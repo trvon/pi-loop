@@ -7,6 +7,7 @@ import {
   type MonitorReducerState,
   reduceMonitorState,
 } from "./monitor-reducer.js";
+import { isStaleExtensionContextError } from "./runtime/stale-context.js";
 import type { MonitorEntry, MonitorProcess, MonitorProgress } from "./types.js";
 
 export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
@@ -21,6 +22,8 @@ export class MonitorManager {
   private nextId = 1;
   private onChange: (() => void) | undefined;
   private spawnFn: SpawnFn;
+  private shutdownPromise: Promise<void> | undefined;
+  private shuttingDown = false;
 
   constructor(
     private pi: ExtensionAPI,
@@ -36,7 +39,7 @@ export class MonitorManager {
    * boundaries and explicit tool actions. Not fired for output lines.
    */
   setOnChange(cb: () => void): void {
-    this.onChange = cb;
+    if (!this.shuttingDown) this.onChange = cb;
   }
 
   private toReducerState(): MonitorReducerState {
@@ -66,15 +69,41 @@ export class MonitorManager {
       && event.type !== "MONITOR_ONDONE_REGISTERED"
       && event.type !== "MONITOR_PROGRESS_UPDATED"
     ) {
-      this.onChange?.();
+      this.notifyChange();
     }
     return result;
   }
 
+  private notifyChange(): void {
+    if (this.shuttingDown) return;
+    try {
+      this.onChange?.();
+    } catch (error) {
+      if (!isStaleExtensionContextError(error)) throw error;
+    }
+  }
+
+  private emit(event: string, payload: unknown): void {
+    if (this.shuttingDown) return;
+    try {
+      this.pi.events.emit(event, payload);
+    } catch (error) {
+      if (!isStaleExtensionContextError(error)) throw error;
+    }
+  }
+
+  private notifyTerminal(bp: MonitorProcess, monitor: MonitorEntry): void {
+    if (this.shuttingDown) return;
+    for (const callback of bp.terminalCallbacks) callback(monitor);
+    bp.terminalCallbacks = [];
+  }
+
   // Retain terminal state long enough for a completion wake to inspect it.
   private schedulePrune(id: string): void {
+    if (this.shuttingDown) return;
     // unref so a pending prune never keeps a one-shot (`pi -p`) process alive.
     const timer = setTimeout(() => {
+      if (this.shuttingDown) return;
       this.applyReducerEvent({
         type: "MONITOR_PRUNED",
         at: Date.now(),
@@ -118,6 +147,7 @@ export class MonitorManager {
       abortController,
       waiters: [],
       completionCallbacks: [],
+      terminalCallbacks: [],
       lastOutputEventAt: 0,
       lastProgressChangeAt: 0,
       pendingOutputLines: 0,
@@ -132,6 +162,7 @@ export class MonitorManager {
     child.stderr?.on("data", (data: Buffer) => this.handleOutput(id, bp, "stderr", data));
 
     const finish = (code: number | null, status: "completed" | "error") => {
+      if (this.shuttingDown) return;
       this.flushOutput(id, bp);
       this.emitOutputProgress(id, bp);
       this.applyReducerEvent({
@@ -146,25 +177,27 @@ export class MonitorManager {
         },
       });
       const current = this.get(id)!;
-      this.pi.events.emit("monitor:finished", {
+      this.emit("monitor:finished", {
         monitorId: id,
         status: current.status,
         exitCode: current.exitCode,
         outputLines: current.outputLines,
       });
-      this.pi.events.emit(status === "completed" ? "monitor:done" : "monitor:error", {
+      this.emit(status === "completed" ? "monitor:done" : "monitor:error", {
         monitorId: id,
         exitCode: code,
         outputLines: current.outputLines,
       });
       for (const callback of bp.completionCallbacks) callback(current);
       bp.completionCallbacks = [];
+      this.notifyTerminal(bp, current);
       for (const resolve of bp.waiters) resolve();
       bp.waiters = [];
       this.schedulePrune(id);
     };
 
     child.on("close", (code) => {
+      if (this.shuttingDown) return;
       this.flushOutput(id, bp);
       if (bp.entry.status === "running") {
         finish(code, code === 0 ? "completed" : "error");
@@ -172,7 +205,7 @@ export class MonitorManager {
     });
 
     child.on("error", (err) => {
-      if (bp.entry.status === "running") {
+      if (!this.shuttingDown && bp.entry.status === "running") {
         this.flushOutput(id, bp);
         this.emitOutputProgress(id, bp);
         this.applyReducerEvent({
@@ -187,18 +220,19 @@ export class MonitorManager {
           },
         });
         const current = this.get(id)!;
-        this.pi.events.emit("monitor:finished", {
+        this.emit("monitor:finished", {
           monitorId: id,
           status: current.status,
           error: err.message,
           outputLines: current.outputLines,
         });
-        this.pi.events.emit("monitor:error", {
+        this.emit("monitor:error", {
           monitorId: id,
           error: err.message,
         });
         for (const callback of bp.completionCallbacks) callback(current);
         bp.completionCallbacks = [];
+        this.notifyTerminal(bp, current);
         for (const resolve of bp.waiters) resolve();
         bp.waiters = [];
       }
@@ -206,14 +240,14 @@ export class MonitorManager {
 
     if (timeout > 0) {
       setTimeout(() => {
-        if (bp.entry.status === "running") {
+        if (!this.shuttingDown && bp.entry.status === "running") {
           void this.stop(id, "timeout");
         }
       }, timeout);
     }
 
     this.processes.set(id, bp);
-    this.pi.events.emit("monitor:started", {
+    this.emit("monitor:started", {
       monitorId: id,
       command,
       description,
@@ -234,6 +268,29 @@ export class MonitorManager {
       .sort((a, b) => Number(a.id) - Number(b.id));
   }
 
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+
+    this.shuttingDown = true;
+    const processes = Array.from(this.processes.values());
+    const running = processes.filter((bp) => bp.entry.status === "running");
+    const shutdown = Promise.allSettled(running.map((bp) => this.stop(bp.entry.id)))
+      .then(() => {
+        for (const bp of processes) {
+          if (bp.progressChangeTimer) clearTimeout(bp.progressChangeTimer);
+          bp.completionCallbacks = [];
+          bp.terminalCallbacks = [];
+          for (const resolve of bp.waiters) resolve();
+          bp.waiters = [];
+        }
+        this.processes.clear();
+        this.shuttingDown = false;
+        this.shutdownPromise = undefined;
+      });
+    this.shutdownPromise = shutdown;
+    return shutdown;
+  }
+
   async stop(id: string, reason: "manual" | "timeout" = "manual"): Promise<boolean> {
     const bp = this.processes.get(id);
     if (!bp || bp.entry.status !== "running") return false;
@@ -250,17 +307,17 @@ export class MonitorManager {
         reason,
       },
     });
-    this.pi.events.emit("monitor:finished", {
+    this.emit("monitor:finished", {
       monitorId: id,
       status: "stopped",
       reason,
       outputLines: bp.entry.outputLines,
     });
-    this.schedulePrune(id);
+    if (!this.shuttingDown) this.schedulePrune(id);
     bp.proc.kill("SIGTERM");
 
     if (reason === "timeout") {
-      this.pi.events.emit("monitor:error", {
+      this.emit("monitor:error", {
         monitorId: id,
         error: `Timed out after ${bp.entry.timeout}ms`,
         outputLines: bp.entry.outputLines,
@@ -268,6 +325,7 @@ export class MonitorManager {
       for (const callback of bp.completionCallbacks) callback(bp.entry);
       bp.completionCallbacks = [];
     }
+    this.notifyTerminal(bp, bp.entry);
 
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -288,6 +346,7 @@ export class MonitorManager {
   }
 
   onComplete(id: string, callback: (monitor: MonitorEntry) => void): boolean {
+    if (this.shuttingDown) return false;
     const bp = this.processes.get(id);
     if (!bp) return false;
     if (bp.entry.status === "completed" || bp.entry.status === "error") {
@@ -307,6 +366,18 @@ export class MonitorManager {
     return true;
   }
 
+  onTerminal(id: string, callback: (monitor: MonitorEntry) => void): boolean {
+    if (this.shuttingDown) return false;
+    const bp = this.processes.get(id);
+    if (!bp) return false;
+    if (bp.entry.status !== "running") {
+      callback(bp.entry);
+      return true;
+    }
+    bp.terminalCallbacks.push(callback);
+    return true;
+  }
+
   getProcess(id: string): MonitorProcess | undefined {
     return this.processes.get(id);
   }
@@ -319,6 +390,7 @@ export class MonitorManager {
   }
 
   private handleOutput(id: string, bp: MonitorProcess, stream: "stdout" | "stderr", data: Buffer): void {
+    if (this.shuttingDown) return;
     const decoder = stream === "stdout" ? bp.stdoutDecoder : bp.stderrDecoder;
     const remainderKey = stream === "stdout" ? "stdoutRemainder" : "stderrRemainder";
     const records = `${bp[remainderKey]}${decoder.write(data)}`.split("\n");
@@ -327,6 +399,7 @@ export class MonitorManager {
   }
 
   private flushOutput(id: string, bp: MonitorProcess): void {
+    if (this.shuttingDown) return;
     const stdout = `${bp.stdoutRemainder}${bp.stdoutDecoder.end()}`;
     const stderr = `${bp.stderrRemainder}${bp.stderrDecoder.end()}`;
     bp.stdoutRemainder = "";
@@ -335,6 +408,7 @@ export class MonitorManager {
   }
 
   private recordOutputLines(id: string, bp: MonitorProcess, records: string[]): void {
+    if (this.shuttingDown) return;
     const lines = records
       .map(line => line.endsWith("\r") ? line.slice(0, -1) : line)
       .filter(Boolean)
@@ -370,7 +444,7 @@ export class MonitorManager {
     if (!bp.latestOutputLine || bp.pendingOutputLines === 0) return;
     const current = this.get(id);
     if (!current) return;
-    this.pi.events.emit("monitor:output", {
+    this.emit("monitor:output", {
       monitorId: id,
       line: bp.latestOutputLine,
       outputLines: current.outputLines,
@@ -383,6 +457,7 @@ export class MonitorManager {
   }
 
   private applyProgress(id: string, progress: Omit<MonitorProgress, "updatedAt">): void {
+    if (this.shuttingDown) return;
     this.applyReducerEvent({
       type: "MONITOR_PROGRESS_UPDATED",
       at: Date.now(),
@@ -396,18 +471,20 @@ export class MonitorManager {
   }
 
   private scheduleProgressChange(bp: MonitorProcess): void {
+    if (this.shuttingDown) return;
     const now = Date.now();
     const delay = OUTPUT_EVENT_INTERVAL_MS - (now - bp.lastProgressChangeAt);
     if (delay <= 0) {
       bp.lastProgressChangeAt = now;
-      this.onChange?.();
+      this.notifyChange();
       return;
     }
     if (bp.progressChangeTimer) return;
     bp.progressChangeTimer = setTimeout(() => {
       bp.progressChangeTimer = undefined;
+      if (this.shuttingDown) return;
       bp.lastProgressChangeAt = Date.now();
-      this.onChange?.();
+      this.notifyChange();
     }, delay);
     bp.progressChangeTimer.unref?.();
   }

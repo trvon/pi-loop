@@ -180,6 +180,7 @@ export function reduceMonitorState(state: MonitorReducerState, event: MonitorRed
 
   if (event.type === "MONITOR_STOPPED") {
     monitor.status = "stopped";
+    monitor.stopReason = event.payload.reason;
     monitor.completedAt = event.at;
   }
 

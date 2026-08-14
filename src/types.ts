@@ -54,6 +54,13 @@ export interface WorkflowTaskDefinition {
   description: string;
 }
 
+export interface WorkflowMonitorWait {
+  monitorId: string;
+  stateId: string;
+  transitionSeq: number;
+  attachedAt: number;
+}
+
 export interface WorkflowStateLoopDefinition {
   schedule: string;
   maxFires?: number;
@@ -92,6 +99,7 @@ export interface WorkflowRunState {
   attemptsByState: Record<string, number>;
   stateFireCounts: Record<string, number>;
   activeTaskId?: string;
+  waitingMonitor?: WorkflowMonitorWait;
   lastTransition?: WorkflowTransitionRecord;
 }
 
@@ -127,11 +135,20 @@ export interface MonitorEntry {
   startedAt: number;
   completedAt?: number;
   exitCode?: number;
+  stopReason?: "manual" | "timeout";
   outputLines: number;
   outputBuffer: string[];
   lastOutputAt?: number;
   outputRatePerMinute?: number;
   progress?: MonitorProgress;
+}
+
+export interface MonitorOutcome {
+  monitorId: string;
+  status: MonitorEntry["status"];
+  exitCode?: number;
+  stopReason?: MonitorEntry["stopReason"];
+  outputLines: number;
 }
 
 export interface MonitorProgress {
@@ -149,6 +166,7 @@ export interface MonitorProcess {
   abortController: AbortController;
   waiters: Array<() => void>;
   completionCallbacks: Array<(monitor: MonitorEntry) => void>;
+  terminalCallbacks: Array<(monitor: MonitorEntry) => void>;
   lastOutputEventAt: number;
   lastProgressChangeAt: number;
   progressChangeTimer?: ReturnType<typeof setTimeout>;

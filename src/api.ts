@@ -41,7 +41,9 @@ export type { TaskClaimInput, TaskClaimResult } from "./task-store.js";
 export { TaskStore } from "./task-store.js";
 export type { TaskClaim, TaskEntry, TaskStatus, TaskStoreData, TaskWorkflowLink } from "./task-types.js";
 export type {
+  MonitorOutcome,
   WorkflowDefinition,
+  WorkflowMonitorWait,
   WorkflowRunState,
   WorkflowStateDefinition,
   WorkflowStateLoopDefinition,

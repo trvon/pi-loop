@@ -94,6 +94,85 @@ describe("MonitorManager", () => {
     expect(monitors.map(m => m.id)).toEqual(["1", "2"]);
   });
 
+  it("swallows stale extension-context errors from delayed monitor output", () => {
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("sleep 30", "stale output test");
+    pi.events.emit.mockImplementation(() => {
+      throw new Error("This extension ctx is stale after session replacement or reload.");
+    });
+
+    expect(() => child.stdout?.emit("data", Buffer.from("late output\\n"))).not.toThrow();
+
+    child.emit("close", 0);
+    expect(manager.get(entry.id)?.status).toBe("completed");
+  });
+
+  it("stops monitors and ignores delayed child events during shutdown", async () => {
+    vi.useFakeTimers();
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const onChange = vi.fn();
+    const onComplete = vi.fn();
+    manager.setOnChange(onChange);
+    const entry = manager.create("sleep 30", "shutdown test");
+    expect(manager.onComplete(entry.id, onComplete)).toBe(true);
+
+    pi.events.emit.mockClear();
+    pi.events.emit.mockImplementation(() => {
+      throw new Error("This extension ctx is stale after session replacement or reload.");
+    });
+
+    const shutdown = manager.shutdown();
+    await vi.advanceTimersByTimeAsync(5000);
+    await shutdown;
+
+    expect(manager.list()).toEqual([]);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onComplete).not.toHaveBeenCalled();
+
+    expect(() => {
+      child.stdout?.emit("data", Buffer.from("late stdout\\n"));
+      child.stderr?.emit("data", Buffer.from("late stderr\\n"));
+      child.emit("error", new Error("late child error"));
+      child.emit("close", 0);
+    }).not.toThrow();
+    expect(pi.events.emit).not.toHaveBeenCalled();
+    await manager.shutdown();
+  });
+
+  it("accepts new monitors after a session handoff", async () => {
+    vi.useFakeTimers();
+    const first = createMockChildProcess({ exitCode: null });
+    let child = first;
+    manager = new MonitorManager(pi, () => child);
+    manager.create("sleep 30", "first session");
+
+    const shutdown = manager.shutdown();
+    await vi.advanceTimersByTimeAsync(5000);
+    await shutdown;
+
+    const second = createMockChildProcess({ exitCode: null });
+    child = second;
+    const callback = vi.fn();
+    const next = manager.create("sleep 30", "next session");
+    try {
+      expect(manager.onComplete(next.id, callback)).toBe(true);
+
+      second.emit("close", 0);
+      expect(callback).toHaveBeenCalledOnce();
+      expect(pi.events.emit).toHaveBeenCalledWith("monitor:started", expect.objectContaining({
+        monitorId: next.id,
+        command: "sleep 30",
+      }));
+    } finally {
+      const stop = manager.stop(next.id);
+      await vi.advanceTimersByTimeAsync(5000);
+      await stop;
+      vi.useRealTimers();
+    }
+  });
+
   it("emits monitor:output event with stdout lines", async () => {
     const entry = manager.create("echo 'test output'");
 
@@ -275,6 +354,31 @@ describe("MonitorManager", () => {
         resolve();
       });
     });
+  });
+
+  it("notifies terminal callbacks when a monitor is manually stopped", async () => {
+    vi.useFakeTimers();
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("sleep 30", "terminal callback test");
+    const callback = vi.fn();
+    try {
+      expect(manager.onTerminal(entry.id, callback)).toBe(true);
+
+      const stop = manager.stop(entry.id);
+      expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+        id: entry.id,
+        status: "stopped",
+        stopReason: "manual",
+      }));
+      await vi.advanceTimersByTimeAsync(5000);
+      await stop;
+    } finally {
+      const stop = manager.stop(entry.id);
+      await vi.advanceTimersByTimeAsync(5000);
+      await stop;
+      vi.useRealTimers();
+    }
   });
 
   it("registers completion callbacks for running monitors and invokes them on success", async () => {
@@ -498,7 +602,7 @@ describe("MonitorManager", () => {
     expect(manager.get("1")!.status).toBe("running");
 
     vi.advanceTimersByTime(600);
-    expect(manager.get("1")!.status).toBe("stopped");
+    expect(manager.get("1")!).toMatchObject({ status: "stopped", stopReason: "timeout" });
     vi.useRealTimers();
   });
 

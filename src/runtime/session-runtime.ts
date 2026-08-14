@@ -29,6 +29,8 @@ export interface SessionRuntimeOptions {
   cleanupTaskBacklogLoops: () => Promise<number>;
   adoptTaskBacklogLoops: (baselineFireCounts?: ReadonlyMap<string, number>) => Promise<number>;
   releaseTaskBacklogWakes: () => void;
+  clearWorkflowMonitorWaits: () => void;
+  shutdownMonitors: () => Promise<void>;
   hasPendingTasks: () => Promise<number>;
   cleanDoneTasks: () => Promise<void>;
 }
@@ -52,6 +54,8 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     cleanupTaskBacklogLoops,
     adoptTaskBacklogLoops,
     releaseTaskBacklogWakes,
+    clearWorkflowMonitorWaits,
+    shutdownMonitors,
     hasPendingTasks,
     cleanDoneTasks,
   } = options;
@@ -97,6 +101,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     persistedShown = true;
     const sessionStartedAt = Date.now();
     migrateTaskBacklogLoops();
+    clearWorkflowMonitorWaits();
     const loops = getStore().list();
     if (loops.length > 0) {
       getStore().clearExpired();
@@ -177,12 +182,16 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
   });
 
   pi.on("session_shutdown", async () => {
+    clearWorkflowMonitorWaits();
+    await shutdownMonitors();
     stopHeartbeat();
     releaseTaskBacklogWakes();
     notificationRuntime.clear("session_shutdown");
   });
 
   pi.on("session_switch" as never, async (event: SessionSwitchEvent, ctx: ExtensionContext) => {
+    clearWorkflowMonitorWaits();
+    await shutdownMonitors();
     setLatestCtx(ctx);
     widget.setUICtx(ctx.ui);
     getTriggerSystem().stop();

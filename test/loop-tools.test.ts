@@ -425,10 +425,29 @@ describe("Workflow tools", () => {
 
     const out = await h.text("WorkflowCreate", { goal: "Process records", definition: scheduledDefinition });
 
-    expect(out).toContain("State cadence: 0 7 * * * · fires: 0/4");
+    expect(out).toContain("State cadence: 0 7 * * * · state fires: 0/4 · controller fires: 0/4");
     expect(out).toContain("scheduled from the active state cadence");
     expect(h.onDynamicLoopActivated).not.toHaveBeenCalled();
     expect(h.triggerSystem.add).toHaveBeenCalledWith(h.store.get("1"));
+  });
+
+  it("shows the controller cap when a state loop has no local fire cap", async () => {
+    const scheduledDefinition = JSON.stringify({
+      version: 1,
+      initialState: "collect",
+      states: {
+        collect: {
+          prompt: "Collect records.",
+          loop: { schedule: "0 7 * * *" },
+          on: { ready: "publish" },
+        },
+        publish: { prompt: "Publish records.", terminal: "completed" },
+      },
+    });
+
+    const out = await h.text("WorkflowCreate", { goal: "Process records", definition: scheduledDefinition });
+
+    expect(out).toContain("State cadence: 0 7 * * * · state fires: 0/unbounded · controller fires: 0/30");
   });
 
   it("immediately wakes a scheduled workflow state that requests it", async () => {

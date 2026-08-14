@@ -1,4 +1,4 @@
-import type { DynamicLoopState, LoopEntry, Trigger, WorkflowDefinition } from "./types.js";
+import type { DynamicLoopState, LoopEntry, Trigger, WorkflowDefinition, WorkflowMonitorWait } from "./types.js";
 import { createWorkflowRun, transitionWorkflowRun } from "./workflow-reducer.js";
 
 export const MAX_LOOP_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -96,6 +96,22 @@ export type LoopReducerEvent =
     entityType?: "loop";
     entityId?: string;
     payload: { id: string; taskId?: string };
+  }
+  | {
+    type: "LOOP_WORKFLOW_MONITOR_ATTACHED";
+    at: number;
+    source: ReducerSource;
+    entityType?: "loop";
+    entityId?: string;
+    payload: { id: string; wait: WorkflowMonitorWait };
+  }
+  | {
+    type: "LOOP_WORKFLOW_MONITOR_CLEARED";
+    at: number;
+    source: ReducerSource;
+    entityType?: "loop";
+    entityId?: string;
+    payload: { id: string; expected?: WorkflowMonitorWait };
   };
 
 export type LoopReducerEffect =
@@ -249,6 +265,25 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
   if (event.type === "LOOP_WORKFLOW_TASK_SET") {
     if (!loop.workflow) return { state, effects: [] };
     loop.workflow = { ...loop.workflow, activeTaskId: event.payload.taskId };
+    loop.updatedAt = event.at;
+  }
+
+  if (event.type === "LOOP_WORKFLOW_MONITOR_ATTACHED") {
+    if (!loop.workflow || loop.workflow.waitingMonitor) return { state, effects: [] };
+    loop.workflow = { ...loop.workflow, waitingMonitor: event.payload.wait };
+    loop.updatedAt = event.at;
+  }
+
+  if (event.type === "LOOP_WORKFLOW_MONITOR_CLEARED") {
+    if (!loop.workflow?.waitingMonitor) return { state, effects: [] };
+    const expected = event.payload.expected;
+    if (expected && (
+      loop.workflow.waitingMonitor.monitorId !== expected.monitorId
+      || loop.workflow.waitingMonitor.stateId !== expected.stateId
+      || loop.workflow.waitingMonitor.transitionSeq !== expected.transitionSeq
+      || loop.workflow.waitingMonitor.attachedAt !== expected.attachedAt
+    )) return { state, effects: [] };
+    loop.workflow = { ...loop.workflow, waitingMonitor: undefined };
     loop.updatedAt = event.at;
   }
 

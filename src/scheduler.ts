@@ -26,7 +26,7 @@ export class CronScheduler {
   start(): void {
     for (const storedEntry of this.store.list()) {
       let entry = storedEntry;
-      if (entry.status !== "active") continue;
+      if (entry.status !== "active" || entry.workflow?.waitingMonitor) continue;
       if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic") {
         if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate && !this.fireTimes.has(entry.id)) {
           entry = this.store.updateDynamic(entry.id, {
@@ -47,7 +47,7 @@ export class CronScheduler {
   }
 
   add(entry: LoopEntry): void {
-    if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic") {
+    if (!entry.workflow?.waitingMonitor && (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic")) {
       this.armTimer(entry);
     }
   }
@@ -67,6 +67,7 @@ export class CronScheduler {
   }
 
   private armTimer(entry: LoopEntry): void {
+    if (entry.workflow?.waitingMonitor) return;
     const nextFire = computeNextFire(entry);
     let jitter = 0;
     const workflowLoop = entry.workflow && getActiveWorkflowStateLoop(entry.workflow);
@@ -92,12 +93,12 @@ export class CronScheduler {
       if (now < fireTime) continue;
 
       const entry = this.store.get(id);
-      if (entry?.status !== "active") {
+      if (entry?.status !== "active" || entry.workflow?.waitingMonitor) {
         this.fireTimes.delete(id);
         continue;
       }
 
-      if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate && !entry.workflow) continue;
+      if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate) continue;
 
       if (filter && !filter(entry)) continue;
 
