@@ -18,7 +18,16 @@ function readJsonFile(path: string): any {
   }
 }
 
+function clearTestLoopStore(sessionId: string): void {
+  const path = resolveLoopStorePath({ loopScope: "session" }, sessionId);
+  if (!path) return;
+  rmSync(path, { force: true });
+  rmSync(`${path}.prev`, { force: true });
+}
+
 describe("workflow runtime wiring", () => {
+  beforeEach(() => clearTestLoopStore("workflow-session"));
+  afterEach(() => clearTestLoopStore("workflow-session"));
   it("pauses an immediately fired workflow state at its local fire cap", async () => {
     const { pi, toolMap, extensionHandlers } = createMockPi();
     extension(pi as any);
