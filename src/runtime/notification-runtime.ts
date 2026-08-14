@@ -137,6 +137,10 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
         lines.push(...formatLastTransitionLines(data.workflow.lastTransition));
       }
       if (state?.prompt) lines.push(`State instructions: ${state.prompt}`);
+      if (state?.loop) {
+        const fires = data.workflow.stateFireCounts?.[data.workflow.currentState] ?? 0;
+        lines.push(`State cadence: ${state.loop.schedule} · fires: ${fires}/${state.loop.maxFires ?? "unbounded"}`);
+      }
       if (data.workflow.activeTaskId) {
         lines.push(
           `Active task: #${data.workflow.activeTaskId}`,
@@ -149,6 +153,11 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       }
       if (state?.terminal) {
         lines.push(`Terminal: ${state.terminal} — this workflow state is terminal; no transition is needed.`);
+      } else if (state?.loop) {
+        lines.push(
+          `Workflow lifecycle: Loop #${loopId} runs this state on its configured cadence until an acceptance condition is met.`,
+          "Continue the linked task and preserve its claim. Do not call WorkflowTransition merely because this iteration finished; call it only with a declared outcome and supporting evidence when the state can advance.",
+        );
       } else {
         lines.push(
           `Workflow lifecycle: Loop #${loopId} is an opt-in state controller. Do not call LoopDelete after this state.`,

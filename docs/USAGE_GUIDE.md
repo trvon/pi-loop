@@ -95,6 +95,8 @@ WorkflowTransition id="1" outcome="tests_pass" evidence="Targeted and full test 
 
 `WorkflowTransition` validates the branch, settles the current state task, records evidence, creates the next state's optional task, and queues the next wake. Pass `claimId` when the current state task was claimed; do not complete or close a linked state task with `TaskUpdate`. A self-loop creates a fresh linked attempt and increments the displayed attempt count. A task settlement failure leaves the workflow in its source state. When a target reaches `maxAttempts`, only outcomes leading to that target become unavailable; other declared outcomes remain selectable. Reaching a `completed` terminal state deletes the workflow loop; reaching a `paused` terminal state preserves it in paused state for inspection or deletion. Terminal workflow states cannot be resumed. Task status does not guess an outcome—the model selects one explicitly. LoopList and workflow wakes omit outcomes whose target state has exhausted `maxAttempts`.
 
+To repeat a state until evidence supports an outcome, add a cron-only state policy: `"loop":{"schedule":"0 7 * * *","maxFires":10,"startImmediately":false}`. Only the active state's policy is armed. Scheduled wakes retain the linked state task; `WorkflowTransition` remains the only operation that settles it and unlocks the destination task and cadence. `maxFires` is local to that state and pauses the workflow when exhausted. State policies do not wake immediately unless `startImmediately` is `true`.
+
 `LoopList` includes workflow state, active task, transition evidence, and valid outcomes alongside ordinary loops.
 
 ### Inspecting and stopping loops

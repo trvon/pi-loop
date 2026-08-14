@@ -4,6 +4,7 @@ import { formatTrigger } from "../loop-format.js";
 import { parseInterval } from "../loop-parse.js";
 import type { LoopEntry, Trigger } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
+import { getActiveWorkflowStateLoop } from "../workflow-reducer.js";
 import { displayRows, textResult } from "./tool-result.js";
 import { formatWorkflowSummary } from "./workflow-tools.js";
 
@@ -388,9 +389,12 @@ Use this before creating new loops to avoid duplicates, or to find IDs for LoopD
 
       const lines: string[] = [];
       for (const entry of loops) {
-        const triggerDesc = formatTrigger(entry.trigger, "list");
+        const workflowSchedule = entry.workflow && getActiveWorkflowStateLoop(entry.workflow)?.schedule;
+        const triggerDesc = workflowSchedule ? `workflow cron: ${workflowSchedule}` : formatTrigger(entry.trigger, "list");
 
-        const nextFire = entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.dynamic?.nextWakeAt !== undefined ? getScheduler().nextFire(entry.id) : undefined;
+        const nextFire = workflowSchedule || entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.dynamic?.nextWakeAt !== undefined
+          ? getScheduler().nextFire(entry.id)
+          : undefined;
         const statusIcon = entry.status === "active" ? "*" : entry.status === "paused" ? "-" : "x";
         let line = `${statusIcon} #${entry.id} [${entry.status}] ${entry.prompt.slice(0, 60)}`;
         line += ` (${triggerDesc})`;

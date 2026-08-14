@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { formatLastTransitionLines } from "../loop-format.js";
 import type { LoopEntry, Trigger, WorkflowDefinition } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
-import { getWorkflowOutcomeAvailability, transitionWorkflowRun, validateWorkflowDefinition, type WorkflowTransitionFailure } from "../workflow-reducer.js";
+import { getActiveWorkflowStateLoop, getWorkflowOutcomeAvailability, transitionWorkflowRun, validateWorkflowDefinition, type WorkflowTransitionFailure } from "../workflow-reducer.js";
 import { textResult } from "./tool-result.js";
 
 interface WorkflowStoreLike {
@@ -66,7 +66,17 @@ function parseWorkflowDefinition(input: string): { definition?: WorkflowDefiniti
 }
 
 const WORKFLOW_DEFINITION_EXAMPLE =
-  '{"version":1,"initialState":"investigate","states":{"investigate":{"prompt":"Investigate the issue.","on":{"found":"done"}},"done":{"prompt":"Report completion.","terminal":"completed"}}}';
+  '{"version":1,"initialState":"collect","states":{"collect":{"prompt":"Collect evidence.","loop":{"schedule":"0 7 * * *","maxFires":10},"on":{"ready":"publish"}},"publish":{"prompt":"Publish the result.","terminal":"completed"}}}';
+
+function workflowDefaultMaxFires(definition: WorkflowDefinition): number {
+  const loopBudget = Object.values(definition.states)
+    .reduce((total, state) => total + (state.loop?.maxFires ?? 0), 0);
+  return loopBudget > 0 ? loopBudget : 30;
+}
+
+function stateLoopStartsImmediately(entry: LoopEntry): boolean {
+  return Boolean(entry.workflow && getActiveWorkflowStateLoop(entry.workflow)?.startImmediately);
+}
 
 function formatWorkflowDefinitionError(error: string | undefined): string {
   return `Workflow definition rejected: ${error ?? "unknown validation error"}\n` +
@@ -91,6 +101,10 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   let message = `${heading}\nGoal: ${entry.prompt}\nCurrent state: ${workflow.currentState}\nAttempt: ${attemptLabel}`;
   if (workflow.lastTransition) message += `\n${formatLastTransitionLines(workflow.lastTransition).join("\n")}`;
   if (state?.prompt) message += `\nInstruction: ${state.prompt}`;
+  if (state?.loop) {
+    const fires = workflow.stateFireCounts?.[workflow.currentState] ?? 0;
+    message += `\nState cadence: ${state.loop.schedule} · fires: ${fires}/${state.loop.maxFires ?? "unbounded"}`;
+  }
   if (workflow.activeTaskId) {
     message += `\nActive task: #${workflow.activeTaskId}`;
   } else if (state?.task) {
@@ -129,11 +143,12 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     label: "WorkflowCreate",
     renderCall: renderToolCall("Workflow", (args) => `create · ${String(toolArg(args, "goal") ?? "workflow").slice(0, 56)}`),
     renderResult: renderToolResult,
-    description: `Create a task-driven workflow for named phases and outcomes. The JSON definition needs version 1, a nonterminal initialState, and states with prompt, optional task: {subject, description}, outcome map, maxAttempts, or terminal status.`,
+    description: "Create a task-driven workflow for named phases and outcomes. Use task: {subject, description} for state work. A state can use a cron loop policy (`schedule`, `maxFires`, `startImmediately`); only the active state's policy runs.",
     promptGuidelines: [
       "Use WorkflowCreate for named phase/outcome flows, not flat backlogs.",
       "Give nonterminal states concise prompts and explicit outcomes.",
       "WorkflowTransition settles linked state tasks; never terminally TaskUpdate them.",
+      "A state loop repeats while that state remains active; only WorkflowTransition unlocks the next state's task and cadence.",
       "Model rework as outcome cycles bounded by maxAttempts; re-entry increments attempts.",
       "On each wake call WorkflowTransition once with id, outcome, evidence, and active-task claimId.",
     ],
@@ -157,7 +172,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
 
       let entry = getStore().create({ type: "dynamic" }, params.goal, {
         recurring: true,
-        maxFires: params.maxFires ?? 30,
+        maxFires: params.maxFires ?? workflowDefaultMaxFires(parsed.definition),
         dynamic: { goal: params.goal, state: parsed.definition.initialState, iteration: 0 },
         workflow: parsed.definition,
       });
@@ -183,9 +198,15 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       }
       getTriggerSystem().add(entry);
       updateWidget();
-      onDynamicLoopActivated?.(entry);
+      if (!entry.workflow || !getActiveWorkflowStateLoop(entry.workflow) || stateLoopStartsImmediately(entry)) {
+        onDynamicLoopActivated?.(entry);
+      }
       return textResult(
-        `${formatWorkflowSummary(entry, `Workflow #${entry.id} created — ${entry.status}`)}\nWake: the state instruction will be delivered when the agent becomes idle.`,
+        `${formatWorkflowSummary(entry, `Workflow #${entry.id} created — ${entry.status}`)}\nWake: ${
+          entry.workflow && getActiveWorkflowStateLoop(entry.workflow)
+            ? stateLoopStartsImmediately(entry) ? "initial state wake queued now; subsequent wakes follow the state cadence." : "scheduled from the active state cadence."
+            : "the state instruction will be delivered when the agent becomes idle."
+        }`,
         {
           kind: "workflow",
           action: "create",
@@ -195,7 +216,9 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
             `Goal: ${entry.prompt}`,
             `State: ${parsed.definition.initialState}`,
             `Outcome: ${Object.keys(parsed.definition.states[parsed.definition.initialState]?.on ?? {}).join(", ") || "none"}`,
-            "Wake: delivered when the agent becomes idle",
+            entry.workflow && getActiveWorkflowStateLoop(entry.workflow)
+              ? `Cadence: ${getActiveWorkflowStateLoop(entry.workflow)?.schedule}`
+              : "Wake: delivered when the agent becomes idle",
           ],
         },
       );
@@ -315,6 +338,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       const taskId = existingTaskId ?? createdTaskId;
       getTriggerSystem().add(updatedEntry);
       updateWidget();
+      if (stateLoopStartsImmediately(updatedEntry)) onDynamicLoopActivated?.(updatedEntry);
       const from = updatedEntry.workflow?.lastTransition?.from ?? "?";
       const to = updatedEntry.workflow?.currentState ?? "?";
       return textResult(

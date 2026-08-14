@@ -54,9 +54,16 @@ export interface WorkflowTaskDefinition {
   description: string;
 }
 
+export interface WorkflowStateLoopDefinition {
+  schedule: string;
+  maxFires?: number;
+  startImmediately?: boolean;
+}
+
 export interface WorkflowStateDefinition {
   prompt: string;
   task?: WorkflowTaskDefinition;
+  loop?: WorkflowStateLoopDefinition;
   on?: Record<string, string>;
   terminal?: WorkflowTerminalStatus;
   maxAttempts?: number;
@@ -83,6 +90,7 @@ export interface WorkflowRunState {
   transitionSeq: number;
   stateEnteredAt: number;
   attemptsByState: Record<string, number>;
+  stateFireCounts: Record<string, number>;
   activeTaskId?: string;
   lastTransition?: WorkflowTransitionRecord;
 }

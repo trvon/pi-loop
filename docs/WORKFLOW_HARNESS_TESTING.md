@@ -13,6 +13,8 @@ A workflow state task represents one state attempt.
 - A legacy state task that is already terminal may be reconciled by an explicit `WorkflowTransition`; task status never selects the outcome.
 - Terminal workflow completion removes the controller only after its final linked task is settled.
 
+When a state has a cron loop policy, repeated scheduled fires belong to the same state attempt: the linked task remains active, and only `WorkflowTransition` settles it. Tests must verify that only the active state policy is armed, its local fire count persists, and its local fire cap pauses the controller.
+
 The wake message and `LoopList` summary expose `Attempt: current/max`, the active task ID, allowed outcomes, and the rule that linked tasks must not be terminally updated through `TaskUpdate`.
 
 ## Deterministic tests
