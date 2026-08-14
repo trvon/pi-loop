@@ -132,7 +132,9 @@ For a monitor launched from an active workflow, use `workflowId` instead of `onD
 MonitorCreate command="npm test" description="Validate release" workflowId="29"
 ```
 
-The workflow pauses its cadence while the monitor runs. On success, failure, timeout, or stop, it resumes the same state once with status, stop reason, exit code, and output count; inspect the result and call `WorkflowTransition` with a declared outcome. Do not poll with `LoopUpdate` while it waits.
+The workflow pauses its cadence while the monitor runs. While the same Pi runtime remains active, success, failure, timeout, or explicit `MonitorStop` resumes the same state once with status, stop reason, exit code, and output count; inspect the result and call `WorkflowTransition` with a declared outcome. Do not poll with `LoopUpdate` while it waits.
+
+A session shutdown or switch interrupts the monitor: its in-memory process and wait are discarded without a terminal workflow wake. In session or project scope, inspect the resumed workflow and start a new monitor if the work still needs to run; memory-scoped workflows are discarded.
 
 ```text
 MonitorList

@@ -12,6 +12,11 @@ import type { MonitorEntry, MonitorProcess, MonitorProgress } from "./types.js";
 
 export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 
+export interface MonitorManagerOptions {
+  platform?: NodeJS.Platform;
+  taskkillSpawn?: SpawnFn;
+}
+
 const OUTPUT_EVENT_INTERVAL_MS = 1000;
 const MAX_OUTPUT_LINE_LENGTH = 4096;
 const OUTPUT_RATE_WINDOW_MS = 60000;
@@ -22,14 +27,19 @@ export class MonitorManager {
   private nextId = 1;
   private onChange: (() => void) | undefined;
   private spawnFn: SpawnFn;
+  private platform: NodeJS.Platform;
+  private taskkillSpawn: SpawnFn;
   private shutdownPromise: Promise<void> | undefined;
   private shuttingDown = false;
 
   constructor(
     private pi: ExtensionAPI,
     spawnFn?: SpawnFn,
+    options: MonitorManagerOptions = {},
   ) {
     this.spawnFn = spawnFn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts));
+    this.platform = options.platform ?? process.platform;
+    this.taskkillSpawn = options.taskkillSpawn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts));
   }
 
   /**
@@ -98,6 +108,45 @@ export class MonitorManager {
     bp.terminalCallbacks = [];
   }
 
+  private clearDeadline(bp: MonitorProcess): void {
+    if (!bp.deadlineTimer) return;
+    clearTimeout(bp.deadlineTimer);
+    bp.deadlineTimer = undefined;
+  }
+
+  private signalProcessTree(bp: MonitorProcess, signal: NodeJS.Signals): void {
+    let fellBack = false;
+    const fallback = () => {
+      if (fellBack) return;
+      fellBack = true;
+      try { bp.proc.kill(signal); } catch { /* already dead */ }
+    };
+
+    if (this.platform === "win32") {
+      try {
+        const taskkill = this.taskkillSpawn(
+          "taskkill",
+          ["/pid", String(bp.pid), "/t", "/f"],
+          { stdio: "ignore", windowsHide: true },
+        );
+        taskkill.once("error", fallback);
+        taskkill.once("close", (code) => {
+          if (code !== 0) fallback();
+        });
+        return;
+      } catch {
+        fallback();
+        return;
+      }
+    }
+
+    try {
+      process.kill(-bp.pid, signal);
+    } catch {
+      fallback();
+    }
+  }
+
   // Retain terminal state long enough for a completion wake to inspect it.
   private schedulePrune(id: string): void {
     if (this.shuttingDown) return;
@@ -138,6 +187,7 @@ export class MonitorManager {
       stdio: ["ignore", "pipe", "pipe"],
       signal: abortController.signal,
       env: { ...process.env },
+      detached: this.platform !== "win32",
     });
 
     const bp: MonitorProcess = {
@@ -163,6 +213,7 @@ export class MonitorManager {
 
     const finish = (code: number | null, status: "completed" | "error") => {
       if (this.shuttingDown) return;
+      this.clearDeadline(bp);
       this.flushOutput(id, bp);
       this.emitOutputProgress(id, bp);
       this.applyReducerEvent({
@@ -206,6 +257,7 @@ export class MonitorManager {
 
     child.on("error", (err) => {
       if (!this.shuttingDown && bp.entry.status === "running") {
+        this.clearDeadline(bp);
         this.flushOutput(id, bp);
         this.emitOutputProgress(id, bp);
         this.applyReducerEvent({
@@ -235,15 +287,18 @@ export class MonitorManager {
         this.notifyTerminal(bp, current);
         for (const resolve of bp.waiters) resolve();
         bp.waiters = [];
+        this.schedulePrune(id);
       }
     });
 
     if (timeout > 0) {
-      setTimeout(() => {
+      const deadlineTimer = setTimeout(() => {
         if (!this.shuttingDown && bp.entry.status === "running") {
           void this.stop(id, "timeout");
         }
       }, timeout);
+      deadlineTimer.unref?.();
+      bp.deadlineTimer = deadlineTimer;
     }
 
     this.processes.set(id, bp);
@@ -273,6 +328,7 @@ export class MonitorManager {
 
     this.shuttingDown = true;
     const processes = Array.from(this.processes.values());
+    for (const bp of processes) this.clearDeadline(bp);
     const running = processes.filter((bp) => bp.entry.status === "running");
     const shutdown = Promise.allSettled(running.map((bp) => this.stop(bp.entry.id)))
       .then(() => {
@@ -295,6 +351,7 @@ export class MonitorManager {
     const bp = this.processes.get(id);
     if (!bp || bp.entry.status !== "running") return false;
 
+    this.clearDeadline(bp);
     this.emitOutputProgress(id, bp);
     this.applyReducerEvent({
       type: "MONITOR_STOPPED",
@@ -314,7 +371,7 @@ export class MonitorManager {
       outputLines: bp.entry.outputLines,
     });
     if (!this.shuttingDown) this.schedulePrune(id);
-    bp.proc.kill("SIGTERM");
+    this.signalProcessTree(bp, "SIGTERM");
 
     if (reason === "timeout") {
       this.emit("monitor:error", {
@@ -329,7 +386,7 @@ export class MonitorManager {
 
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
-        try { bp.proc.kill("SIGKILL"); } catch { /* already dead */ }
+        this.signalProcessTree(bp, "SIGKILL");
         resolve();
       }, 5000);
 

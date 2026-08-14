@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MONITOR_RETENTION_MS, MonitorManager } from "../src/monitor-manager.js";
 import { createMockPi } from "./helpers/mock-pi.js";
@@ -6,11 +9,42 @@ import { createMockChildProcess, createSequentialSpawn } from "./helpers/mock-sp
 describe("MonitorManager", () => {
   let manager: MonitorManager;
   let pi: any;
+  let mockPi: ReturnType<typeof createMockPi>;
 
   beforeEach(() => {
-    pi = createMockPi().pi;
+    mockPi = createMockPi();
+    pi = mockPi.pi;
     manager = new MonitorManager(pi);
   });
+
+  function startBackgroundChild(timeout: number) {
+    const dir = mkdtempSync(join(tmpdir(), "pi-loop-tree-"));
+    const marker = join(dir, "survived");
+    let unsubscribe: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      unsubscribe = pi.events.on("monitor:output", (event: { line?: string }) => {
+        if (event.line !== "tree-ready") return;
+        unsubscribe?.();
+        unsubscribe = undefined;
+        resolve();
+      });
+    });
+    const entry = manager.create(
+      `sh -c 'sleep 0.15; touch ${JSON.stringify(marker)}' & printf 'tree-ready\\n'; wait`,
+      "process-tree cleanup",
+      timeout,
+    );
+    return {
+      entry,
+      marker,
+      ready,
+      cleanup: () => {
+        unsubscribe?.();
+        unsubscribe = undefined;
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  }
 
   afterEach(async () => {
     for (const m of manager.list()) {
@@ -688,5 +722,171 @@ describe("MonitorManager", () => {
     expect(stopped).toBe(true);
     expect(manager.get(entry.id)!.status).toBe("stopped");
     vi.useRealTimers();
+  });
+
+  it("removes the helper output listener during cleanup", async () => {
+    const child = startBackgroundChild(0);
+
+    try {
+      expect(mockPi.eventHandlers.get("monitor:output")).toHaveLength(1);
+      child.cleanup();
+      expect(mockPi.eventHandlers.get("monitor:output")).toHaveLength(0);
+    } finally {
+      await manager.stop(child.entry.id);
+    }
+  });
+
+  it("falls back when taskkill exits nonzero", async () => {
+    const child = createMockChildProcess({ exitCode: null });
+    const taskkill = createMockChildProcess({ exitCode: null });
+    const taskkillSpawn = vi.fn(() => taskkill);
+    manager = new MonitorManager(pi, createSequentialSpawn(child), {
+      platform: "win32",
+      taskkillSpawn,
+    });
+    const entry = manager.create("sleep 30", "taskkill fallback", 0);
+    const stop = manager.stop(entry.id);
+
+    taskkill.emit("close", 1);
+    expect((child as { killed: boolean }).killed).toBe(true);
+    expect(taskkillSpawn).toHaveBeenCalledWith(
+      "taskkill",
+      ["/pid", expect.any(String), "/t", "/f"],
+      { stdio: "ignore", windowsHide: true },
+    );
+
+    child.emit("close", 0);
+    await stop;
+  });
+
+  it("releases the default deadline timer after normal completion", () => {
+    const child = createMockChildProcess({ exitCode: null });
+    const deadlineTimer = { unref: vi.fn() };
+    const retentionTimer = { unref: vi.fn() };
+    const realSetTimeout = global.setTimeout;
+    const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms === 300000) return deadlineTimer as any;
+      if (ms === MONITOR_RETENTION_MS) return retentionTimer as any;
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+    const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+
+    manager.create("echo done", "deadline cleanup");
+    child.emit("close", 0);
+
+    expect(deadlineTimer.unref).toHaveBeenCalledOnce();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(deadlineTimer);
+    timeoutSpy.mockRestore();
+  });
+
+  it("releases the default deadline timer after manual stop", async () => {
+    const child = createMockChildProcess({ exitCode: 0 });
+    const deadlineTimer = { unref: vi.fn() };
+    const retentionTimer = { unref: vi.fn() };
+    const realSetTimeout = global.setTimeout;
+    const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms === 300000) return deadlineTimer as any;
+      if (ms === MONITOR_RETENTION_MS) return retentionTimer as any;
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+    const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("sleep 30", "deadline cleanup");
+
+    await manager.stop(entry.id);
+
+    expect(deadlineTimer.unref).toHaveBeenCalledOnce();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(deadlineTimer);
+    timeoutSpy.mockRestore();
+  });
+
+  it("releases the default deadline timer during shutdown", async () => {
+    const child = createMockChildProcess({ exitCode: 0 });
+    const deadlineTimer = { unref: vi.fn() };
+    const realSetTimeout = global.setTimeout;
+    const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms === 300000) return deadlineTimer as any;
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+    const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    manager.create("sleep 30", "shutdown deadline cleanup");
+
+    await manager.shutdown();
+
+    expect(deadlineTimer.unref).toHaveBeenCalledOnce();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(deadlineTimer);
+    timeoutSpy.mockRestore();
+  });
+
+  it("retains then prunes a monitor whose child emits an error", () => {
+    const child = createMockChildProcess({ exitCode: null });
+    const retainedTimers: Array<() => void> = [];
+    const realSetTimeout = global.setTimeout;
+    const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms === MONITOR_RETENTION_MS) {
+        retainedTimers.push(() => {
+          if (typeof fn === "function") fn(...args);
+        });
+        return { unref: vi.fn() } as any;
+      }
+      if (ms === 300000) return { unref: vi.fn() } as any;
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("missing-command", "spawn error");
+
+    child.emit("error", new Error("spawn failed"));
+
+    expect(manager.get(entry.id)?.status).toBe("error");
+    expect(retainedTimers).toHaveLength(1);
+    retainedTimers[0]!();
+    expect(manager.get(entry.id)).toBeUndefined();
+    timeoutSpy.mockRestore();
+  });
+
+  it.skipIf(process.platform === "win32")("stops the shell's background child process", async () => {
+    const child = startBackgroundChild(0);
+
+    try {
+      await child.ready;
+      await manager.stop(child.entry.id);
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      expect(existsSync(child.marker)).toBe(false);
+    } finally {
+      child.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("times out the shell's background child process", async () => {
+    const child = startBackgroundChild(25);
+    const stopped = new Promise<void>((resolve) => {
+      pi.events.on("monitor:finished", (event: { monitorId?: string; status?: string }) => {
+        if (event.monitorId === child.entry.id && event.status === "stopped") resolve();
+      });
+    });
+
+    try {
+      await child.ready;
+      await stopped;
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      expect(existsSync(child.marker)).toBe(false);
+    } finally {
+      child.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("shuts down the shell's background child process", async () => {
+    const child = startBackgroundChild(0);
+
+    try {
+      await child.ready;
+      await manager.shutdown();
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      expect(existsSync(child.marker)).toBe(false);
+    } finally {
+      child.cleanup();
+    }
   });
 });
