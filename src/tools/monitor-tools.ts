@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { LoopEntry, MonitorEntry, MonitorProgress, Trigger } from "../types.js";
+import type { LoopEntry, MonitorEntry, MonitorProgress, Trigger, WorkflowMonitorWait } from "../types.js";
 import { hideToolTranscript } from "../ui/tool-renderer.js";
 import { displayRows, textResult } from "./tool-result.js";
 
@@ -12,6 +12,7 @@ interface MonitorManagerLike {
 }
 
 interface LoopStoreLike {
+  get(id: string): LoopEntry | undefined;
   create(trigger: Trigger, prompt: string, opts: {
     recurring: boolean;
     autoTask?: boolean;
@@ -19,14 +20,25 @@ interface LoopStoreLike {
     readOnly?: boolean;
     maxFires?: number;
   }): LoopEntry;
+  attachWorkflowMonitor(
+    id: string,
+    monitorId: string,
+    expected: Pick<WorkflowMonitorWait, "stateId" | "transitionSeq">,
+  ): LoopEntry | undefined;
+}
+
+interface TriggerSystemLike {
+  remove(id: string): void;
 }
 
 export interface MonitorToolsOptions {
   pi: ExtensionAPI;
   getStore: () => LoopStoreLike;
   getMonitorManager: () => MonitorManagerLike;
+  getTriggerSystem: () => TriggerSystemLike;
   updateWidget: () => void;
   handleMonitorDoneLoop: (doneLoop: LoopEntry, monitorId: string) => void;
+  handleWorkflowMonitorWait: (entry: LoopEntry) => void;
 }
 
 function formatRemaining(ms: number): string {
@@ -44,48 +56,87 @@ function formatActivity(monitor: MonitorEntry): string | undefined {
 }
 
 export function registerMonitorTools(options: MonitorToolsOptions): void {
-  const { pi, getStore, getMonitorManager, updateWidget, handleMonitorDoneLoop } = options;
+  const {
+    pi,
+    getStore,
+    getMonitorManager,
+    getTriggerSystem,
+    updateWidget,
+    handleMonitorDoneLoop,
+    handleWorkflowMonitorWait,
+  } = options;
 
   pi.registerTool({ name: "MonitorCreate", label: "MonitorCreate",
   renderShell: "self",
   renderCall: hideToolTranscript,
-  renderResult: hideToolTranscript, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nPass onDone to create one completion wake for success, failure, or timeout. The wake includes terminal status, exit code, and output count; inspect buffered output with MonitorList. Commands may emit JSONL progress as {"progress":{"current":42,"total":100,"message":"..."}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone when the agent must resume automatically after completion; do not create a separate polling loop."], parameters: Type.Object({
+  renderResult: hideToolTranscript, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nPass onDone to create one completion wake for success, failure, or timeout. Pass workflowId to pause its workflow until a terminal result. Commands may emit JSONL progress as {"progress":{"current":42,"total":100,"message":"..."}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone when the agent must resume automatically after completion; do not create a separate polling loop.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
     command: Type.String({ description: "Shell command to run in background" }),
     description: Type.Optional(Type.String({ description: "Human-readable description" })),
     timeout: Type.Optional(Type.Number({ description: "Auto-stop after N ms (default: 300000, 0 = no timeout)", default: 300000 })),
     onDone: Type.Optional(Type.String({ description: "Prompt to run when the monitor completes. Auto-creates a one-shot completion wake — no need for a separate LoopCreate." })),
+    workflowId: Type.Optional(Type.String({ description: "Active workflow loop to pause until this monitor reaches a terminal status" })),
   }),
   execute(_toolCallId, params) {
+    if (params.workflowId && params.onDone) {
+      return Promise.resolve(textResult("workflowId cannot be combined with onDone; workflow completion already delivers one terminal wake.", {
+        kind: "monitor", action: "create", tone: "error", summary: "Choose workflowId or onDone", expanded: [],
+      }));
+    }
     if (getMonitorManager().list().filter((m) => m.status === "running").length >= 25) {
       return Promise.resolve(textResult("Maximum of 25 running monitors reached. Stop some before creating new ones.", {
         kind: "monitor", action: "create", tone: "error", summary: "Monitor limit reached", expanded: ["Stop a running monitor before starting another."],
       }));
     }
-  
+
+    const store = getStore();
+    const workflow = params.workflowId ? store.get(params.workflowId) : undefined;
+    if (params.workflowId && (!workflow?.workflow || workflow.status !== "active")) {
+      return Promise.resolve(textResult(`Workflow #${params.workflowId} is not active. Inspect LoopList and retry.`, {
+        kind: "monitor", action: "create", tone: "error", summary: `Workflow #${params.workflowId} unavailable`, expanded: [],
+      }));
+    }
+    if (workflow?.workflow?.definition.states[workflow.workflow.currentState]?.terminal) {
+      return Promise.resolve(textResult(`Workflow #${workflow.id} is already terminal.`, {
+        kind: "monitor", action: "create", tone: "error", summary: `Workflow #${workflow.id} is terminal`, expanded: [],
+      }));
+    }
+    if (workflow?.workflow?.waitingMonitor) {
+      return Promise.resolve(textResult(`Workflow #${workflow.id} is already waiting on monitor #${workflow.workflow.waitingMonitor.monitorId}.`, {
+        kind: "monitor", action: "create", tone: "error", summary: `Workflow #${workflow.id} already waiting`, expanded: [],
+      }));
+    }
+
     const entry = getMonitorManager().create(params.command, params.description, params.timeout);
+    let workflowMsg = "";
+    if (workflow?.workflow) {
+      const attached = store.attachWorkflowMonitor(workflow.id, entry.id, {
+        stateId: workflow.workflow.currentState,
+        transitionSeq: workflow.workflow.transitionSeq,
+      });
+      if (!attached) {
+        void getMonitorManager().stop(entry.id);
+        return Promise.resolve(textResult(`Monitor #${entry.id} stopped because workflow #${workflow.id} changed before ownership could be attached.`, {
+          kind: "monitor", action: "create", tone: "error", summary: `Workflow #${workflow.id} changed`, expanded: [],
+        }));
+      }
+      getTriggerSystem().remove(attached.id);
+      handleWorkflowMonitorWait(attached);
+      workflowMsg = `\nWorkflow #${attached.id} is waiting on monitor #${entry.id} — no polling needed`;
+    }
     updateWidget();
-  
+
     let onDoneMsg = "";
     if (params.onDone) {
-      // onDone delivery is callback-only: the loop below is delivered solely
-      // via MonitorManager.onComplete (see handleMonitorDoneLoop →
-      // monitor-ondone-runtime), so it fires exactly once by construction.
-      // The event-typed trigger is metadata, NOT a live subscription — this
-      // loop is deliberately NOT passed to triggerSystem.add(). The "event"
-      // type lets expireEventLoops() prune it if orphaned across a session
-      // and lets the widget render it as a monitor-completion wake. Do not
-      // triggerSystem.add() this loop, or the monitor:done event would fire it
-      // a second time.
       const doneTrigger: Trigger = { type: "event", source: "monitor:done", filter: JSON.stringify({ monitorId: entry.id }) };
-      const doneLoop = getStore().create(doneTrigger, params.onDone, { recurring: false });
+      const doneLoop = store.create(doneTrigger, params.onDone, { recurring: false });
       handleMonitorDoneLoop(doneLoop, entry.id);
       onDoneMsg = `\nCompletion wake loop #${doneLoop.id}: fires when the monitor completes — no polling needed`;
     }
-  
+
     return Promise.resolve(textResult(
       `Monitor #${entry.id} started: ${entry.command.slice(0, 60)}\n` +
       `Progress: MonitorList shows the live output tail; monitor:output is rate-limited (monitorId: ${entry.id})\n` +
-      `Timeout: ${params.timeout ? `${params.timeout / 1000}s` : "none"}${onDoneMsg}`,
+      `Timeout: ${params.timeout ? `${params.timeout / 1000}s` : "none"}${workflowMsg}${onDoneMsg}`,
       {
         kind: "monitor",
         action: "create",
@@ -94,7 +145,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
         expanded: [
           `Command: ${entry.command}`,
           `Timeout: ${params.timeout ? `${params.timeout / 1000}s` : "none"}`,
-          params.onDone ? "Completion wake: enabled" : "Completion wake: off",
+          workflow ? `Workflow #${workflow.id}: waiting for terminal monitor outcome` : params.onDone ? "Completion wake: enabled" : "Completion wake: off",
         ],
       },
     ));
@@ -123,6 +174,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
         const ageStr = formatRemaining(age);
         let line = `${icon} #${m.id} [${m.status}] ${m.command.slice(0, 60)} — ${m.outputLines} lines (${ageStr})`;
         if (m.exitCode !== undefined) line += ` exit=${m.exitCode}`;
+        if (m.stopReason) line += ` reason=${m.stopReason}`;
         if (m.progress) line += ` · ${formatProgress(m.progress)}`;
         const activity = m.status === "running" ? formatActivity(m) : undefined;
         if (activity) line += ` · ${activity}`;

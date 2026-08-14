@@ -168,6 +168,7 @@ export function transitionWorkflowRun(
     attemptsByState: { ...run.attemptsByState, [target]: nextAttempt },
     stateFireCounts: run.stateFireCounts ?? {},
     activeTaskId: input.activeTaskId,
+    waitingMonitor: undefined,
     lastTransition,
   };
 

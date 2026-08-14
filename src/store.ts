@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopStoreData, Trigger, WorkflowDefinition, WorkflowTerminalStatus } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowTerminalStatus } from "./types.js";
 import { isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowDefinition, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
@@ -286,6 +286,75 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         payload: { id, taskId },
       });
       return this.entries.get(id);
+    });
+  }
+
+  attachWorkflowMonitor(
+    id: string,
+    monitorId: string,
+    expected: Pick<WorkflowMonitorWait, "stateId" | "transitionSeq">,
+  ): LoopEntry | undefined {
+    return this.withLock(() => {
+      const entry = this.entries.get(id);
+      if (!entry?.workflow || entry.status !== "active" || entry.workflow.waitingMonitor) return undefined;
+      if (entry.workflow.currentState !== expected.stateId || entry.workflow.transitionSeq !== expected.transitionSeq) {
+        return undefined;
+      }
+      const wait: WorkflowMonitorWait = {
+        monitorId,
+        stateId: expected.stateId,
+        transitionSeq: expected.transitionSeq,
+        attachedAt: Date.now(),
+      };
+      this.applyReducerEvent({
+        type: "LOOP_WORKFLOW_MONITOR_ATTACHED",
+        at: wait.attachedAt,
+        source: "monitor",
+        entityType: "loop",
+        entityId: id,
+        payload: { id, wait },
+      });
+      return this.entries.get(id);
+    });
+  }
+
+  completeWorkflowMonitorWait(id: string, expected: WorkflowMonitorWait): LoopEntry | undefined {
+    return this.withLock(() => {
+      const entry = this.entries.get(id);
+      const wait = entry?.workflow?.waitingMonitor;
+      if (!wait
+        || wait.monitorId !== expected.monitorId
+        || wait.stateId !== expected.stateId
+        || wait.transitionSeq !== expected.transitionSeq
+        || wait.attachedAt !== expected.attachedAt) return undefined;
+      this.applyReducerEvent({
+        type: "LOOP_WORKFLOW_MONITOR_CLEARED",
+        at: Date.now(),
+        source: "monitor",
+        entityType: "loop",
+        entityId: id,
+        payload: { id, expected },
+      });
+      return this.entries.get(id);
+    });
+  }
+
+  clearWorkflowMonitorWaits(): number {
+    return this.withLock(() => {
+      const waiting = Array.from(this.entries.values())
+        .filter((entry) => entry.workflow?.waitingMonitor)
+        .map((entry) => ({ id: entry.id, wait: entry.workflow!.waitingMonitor! }));
+      for (const { id, wait } of waiting) {
+        this.applyReducerEvent({
+          type: "LOOP_WORKFLOW_MONITOR_CLEARED",
+          at: Date.now(),
+          source: "session",
+          entityType: "loop",
+          entityId: id,
+          payload: { id, expected: wait },
+        });
+      }
+      return waiting.length;
     });
   }
 

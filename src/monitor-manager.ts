@@ -92,6 +92,12 @@ export class MonitorManager {
     }
   }
 
+  private notifyTerminal(bp: MonitorProcess, monitor: MonitorEntry): void {
+    if (this.shuttingDown) return;
+    for (const callback of bp.terminalCallbacks) callback(monitor);
+    bp.terminalCallbacks = [];
+  }
+
   // Retain terminal state long enough for a completion wake to inspect it.
   private schedulePrune(id: string): void {
     if (this.shuttingDown) return;
@@ -141,6 +147,7 @@ export class MonitorManager {
       abortController,
       waiters: [],
       completionCallbacks: [],
+      terminalCallbacks: [],
       lastOutputEventAt: 0,
       lastProgressChangeAt: 0,
       pendingOutputLines: 0,
@@ -183,6 +190,7 @@ export class MonitorManager {
       });
       for (const callback of bp.completionCallbacks) callback(current);
       bp.completionCallbacks = [];
+      this.notifyTerminal(bp, current);
       for (const resolve of bp.waiters) resolve();
       bp.waiters = [];
       this.schedulePrune(id);
@@ -224,6 +232,7 @@ export class MonitorManager {
         });
         for (const callback of bp.completionCallbacks) callback(current);
         bp.completionCallbacks = [];
+        this.notifyTerminal(bp, current);
         for (const resolve of bp.waiters) resolve();
         bp.waiters = [];
       }
@@ -270,6 +279,7 @@ export class MonitorManager {
         for (const bp of processes) {
           if (bp.progressChangeTimer) clearTimeout(bp.progressChangeTimer);
           bp.completionCallbacks = [];
+          bp.terminalCallbacks = [];
           for (const resolve of bp.waiters) resolve();
           bp.waiters = [];
         }
@@ -315,6 +325,7 @@ export class MonitorManager {
       for (const callback of bp.completionCallbacks) callback(bp.entry);
       bp.completionCallbacks = [];
     }
+    this.notifyTerminal(bp, bp.entry);
 
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -352,6 +363,18 @@ export class MonitorManager {
       payload: { id },
     });
     bp.completionCallbacks.push(callback);
+    return true;
+  }
+
+  onTerminal(id: string, callback: (monitor: MonitorEntry) => void): boolean {
+    if (this.shuttingDown) return false;
+    const bp = this.processes.get(id);
+    if (!bp) return false;
+    if (bp.entry.status !== "running") {
+      callback(bp.entry);
+      return true;
+    }
+    bp.terminalCallbacks.push(callback);
     return true;
   }
 

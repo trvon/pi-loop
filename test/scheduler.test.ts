@@ -176,6 +176,33 @@ describe("CronScheduler", () => {
     expect(store.get(entry.id)?.workflow?.stateFireCounts).toEqual({ collect: 1 });
   });
 
+  it("suppresses workflow cadence while waiting on a monitor", () => {
+    const entry = store.create({ type: "dynamic" }, "Validate", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "validate",
+        states: {
+          validate: { prompt: "Run validation.", loop: { schedule: "*/1 * * * *" }, on: { passed: "done" } },
+          done: { prompt: "Report success.", terminal: "completed" },
+        },
+      },
+    });
+    const attached = store.attachWorkflowMonitor(entry.id, "18", {
+      stateId: "validate",
+      transitionSeq: 0,
+    });
+    if (!attached) throw new Error("expected workflow monitor attachment");
+
+    scheduler.add(attached);
+    scheduler.start();
+    vi.advanceTimersByTime(2 * 60 * 1000);
+    scheduler.pump(Date.now());
+
+    expect(scheduler.nextFire(entry.id)).toBeUndefined();
+    expect(fired).toEqual([]);
+  });
+
   it("does not refire idle-driven dynamic loops while awaiting update", () => {
     const entry = store.create({ type: "dynamic" }, "finish goal", {
       recurring: true,

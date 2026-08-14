@@ -356,6 +356,31 @@ describe("MonitorManager", () => {
     });
   });
 
+  it("notifies terminal callbacks when a monitor is manually stopped", async () => {
+    vi.useFakeTimers();
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("sleep 30", "terminal callback test");
+    const callback = vi.fn();
+    try {
+      expect(manager.onTerminal(entry.id, callback)).toBe(true);
+
+      const stop = manager.stop(entry.id);
+      expect(callback).toHaveBeenCalledWith(expect.objectContaining({
+        id: entry.id,
+        status: "stopped",
+        stopReason: "manual",
+      }));
+      await vi.advanceTimersByTimeAsync(5000);
+      await stop;
+    } finally {
+      const stop = manager.stop(entry.id);
+      await vi.advanceTimersByTimeAsync(5000);
+      await stop;
+      vi.useRealTimers();
+    }
+  });
+
   it("registers completion callbacks for running monitors and invokes them on success", async () => {
     const entry = manager.create("echo done", "callback test");
     const callback = vi.fn();
@@ -577,7 +602,7 @@ describe("MonitorManager", () => {
     expect(manager.get("1")!.status).toBe("running");
 
     vi.advanceTimersByTime(600);
-    expect(manager.get("1")!.status).toBe("stopped");
+    expect(manager.get("1")!).toMatchObject({ status: "stopped", stopReason: "timeout" });
     vi.useRealTimers();
   });
 

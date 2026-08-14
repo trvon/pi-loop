@@ -35,17 +35,21 @@ function setup(managerOverrides: Partial<{
     })),
   };
   const handleMonitorDoneLoop = vi.fn();
+  const triggerSystem = { remove: vi.fn() };
+  const handleWorkflowMonitorWait = vi.fn();
   registerMonitorTools({
     pi,
     getStore: () => store as any,
     getMonitorManager: () => manager as any,
+    getTriggerSystem: () => triggerSystem,
     updateWidget: vi.fn(),
     handleMonitorDoneLoop,
+    handleWorkflowMonitorWait,
   });
 
   const text = async (name: string, args: any) =>
     (await toolMap.get(name)!.execute!("t", args)).content[0].text as string;
-  return { store, manager, handleMonitorDoneLoop, text, toolMap };
+  return { store, manager, triggerSystem, handleMonitorDoneLoop, handleWorkflowMonitorWait, text, toolMap };
 }
 
 describe("MonitorCreate", () => {
@@ -70,6 +74,48 @@ describe("MonitorCreate", () => {
     expect(monitorId).toBe("1");
     expect(doneLoop.recurring).toBe(false);
     expect(doneLoop.trigger).toMatchObject({ type: "event", source: "monitor:done" });
+  });
+
+  it("binds a monitor to an active workflow and suppresses its cadence", async () => {
+    const h = setup();
+    const workflow = h.store.create({ type: "dynamic" }, "Validate release", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "validate",
+        states: {
+          validate: { prompt: "Run validation.", on: { passed: "done" } },
+          done: { prompt: "Report success.", terminal: "completed" },
+        },
+      },
+    });
+
+    const out = await h.text("MonitorCreate", {
+      command: "npm test",
+      workflowId: workflow.id,
+    });
+
+    expect(h.store.get(workflow.id)?.workflow?.waitingMonitor).toMatchObject({
+      monitorId: "1",
+      stateId: "validate",
+      transitionSeq: 0,
+    });
+    expect(h.triggerSystem.remove).toHaveBeenCalledWith(workflow.id);
+    expect(h.handleWorkflowMonitorWait).toHaveBeenCalledWith(h.store.get(workflow.id));
+    expect(out).toContain(`Workflow #${workflow.id} is waiting on monitor #1 — no polling needed`);
+  });
+
+  it("rejects workflow ownership together with an onDone prompt", async () => {
+    const h = setup();
+
+    const out = await h.text("MonitorCreate", {
+      command: "npm test",
+      workflowId: "1",
+      onDone: "report results",
+    });
+
+    expect(out).toContain("workflowId cannot be combined with onDone");
+    expect(h.manager.create).not.toHaveBeenCalled();
   });
 
   it("rejects creation when 25 monitors are already running", async () => {

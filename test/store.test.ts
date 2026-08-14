@@ -433,6 +433,57 @@ describe("LoopStore (absolute path)", () => {
     expect(store2.list()[0].prompt).toBe("abs test");
   });
 
+  it("attaches a monitor wait and clears only its matching terminal result", () => {
+    const store = new LoopStore();
+    const workflow = store.create({ type: "dynamic" }, "Validate", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "validate",
+        states: {
+          validate: { prompt: "Run validation.", on: { passed: "done", failed: "blocked" } },
+          done: { prompt: "Report success.", terminal: "completed" },
+          blocked: { prompt: "Report failure.", terminal: "paused" },
+        },
+      },
+    });
+    const attached = store.attachWorkflowMonitor(workflow.id, "18", {
+      stateId: "validate",
+      transitionSeq: 0,
+    });
+    const wait = attached?.workflow?.waitingMonitor;
+
+    expect(wait).toMatchObject({ monitorId: "18", stateId: "validate", transitionSeq: 0 });
+    expect(store.completeWorkflowMonitorWait(workflow.id, {
+      ...wait!,
+      monitorId: "other",
+    })).toBeUndefined();
+    expect(store.get(workflow.id)?.workflow?.waitingMonitor).toMatchObject({ monitorId: "18" });
+
+    const completed = store.completeWorkflowMonitorWait(workflow.id, wait!);
+    expect(completed?.workflow?.waitingMonitor).toBeUndefined();
+  });
+
+  it("clears a monitor wait when an explicit workflow transition wins", () => {
+    const store = new LoopStore();
+    const workflow = store.create({ type: "dynamic" }, "Validate", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "validate",
+        states: {
+          validate: { prompt: "Run validation.", on: { passed: "done" } },
+          done: { prompt: "Report success.", terminal: "completed" },
+        },
+      },
+    });
+    store.attachWorkflowMonitor(workflow.id, "18", { stateId: "validate", transitionSeq: 0 });
+
+    const transition = store.transitionWorkflow(workflow.id, { outcome: "passed" });
+
+    expect(transition.entry?.workflow?.waitingMonitor).toBeUndefined();
+  });
+
   it("clears stale pid-based lock on create", () => {
     const lPath = join(tmpdir(), `pi-loop-stale-${Date.now()}.json`);
     const lockPath = lPath + ".lock";

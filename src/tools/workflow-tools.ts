@@ -101,7 +101,10 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   let message = `${heading}\nGoal: ${entry.prompt}\nCurrent state: ${workflow.currentState}\nAttempt: ${attemptLabel}`;
   if (workflow.lastTransition) message += `\n${formatLastTransitionLines(workflow.lastTransition).join("\n")}`;
   if (state?.prompt) message += `\nInstruction: ${state.prompt}`;
-  if (state?.loop) {
+  if (workflow.waitingMonitor) {
+    message += `\nWaiting on monitor #${workflow.waitingMonitor.monitorId}. Its terminal outcome will resume this state; do not poll or call LoopUpdate.`;
+  }
+  if (state?.loop && !workflow.waitingMonitor) {
     const stateFires = workflow.stateFireCounts?.[workflow.currentState] ?? 0;
     const controllerFires = entry.fireCount ?? 0;
     message += `\nState cadence: ${state.loop.schedule} · state fires: ${stateFires}/${state.loop.maxFires ?? "unbounded"} · controller fires: ${controllerFires}/${entry.maxFires ?? "unbounded"}`;
@@ -113,6 +116,7 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   } else {
     message += "\nTask: none configured for this state";
   }
+  if (workflow.waitingMonitor) return message;
 
   if (unavailable.length > 0) {
     const details = unavailable.map((item) => `${item.outcome} — target state "${item.targetState}" exhausted its ${item.maxAttempts} attempt limit`);

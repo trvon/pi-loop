@@ -36,7 +36,7 @@ import { registerLoopTools } from "./tools/loop-tools.js";
 import { registerMonitorTools } from "./tools/monitor-tools.js";
 import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
-import type { LoopEntry, Trigger } from "./types.js";
+import type { LoopEntry, MonitorEntry, Trigger } from "./types.js";
 import { LoopWidget } from "./ui/widget.js";
 import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop } from "./workflow-reducer.js";
 
@@ -86,6 +86,13 @@ export default function (pi: ExtensionAPI) {
       store.delete(id);
     },
     onLoopFire,
+    completeWorkflowMonitorWait: (id, expected) => store.completeWorkflowMonitorWait(id, expected),
+    rearmWorkflow: (entry) => {
+      triggerSystem.add(entry);
+    },
+    wakeWorkflow: (entry, monitor) => {
+      emitLoopFire(entry, monitor);
+    },
     debug,
   });
 
@@ -168,8 +175,37 @@ export default function (pi: ExtensionAPI) {
 
   // ── Loop fire handler ──
 
+  function emitLoopFire(entry: LoopEntry, monitor?: MonitorEntry): void {
+    pi.events.emit("loop:fire", {
+      loopId: entry.id,
+      prompt: entry.prompt,
+      trigger: entry.trigger,
+      timestamp: Date.now(),
+      readOnly: entry.readOnly,
+      recurring: entry.recurring,
+      persistent: entry.recurring,
+      autoTask: entry.autoTask,
+      taskBacklog: entry.taskBacklog,
+      dynamic: entry.dynamic,
+      workflow: entry.workflow,
+      monitorOutcome: monitor
+        ? {
+            monitorId: monitor.id,
+            status: monitor.status,
+            exitCode: monitor.exitCode,
+            stopReason: monitor.stopReason,
+            outputLines: monitor.outputLines,
+          }
+        : undefined,
+    });
+  }
+
   function onLoopFire(entry: LoopEntry): void {
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
+    if (store.get(entry.id)?.workflow?.waitingMonitor) {
+      debug(`workflow #${entry.id} — waiting on monitor; suppressing cadence wake`);
+      return;
+    }
 
     const isTaskBacklog = taskBacklogRuntime.isTaskBacklogLoop(entry);
     if (isTaskBacklog && activeTaskBacklogWakes.has(entry.id)) {
@@ -213,19 +249,7 @@ export default function (pi: ExtensionAPI) {
       });
     }
 
-    pi.events.emit("loop:fire", {
-      loopId: firedEntry.id,
-      prompt: firedEntry.prompt,
-      trigger: firedEntry.trigger,
-      timestamp: firedAt,
-      readOnly: firedEntry.readOnly,
-      recurring: firedEntry.recurring,
-      persistent: firedEntry.recurring,
-      autoTask: firedEntry.autoTask,
-      taskBacklog: firedEntry.taskBacklog,
-      dynamic: firedEntry.dynamic,
-      workflow: firedEntry.workflow,
-    });
+    emitLoopFire(firedEntry);
   }
 
   // ── Session lifecycle ──
@@ -268,6 +292,9 @@ export default function (pi: ExtensionAPI) {
     adoptTaskBacklogLoops,
     releaseTaskBacklogWakes: () => {
       activeTaskBacklogWakes.clear();
+    },
+    clearWorkflowMonitorWaits: () => {
+      store.clearWorkflowMonitorWaits();
     },
     shutdownMonitors: () => monitorManager.shutdown(),
     hasPendingTasks,
@@ -348,14 +375,20 @@ export default function (pi: ExtensionAPI) {
     monitorOnDoneRuntime.register(doneLoop, monitorId);
   }
 
+  function handleWorkflowMonitorWait(entry: LoopEntry): void {
+    monitorOnDoneRuntime.registerWorkflowWait(entry);
+  }
+
   registerMonitorTools({
     pi,
     getStore: () => store,
     getMonitorManager: () => monitorManager,
+    getTriggerSystem: () => triggerSystem,
     updateWidget: () => {
       widget.update();
     },
     handleMonitorDoneLoop,
+    handleWorkflowMonitorWait,
   });
 
   registerLoopCommand({
