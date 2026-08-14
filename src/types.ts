@@ -164,6 +164,7 @@ export interface MonitorProcess {
   pid: number;
   proc: import("node:child_process").ChildProcess;
   abortController: AbortController;
+  deadlineTimer?: ReturnType<typeof setTimeout>;
   waiters: Array<() => void>;
   completionCallbacks: Array<(monitor: MonitorEntry) => void>;
   terminalCallbacks: Array<(monitor: MonitorEntry) => void>;
