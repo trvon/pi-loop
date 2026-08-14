@@ -9,18 +9,24 @@ import { createMockChildProcess, createSequentialSpawn } from "./helpers/mock-sp
 describe("MonitorManager", () => {
   let manager: MonitorManager;
   let pi: any;
+  let mockPi: ReturnType<typeof createMockPi>;
 
   beforeEach(() => {
-    pi = createMockPi().pi;
+    mockPi = createMockPi();
+    pi = mockPi.pi;
     manager = new MonitorManager(pi);
   });
 
   function startBackgroundChild(timeout: number) {
     const dir = mkdtempSync(join(tmpdir(), "pi-loop-tree-"));
     const marker = join(dir, "survived");
+    let unsubscribe: (() => void) | undefined;
     const ready = new Promise<void>((resolve) => {
-      pi.events.on("monitor:output", (event: { line?: string }) => {
-        if (event.line === "tree-ready") resolve();
+      unsubscribe = pi.events.on("monitor:output", (event: { line?: string }) => {
+        if (event.line !== "tree-ready") return;
+        unsubscribe?.();
+        unsubscribe = undefined;
+        resolve();
       });
     });
     const entry = manager.create(
@@ -28,7 +34,16 @@ describe("MonitorManager", () => {
       "process-tree cleanup",
       timeout,
     );
-    return { entry, marker, ready, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+    return {
+      entry,
+      marker,
+      ready,
+      cleanup: () => {
+        unsubscribe?.();
+        unsubscribe = undefined;
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
   }
 
   afterEach(async () => {
@@ -707,6 +722,41 @@ describe("MonitorManager", () => {
     expect(stopped).toBe(true);
     expect(manager.get(entry.id)!.status).toBe("stopped");
     vi.useRealTimers();
+  });
+
+  it("removes the helper output listener during cleanup", async () => {
+    const child = startBackgroundChild(0);
+
+    try {
+      expect(mockPi.eventHandlers.get("monitor:output")).toHaveLength(1);
+      child.cleanup();
+      expect(mockPi.eventHandlers.get("monitor:output")).toHaveLength(0);
+    } finally {
+      await manager.stop(child.entry.id);
+    }
+  });
+
+  it("falls back when taskkill exits nonzero", async () => {
+    const child = createMockChildProcess({ exitCode: null });
+    const taskkill = createMockChildProcess({ exitCode: null });
+    const taskkillSpawn = vi.fn(() => taskkill);
+    manager = new MonitorManager(pi, createSequentialSpawn(child), {
+      platform: "win32",
+      taskkillSpawn,
+    });
+    const entry = manager.create("sleep 30", "taskkill fallback", 0);
+    const stop = manager.stop(entry.id);
+
+    taskkill.emit("close", 1);
+    expect((child as { killed: boolean }).killed).toBe(true);
+    expect(taskkillSpawn).toHaveBeenCalledWith(
+      "taskkill",
+      ["/pid", expect.any(String), "/t", "/f"],
+      { stdio: "ignore", windowsHide: true },
+    );
+
+    child.emit("close", 0);
+    await stop;
   });
 
   it("releases the default deadline timer after normal completion", () => {

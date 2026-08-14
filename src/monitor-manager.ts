@@ -12,6 +12,11 @@ import type { MonitorEntry, MonitorProcess, MonitorProgress } from "./types.js";
 
 export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 
+export interface MonitorManagerOptions {
+  platform?: NodeJS.Platform;
+  taskkillSpawn?: SpawnFn;
+}
+
 const OUTPUT_EVENT_INTERVAL_MS = 1000;
 const MAX_OUTPUT_LINE_LENGTH = 4096;
 const OUTPUT_RATE_WINDOW_MS = 60000;
@@ -22,14 +27,19 @@ export class MonitorManager {
   private nextId = 1;
   private onChange: (() => void) | undefined;
   private spawnFn: SpawnFn;
+  private platform: NodeJS.Platform;
+  private taskkillSpawn: SpawnFn;
   private shutdownPromise: Promise<void> | undefined;
   private shuttingDown = false;
 
   constructor(
     private pi: ExtensionAPI,
     spawnFn?: SpawnFn,
+    options: MonitorManagerOptions = {},
   ) {
     this.spawnFn = spawnFn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts));
+    this.platform = options.platform ?? process.platform;
+    this.taskkillSpawn = options.taskkillSpawn ?? ((cmd, args, opts) => nodeSpawn(cmd, args, opts));
   }
 
   /**
@@ -105,19 +115,36 @@ export class MonitorManager {
   }
 
   private signalProcessTree(bp: MonitorProcess, signal: NodeJS.Signals): void {
-    if (process.platform === "win32") {
+    let fellBack = false;
+    const fallback = () => {
+      if (fellBack) return;
+      fellBack = true;
+      try { bp.proc.kill(signal); } catch { /* already dead */ }
+    };
+
+    if (this.platform === "win32") {
       try {
-        nodeSpawn("taskkill", ["/pid", String(bp.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true })
-          .on("error", () => { try { bp.proc.kill(signal); } catch { /* already dead */ } });
+        const taskkill = this.taskkillSpawn(
+          "taskkill",
+          ["/pid", String(bp.pid), "/t", "/f"],
+          { stdio: "ignore", windowsHide: true },
+        );
+        taskkill.once("error", fallback);
+        taskkill.once("close", (code) => {
+          if (code !== 0) fallback();
+        });
         return;
-      } catch { /* fall through to the direct child */ }
-    } else {
-      try {
-        process.kill(-bp.pid, signal);
+      } catch {
+        fallback();
         return;
-      } catch { /* fall through to the direct child */ }
+      }
     }
-    try { bp.proc.kill(signal); } catch { /* already dead */ }
+
+    try {
+      process.kill(-bp.pid, signal);
+    } catch {
+      fallback();
+    }
   }
 
   // Retain terminal state long enough for a completion wake to inspect it.
@@ -160,7 +187,7 @@ export class MonitorManager {
       stdio: ["ignore", "pipe", "pipe"],
       signal: abortController.signal,
       env: { ...process.env },
-      detached: process.platform !== "win32",
+      detached: this.platform !== "win32",
     });
 
     const bp: MonitorProcess = {
