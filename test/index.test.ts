@@ -1851,6 +1851,7 @@ describe("monitor tool wrappers", () => {
     const created = await toolMap.get("WorkflowCreate")!.execute!("workflow-create", {
       goal: "Validate release",
       definition,
+      maxFires: 2,
     });
     const workflowId = created.content[0].text.match(/Workflow #(\d+) created/)?.[1];
     if (!workflowId) throw new Error("expected workflow id");
@@ -1882,6 +1883,7 @@ describe("monitor tool wrappers", () => {
       payload: expect.objectContaining({
         loopId: workflowId,
         monitorOutcome: expect.objectContaining({ monitorId: "1", status: "completed" }),
+        workflow: expect.objectContaining({ stateFireCounts: { validate: 2 } }),
       }),
     })]);
     expect(sentCustomMessages).toHaveLength(1);
@@ -1892,6 +1894,7 @@ describe("monitor tool wrappers", () => {
 
     const resumed = await toolMap.get("LoopList")!.execute!("list-resumed", {});
     expect(resumed.content[0].text).not.toContain("Waiting on monitor #1");
+    expect(resumed.content[0].text).toContain("[paused]");
   }, 10000);
 
   it("resumes a workflow with a timeout reason", async () => {

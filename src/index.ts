@@ -91,7 +91,7 @@ export default function (pi: ExtensionAPI) {
       triggerSystem.add(entry);
     },
     wakeWorkflow: (entry, monitor) => {
-      emitLoopFire(entry, monitor);
+      onLoopFire(entry, monitor);
     },
     debug,
   });
@@ -200,7 +200,7 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function onLoopFire(entry: LoopEntry): void {
+  function onLoopFire(entry: LoopEntry, monitor?: MonitorEntry): void {
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     if (store.get(entry.id)?.workflow?.waitingMonitor) {
       debug(`workflow #${entry.id} — waiting on monitor; suppressing cadence wake`);
@@ -237,6 +237,13 @@ export default function (pi: ExtensionAPI) {
       : fired;
     const firedEntry = { ...updatedEntry, prompt: entry.prompt };
 
+    if (atMaxFires(firedEntry)) {
+      triggerSystem.remove(firedEntry.id);
+      if (firedEntry.workflow || firedEntry.taskBacklog) store.pause(firedEntry.id);
+      else store.delete(firedEntry.id);
+      widget.update();
+    }
+
     if (firedEntry.workflow && atWorkflowStateFireLimit(firedEntry.workflow)) {
       triggerSystem.remove(firedEntry.id);
       store.pause(firedEntry.id);
@@ -249,7 +256,7 @@ export default function (pi: ExtensionAPI) {
       });
     }
 
-    emitLoopFire(firedEntry);
+    emitLoopFire(firedEntry, monitor);
   }
 
   // ── Session lifecycle ──
