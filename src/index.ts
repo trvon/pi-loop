@@ -186,19 +186,20 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (isTaskBacklog) activeTaskBacklogWakes.add(entry.id);
-    store.fire(entry.id);
+    const fired = store.fire(entry.id) ?? entry;
 
     const firedAt = Date.now();
-    const stateLoop = entry.workflow && getActiveWorkflowStateLoop(entry.workflow);
-    const firedEntry = entry.trigger.type === "dynamic" && !stateLoop
-      ? store.updateDynamic(entry.id, {
+    const stateLoop = fired.workflow && getActiveWorkflowStateLoop(fired.workflow);
+    const updatedEntry = fired.trigger.type === "dynamic" && !stateLoop
+      ? store.updateDynamic(fired.id, {
           dynamic: {
             awaitingUpdate: true,
             nextWakeAt: undefined,
             lastUpdatedAt: firedAt,
           },
-        }) ?? entry
-      : entry;
+        }) ?? fired
+      : fired;
+    const firedEntry = { ...updatedEntry, prompt: entry.prompt };
 
     if (firedEntry.workflow && atWorkflowStateFireLimit(firedEntry.workflow)) {
       triggerSystem.remove(firedEntry.id);

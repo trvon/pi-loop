@@ -102,8 +102,9 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   if (workflow.lastTransition) message += `\n${formatLastTransitionLines(workflow.lastTransition).join("\n")}`;
   if (state?.prompt) message += `\nInstruction: ${state.prompt}`;
   if (state?.loop) {
-    const fires = workflow.stateFireCounts?.[workflow.currentState] ?? 0;
-    message += `\nState cadence: ${state.loop.schedule} · fires: ${fires}/${state.loop.maxFires ?? "unbounded"}`;
+    const stateFires = workflow.stateFireCounts?.[workflow.currentState] ?? 0;
+    const controllerFires = entry.fireCount ?? 0;
+    message += `\nState cadence: ${state.loop.schedule} · state fires: ${stateFires}/${state.loop.maxFires ?? "unbounded"} · controller fires: ${controllerFires}/${entry.maxFires ?? "unbounded"}`;
   }
   if (workflow.activeTaskId) {
     message += `\nActive task: #${workflow.activeTaskId}`;

@@ -85,8 +85,11 @@ export function validateWorkflowDefinition(definition: WorkflowDefinition): stri
     if (state.maxAttempts !== undefined && (!Number.isInteger(state.maxAttempts) || state.maxAttempts < 1)) {
       return `State "${stateId}" maxAttempts must be a positive integer`;
     }
-    if (state.loop) {
-      if (!isValidCronExpression(state.loop.schedule)) {
+    if (state.loop !== undefined) {
+      if (!state.loop || typeof state.loop !== "object" || Array.isArray(state.loop)) {
+        return `State "${stateId}" loop must be an object`;
+      }
+      if (typeof state.loop.schedule !== "string" || !isValidCronExpression(state.loop.schedule)) {
         return `State "${stateId}" loop schedule must be a valid 5-field cron expression`;
       }
       if (state.loop.maxFires !== undefined && (!Number.isInteger(state.loop.maxFires) || state.loop.maxFires < 1)) {

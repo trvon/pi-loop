@@ -19,6 +19,39 @@ function readJsonFile(path: string): any {
 }
 
 describe("workflow runtime wiring", () => {
+  it("pauses an immediately fired workflow state at its local fire cap", async () => {
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+    extension(pi as any);
+    await flushAsync();
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "workflow-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const definition = JSON.stringify({
+      version: 1,
+      initialState: "collect",
+      states: {
+        collect: {
+          prompt: "Collect records.",
+          loop: { schedule: "0 7 * * *", maxFires: 1, startImmediately: true },
+          on: { ready: "complete" },
+        },
+        complete: { prompt: "Finished.", terminal: "completed" },
+      },
+    });
+
+    await toolMap.get("WorkflowCreate")!.execute!("workflow-local-cap", { goal: "Process records", definition });
+    const loops = await toolMap.get("LoopList")!.execute!("list-workflows", {});
+
+    expect(loops.content[0].text).toContain("[paused]");
+  });
+
   it("creates and completes external workflow tasks", async () => {
     const { pi, toolMap, extensionHandlers } = createMockPi({
       respondToTaskPing: true,
