@@ -50,6 +50,7 @@ export default function (pi: ExtensionAPI) {
   const piLoopEnv = process.env.PI_LOOP;
   const piLoopScope = process.env.PI_LOOP_SCOPE as "memory" | "session" | "project" | undefined;
   let loopScope: "memory" | "session" | "project" = piLoopScope ?? "session";
+  let sessionGeneration = 0;
 
   const getScopeOptions = () => ({ piLoopEnv, loopScope });
 
@@ -188,6 +189,7 @@ export default function (pi: ExtensionAPI) {
       taskBacklog: entry.taskBacklog,
       dynamic: entry.dynamic,
       workflow: entry.workflow,
+      sessionGeneration,
       monitorOutcome: monitor
         ? {
             monitorId: monitor.id,
@@ -274,6 +276,8 @@ export default function (pi: ExtensionAPI) {
     pi,
     getLoopScope: () => loopScope,
     getPiLoopEnv: () => piLoopEnv,
+    getSessionGeneration: () => sessionGeneration,
+    advanceSessionGeneration: () => ++sessionGeneration,
     recreateSessionStore: (sessionId: string) => {
       const path = resolveLoopStorePath(getScopeOptions(), sessionId);
       if (path) store = new LoopStore(path);
@@ -332,6 +336,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.events.on("monitor:started", async (event: unknown) => {
+    const sourceGeneration = sessionGeneration;
     const data = event as {
       monitorId?: string;
       command?: string;
@@ -344,6 +349,7 @@ export default function (pi: ExtensionAPI) {
       command: data.command,
       description: data.description,
       timestamp: data.timestamp ?? Date.now(),
+      sessionGeneration: sourceGeneration,
     });
   });
 

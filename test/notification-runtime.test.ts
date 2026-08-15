@@ -39,4 +39,32 @@ describe("notification runtime session boundary", () => {
 
     expect(sentMessages).toEqual([]);
   });
+
+  it("drops an old-session monitor start while delivering the current-session start", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: vi.fn(async () => 0),
+      cleanDoneTasks: vi.fn(async () => {}),
+      getHasPendingMessages: () => false,
+    });
+
+    runtime.clear("session_shutdown");
+    await runtime.queueOrDeliverMonitorStarted({
+      monitorId: "old",
+      command: "npm test",
+      timestamp: 100,
+      sessionGeneration: 0,
+    });
+    await runtime.queueOrDeliverMonitorStarted({
+      monitorId: "current",
+      command: "npm run build",
+      timestamp: 101,
+      sessionGeneration: 1,
+    });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].message.content).toContain("Monitor #current started");
+  });
 });

@@ -15,6 +15,8 @@ export interface SessionRuntimeOptions {
   pi: ExtensionAPI;
   getLoopScope: () => LoopScope;
   getPiLoopEnv: () => string | undefined;
+  getSessionGeneration: () => number;
+  advanceSessionGeneration: () => number;
   recreateSessionStore: (sessionId: string) => void;
   clearAllLoops: () => void;
   getStore: () => LoopStore;
@@ -40,6 +42,8 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     pi,
     getLoopScope,
     getPiLoopEnv,
+    getSessionGeneration,
+    advanceSessionGeneration,
     recreateSessionStore,
     clearAllLoops,
     getStore,
@@ -65,6 +69,8 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   let agentStartFireCounts: ReadonlyMap<string, number> | undefined;
 
+  const isCurrentGeneration = (generation: number) => generation === getSessionGeneration();
+
   // The CronScheduler is pump-driven; without this heartbeat it only advances at
   // turn boundaries (turn_start/agent_end), so a loop whose fire time elapses
   // while the agent is idle would never fire and never re-wake the agent. The
@@ -72,11 +78,12 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
   function ensureHeartbeat(): void {
     if (heartbeatTimer) return;
     heartbeatTimer = setInterval(() => {
-      // Swallow pump failures so a transient error never surfaces as an
-      // unhandled rejection; repaint still runs so cleared harness UI heals.
-      void pumpLoops()
+      const generation = getSessionGeneration();
+      void pumpLoops(generation)
         .catch(() => {})
-        .then(() => widget.update())
+        .then(() => {
+          if (isCurrentGeneration(generation)) widget.update();
+        })
         .catch(() => {});
     }, HEARTBEAT_MS);
     heartbeatTimer.unref?.();
@@ -96,64 +103,77 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     storeUpgraded = true;
   }
 
-  async function showPersistedLoops(_isResume = false) {
-    if (persistedShown) return;
+  async function showPersistedLoops(generation = getSessionGeneration()) {
+    if (!isCurrentGeneration(generation) || persistedShown) return;
     persistedShown = true;
     const sessionStartedAt = Date.now();
     migrateTaskBacklogLoops();
+    if (!isCurrentGeneration(generation)) return;
     clearWorkflowMonitorWaits();
-    const loops = getStore().list();
+    const store = getStore();
+    const triggerSystem = getTriggerSystem();
+    const loops = store.list();
     if (loops.length > 0) {
-      getStore().clearExpired();
-      getStore().expireEventLoops(sessionStartedAt);
-      getTriggerSystem().start();
+      store.clearExpired();
+      store.expireEventLoops(sessionStartedAt);
+      triggerSystem.start();
       ensureHeartbeat();
     }
+    if (!isCurrentGeneration(generation)) return;
     await adoptTaskBacklogLoops();
   }
 
-  async function pumpLoops(): Promise<void> {
+  async function pumpLoops(generation = getSessionGeneration()): Promise<void> {
+    const store = getStore();
+    const scheduler = getScheduler();
     const pendingTasks = new Map<string, boolean>();
-    for (const entry of getStore().list()) {
+    for (const entry of store.list()) {
+      if (!isCurrentGeneration(generation)) return;
       if (entry.status !== "active") continue;
       if (!entry.autoTask) continue;
       if (entry.trigger.type !== "cron" && entry.trigger.type !== "hybrid") continue;
-      const nextFire = getScheduler().nextFire(entry.id);
+      const nextFire = scheduler.nextFire(entry.id);
       if (!nextFire || Date.now() < nextFire) continue;
       const pending = await hasPendingTasks();
+      if (!isCurrentGeneration(generation)) return;
       if (pending <= 0) pendingTasks.set(entry.id, true);
     }
-    getScheduler().pump(Date.now(), (entry) => !pendingTasks.has(entry.id));
+    if (!isCurrentGeneration(generation)) return;
+    scheduler.pump(Date.now(), (entry) => !pendingTasks.has(entry.id));
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    const generation = getSessionGeneration();
     setLatestCtx(ctx);
     setSessionId(ctx.sessionManager.getSessionId());
     widget.setUICtx(ctx.ui);
     upgradeStoreIfNeeded(ctx);
     ensureHeartbeat();
-    await showPersistedLoops();
-    widget.update();
+    await showPersistedLoops(generation);
+    if (isCurrentGeneration(generation)) widget.update();
   });
 
   pi.on("turn_start", async (_event, ctx) => {
+    const generation = getSessionGeneration();
     setLatestCtx(ctx);
     setSessionId(ctx.sessionManager.getSessionId());
     widget.setUICtx(ctx.ui);
     upgradeStoreIfNeeded(ctx);
     ensureHeartbeat();
-    await showPersistedLoops();
+    await showPersistedLoops(generation);
+    if (!isCurrentGeneration(generation)) return;
     widget.update();
-    await pumpLoops();
+    await pumpLoops(generation);
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
+    const generation = getSessionGeneration();
     setLatestCtx(ctx);
     widget.setUICtx(ctx.ui);
     upgradeStoreIfNeeded(ctx);
     ensureHeartbeat();
-    await showPersistedLoops();
-    widget.update();
+    await showPersistedLoops(generation);
+    if (isCurrentGeneration(generation)) widget.update();
   });
 
   pi.on("agent_start", async (_event, ctx) => {
@@ -167,6 +187,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    const generation = getSessionGeneration();
     setLatestCtx(ctx);
     widget.setUICtx(ctx.ui);
     notificationRuntime.syncRuntimeState({
@@ -175,15 +196,18 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     });
     releaseTaskBacklogWakes();
     await cleanupTaskBacklogLoops();
+    if (!isCurrentGeneration(generation)) return;
     await adoptTaskBacklogLoops(agentStartFireCounts);
+    if (!isCurrentGeneration(generation)) return;
     agentStartFireCounts = undefined;
     await flushPendingNotifications({ ignorePendingMessages: true });
-    await pumpLoops();
+    if (!isCurrentGeneration(generation)) return;
+    await pumpLoops(generation);
   });
 
   pi.on("session_shutdown", async () => {
+    advanceSessionGeneration();
     clearWorkflowMonitorWaits();
-    await shutdownMonitors();
     getTriggerSystem().stop();
     stopHeartbeat();
     releaseTaskBacklogWakes();
@@ -192,28 +216,30 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     storeUpgraded = false;
     persistedShown = false;
     agentStartFireCounts = undefined;
+    await shutdownMonitors();
   });
 
   pi.on("session_switch" as never, async (event: SessionSwitchEvent, ctx: ExtensionContext) => {
+    const generation = advanceSessionGeneration();
     clearWorkflowMonitorWaits();
-    await shutdownMonitors();
-    setLatestCtx(ctx);
-    widget.setUICtx(ctx.ui);
     getTriggerSystem().stop();
     stopHeartbeat();
     notificationRuntime.clear("session_switch");
     releaseTaskBacklogWakes();
     setSessionId(undefined);
-
-    const isResume = event?.reason === "resume";
     storeUpgraded = false;
     persistedShown = false;
+    await shutdownMonitors();
+    if (!isCurrentGeneration(generation)) return;
 
+    setLatestCtx(ctx);
+    widget.setUICtx(ctx.ui);
+    const isResume = event?.reason === "resume";
     setSessionId(ctx.sessionManager.getSessionId());
     upgradeStoreIfNeeded(ctx);
     if (!isResume && getLoopScope() === "memory") clearAllLoops();
-    await showPersistedLoops(isResume);
-    widget.update();
+    await showPersistedLoops(generation);
+    if (isCurrentGeneration(generation)) widget.update();
   });
 
   pi.on("tool_execution_end", async (event: unknown, ctx: ExtensionContext) => {

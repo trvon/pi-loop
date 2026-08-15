@@ -4,11 +4,14 @@ import { createCtx, createMockPi } from "./helpers/mock-pi.js";
 
 function setup(overrides: Partial<SessionRuntimeOptions> = {}) {
   const { pi, extensionHandlers } = createMockPi();
+  let sessionGeneration = 0;
   const scheduler = { nextFire: vi.fn(() => undefined), pump: vi.fn() };
   const options: SessionRuntimeOptions = {
     pi,
     getLoopScope: () => "memory",
     getPiLoopEnv: () => undefined,
+    getSessionGeneration: () => sessionGeneration,
+    advanceSessionGeneration: () => ++sessionGeneration,
     recreateSessionStore: vi.fn(),
     clearAllLoops: vi.fn(),
     getStore: () => ({ list: () => [], clearExpired: vi.fn(), expireEventLoops: vi.fn() }) as any,
@@ -210,6 +213,43 @@ describe("session-runtime heartbeat lifecycle", () => {
     await drive("session_switch");
 
     expect(shutdownMonitors).toHaveBeenCalledOnce();
+  });
+
+  it("does not pump a newly rebound scheduler after shutdown during task lookup", async () => {
+    let resolvePending: (() => void) | undefined;
+    let notifyPendingLookup: (() => void) | undefined;
+    const pendingLookupStarted = new Promise<void>((resolve) => {
+      notifyPendingLookup = resolve;
+    });
+    const pendingTasks = new Promise<number>((resolve) => {
+      resolvePending = () => resolve(0);
+    });
+    const scheduler = { nextFire: vi.fn(() => Date.now()), pump: vi.fn() };
+    const { drive } = setup({
+      getStore: () => ({
+        list: () => [{
+          id: "8",
+          status: "active",
+          autoTask: true,
+          trigger: { type: "cron", schedule: "*/5 * * * *" },
+        }],
+        clearExpired: vi.fn(),
+        expireEventLoops: vi.fn(),
+      }) as any,
+      getScheduler: () => scheduler as any,
+      hasPendingTasks: vi.fn(() => {
+        notifyPendingLookup?.();
+        return pendingTasks;
+      }),
+    });
+
+    const turnStart = drive("turn_start");
+    await pendingLookupStarted;
+    await drive("session_shutdown");
+    resolvePending?.();
+    await turnStart;
+
+    expect(scheduler.pump).not.toHaveBeenCalled();
   });
 
   it("does not leak an unhandled rejection when a heartbeat pump throws", async () => {
