@@ -1894,7 +1894,7 @@ describe("monitor tool wrappers", () => {
       payload: expect.objectContaining({
         loopId: workflowId,
         monitorOutcome: expect.objectContaining({ monitorId: "1", status: "completed" }),
-        workflow: expect.objectContaining({ stateFireCounts: { validate: 2 } }),
+        workflow: expect.objectContaining({ stateFireCounts: {} }),
       }),
     })]);
     expect(sentCustomMessages).toHaveLength(1);

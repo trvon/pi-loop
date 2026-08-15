@@ -12,6 +12,8 @@ export type LoopDeletionTombstoneInput = Omit<LoopDeletionTombstone, "id" | "del
 
 export type LoopStatus = "active" | "paused";
 
+export type LoopFireOrigin = "scheduler" | "event" | "dynamic" | "monitor";
+
 export interface CronTrigger {
   type: "cron";
   schedule: string;

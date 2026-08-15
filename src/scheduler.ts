@@ -1,6 +1,6 @@
 import { computeJitter, cronToNextFire } from "./loop-parse.js";
 import type { LoopStore } from "./store.js";
-import type { LoopEntry } from "./types.js";
+import type { LoopEntry, LoopFireOrigin } from "./types.js";
 import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop, isTerminalWorkflowRun } from "./workflow-reducer.js";
 
 function computeNextFire(entry: LoopEntry): Date {
@@ -20,7 +20,7 @@ export class CronScheduler {
 
   constructor(
     private store: LoopStore,
-    private onFire: (entry: LoopEntry) => void,
+    private onFire: (entry: LoopEntry, origin: LoopFireOrigin) => void,
   ) {}
 
   start(): void {
@@ -107,7 +107,7 @@ export class CronScheduler {
         continue;
       }
 
-      this.onFire(entry);
+      this.onFire(entry, "scheduler");
 
       const fresh = this.store.get(id);
       if (!fresh) {

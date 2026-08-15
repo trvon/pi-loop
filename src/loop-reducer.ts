@@ -1,4 +1,4 @@
-import type { DynamicLoopState, LoopEntry, Trigger, WorkflowDefinition, WorkflowMonitorWait } from "./types.js";
+import type { DynamicLoopState, LoopEntry, LoopFireOrigin, Trigger, WorkflowDefinition, WorkflowMonitorWait } from "./types.js";
 import { createWorkflowRun, transitionWorkflowRun } from "./workflow-reducer.js";
 
 export const MAX_LOOP_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -51,7 +51,7 @@ export type LoopReducerEvent =
     source: ReducerSource;
     entityType?: "loop";
     entityId?: string;
-    payload: { id: string };
+    payload: { id: string; origin?: LoopFireOrigin };
   }
   | {
     type: "LOOP_EXPIRED";
@@ -87,6 +87,20 @@ export type LoopReducerEvent =
       outcome: string;
       evidence?: string;
       activeTaskId?: string;
+    };
+  }
+  | {
+    type: "LOOP_WORKFLOW_TERMINAL_TRANSITION";
+    at: number;
+    source: ReducerSource;
+    entityType?: "loop";
+    entityId?: string;
+    payload: {
+      id: string;
+      outcome: string;
+      evidence?: string;
+      activeTaskId?: string;
+      terminal: "completed" | "paused";
     };
   }
   | {
@@ -212,7 +226,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
 
   if (event.type === "LOOP_FIRED") {
     loop.fireCount = (loop.fireCount ?? 0) + 1;
-    if (loop.workflow) {
+    if (loop.workflow && event.payload.origin === "scheduler") {
       const stateId = loop.workflow.currentState;
       loop.workflow = {
         ...loop.workflow,
@@ -259,6 +273,37 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
       awaitingUpdate: false,
       lastUpdatedAt: event.at,
     };
+    loop.updatedAt = event.at;
+  }
+
+  if (event.type === "LOOP_WORKFLOW_TERMINAL_TRANSITION") {
+    if (!loop.workflow) return { state, effects: [] };
+    const result = transitionWorkflowRun(loop.workflow, {
+      outcome: event.payload.outcome,
+      evidence: event.payload.evidence,
+      activeTaskId: event.payload.activeTaskId,
+    }, event.at);
+    if (!result.applied || result.terminal !== event.payload.terminal) return { state, effects: [] };
+    if (event.payload.terminal === "completed") {
+      const next = cloneState(state);
+      delete next.loopsById[id];
+      return {
+        state: next,
+        effects: [{ type: "DELETE_LOOP", entityType: "loop", entityId: id, payload: { id } }],
+      };
+    }
+    loop.workflow = result.run;
+    loop.dynamic = {
+      goal: loop.dynamic?.goal ?? loop.prompt,
+      state: result.run.currentState,
+      metrics: loop.dynamic?.metrics,
+      doneCriteria: loop.dynamic?.doneCriteria,
+      iteration: (loop.dynamic?.iteration ?? 0) + 1,
+      nextWakeAt: undefined,
+      awaitingUpdate: false,
+      lastUpdatedAt: event.at,
+    };
+    loop.status = "paused";
     loop.updatedAt = event.at;
   }
 

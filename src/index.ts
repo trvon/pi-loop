@@ -36,7 +36,7 @@ import { registerLoopTools } from "./tools/loop-tools.js";
 import { registerMonitorTools } from "./tools/monitor-tools.js";
 import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
-import type { LoopEntry, MonitorEntry, Trigger } from "./types.js";
+import type { LoopEntry, LoopFireOrigin, MonitorEntry, Trigger } from "./types.js";
 import { LoopWidget } from "./ui/widget.js";
 import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop, isTerminalWorkflowRun } from "./workflow-reducer.js";
 
@@ -64,8 +64,8 @@ export default function (pi: ExtensionAPI) {
   // call), so stale monitors don't linger in the count between turns.
   monitorManager.setOnChange(() => widget.update());
 
-  scheduler = new CronScheduler(store, onLoopFire);
-  triggerSystem = new TriggerSystem(pi, scheduler, store, onLoopFire);
+  scheduler = new CronScheduler(store, (entry, origin) => onLoopFire(entry, undefined, origin));
+  triggerSystem = new TriggerSystem(pi, scheduler, store, (entry, origin) => onLoopFire(entry, undefined, origin));
 
   let taskProvider: TaskProviderRuntime | undefined;
   const activeTaskBacklogWakes = new Set<string>();
@@ -202,7 +202,11 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function onLoopFire(entry: LoopEntry, monitor?: MonitorEntry): void {
+  function onLoopFire(
+    entry: LoopEntry,
+    monitor?: MonitorEntry,
+    origin: LoopFireOrigin = monitor ? "monitor" : "dynamic",
+  ): void {
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     const current = store.get(entry.id);
     if (current?.status !== "active" || isTerminalWorkflowRun(current?.workflow)) {
@@ -229,7 +233,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (isTaskBacklog) activeTaskBacklogWakes.add(current.id);
-    const fired = store.fire(current.id);
+    const fired = store.fire(current.id, origin);
     if (!fired) return;
 
     const firedAt = Date.now();
@@ -286,8 +290,8 @@ export default function (pi: ExtensionAPI) {
         memoryLoopStores.set(sessionId, store);
       }
       widget.setStore(store);
-      scheduler = new CronScheduler(store, onLoopFire);
-      triggerSystem = new TriggerSystem(pi, scheduler, store, onLoopFire);
+      scheduler = new CronScheduler(store, (entry, origin) => onLoopFire(entry, undefined, origin));
+      triggerSystem = new TriggerSystem(pi, scheduler, store, (entry, origin) => onLoopFire(entry, undefined, origin));
     },
     clearAllLoops: () => {
       store.clearAll({ preserveWorkflows: true });

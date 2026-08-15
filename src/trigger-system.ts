@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { atMaxFires } from "./loop-reducer.js";
 import type { CronScheduler } from "./scheduler.js";
 import type { LoopStore } from "./store.js";
-import type { LoopEntry } from "./types.js";
+import type { LoopEntry, LoopFireOrigin } from "./types.js";
 import { isTerminalWorkflowRun } from "./workflow-reducer.js";
 
 export class TriggerSystem {
@@ -14,7 +14,7 @@ export class TriggerSystem {
     private pi: ExtensionAPI,
     private scheduler: CronScheduler,
     private store: LoopStore,
-    private onFire: (entry: LoopEntry) => void,
+    private onFire: (entry: LoopEntry, origin: LoopFireOrigin) => void,
   ) {}
 
   start(): void {
@@ -118,7 +118,7 @@ export class TriggerSystem {
     }
 
     this.lastFireTime.set(current.id, Date.now());
-    this.onFire(current);
+    this.onFire(current, "event");
 
     const fresh = this.store.get(entry.id);
     if (!fresh) {
