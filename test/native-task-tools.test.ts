@@ -86,13 +86,11 @@ describe("TaskList", () => {
     expect(details.expanded.at(-1)).toBe("… 392 more");
   });
 
-  it("surfaces descriptions and workflow links so a fresh agent can reconstruct context", async () => {
+  it("surfaces descriptions so a fresh agent can reconstruct context", async () => {
     const { taskStore, result } = setup();
     taskStore.create(
       "Investigate regression",
       "Find the root cause; next: implement fix (task #2).",
-      undefined,
-      { loopId: "3", stateId: "investigate", transitionSeq: 0 },
     );
 
     const output = await result("TaskList", {});
@@ -101,10 +99,8 @@ describe("TaskList", () => {
     const expanded = details.expanded.join("\n");
     expect(content).toContain("Investigate regression");
     expect(content).toContain("Find the root cause; next: implement fix (task #2).");
-    expect(content).toContain("workflow #3");
     expect(expanded).toContain("Investigate regression");
     expect(expanded).toContain("Find the root cause; next: implement fix (task #2).");
-    expect(expanded).toContain("workflow #3");
   });
 
   it("guides state-based task flows with goal-state and next-step conventions", () => {
@@ -120,7 +116,7 @@ describe("TaskGet", () => {
     const { taskStore, result } = setup();
     const description =
       "Goal state: tests pass. Increment: apply the fix found in task #1 and run targeted validation. Next: task #3 validate the full suite.";
-    taskStore.create("Implement fix", description, { loopId: "9" }, { loopId: "9", stateId: "fix", transitionSeq: 1 });
+    taskStore.create("Implement fix", description, { loopId: "9" });
 
     const output = await result("TaskGet", { id: "1" });
     const text = output.content[0].text;
@@ -130,7 +126,7 @@ describe("TaskGet", () => {
     expect(text).toContain(description);
 
     const details = output.details as { summary: string; expanded: string[] };
-    expect(details.expanded.join("\n")).toContain("workflow #9 · state fix");
+    expect(details.expanded.join("\n")).toContain("Metadata: {\"loopId\":\"9\"}");
   });
 
   it("reports not found for an unknown id", async () => {
@@ -282,18 +278,6 @@ describe("TaskUpdate", () => {
     }
   });
 
-  it("rejects direct terminal updates for workflow-owned state tasks", async () => {
-    const task = h.taskStore.create("workflow attempt", "Use WorkflowTransition.", undefined, {
-      loopId: "9",
-      stateId: "fix",
-      transitionSeq: 1,
-    });
-
-    expect(await h.text("TaskUpdate", { id: task.id, status: "closed" })).toContain("managed by workflow #9");
-    expect(await h.text("TaskUpdate", { id: task.id, status: "completed" })).toContain("managed by workflow #9");
-    expect(h.taskStore.get(task.id)?.status).toBe("pending");
-  });
-
   it("reports not found for an unknown id", async () => {
     expect(await h.text("TaskUpdate", { id: "99", status: "completed" })).toBe("Task #99 not found");
   });
@@ -322,14 +306,6 @@ describe("TaskDelete", () => {
     expect(await h.text("TaskDelete", { id: "1" })).toContain("claimId is required");
     expect(h.taskStore.get("1")).toBeDefined();
     expect(await h.text("TaskDelete", { id: "1", claimId })).toBe("Task #1 deleted");
-  });
-
-  it("rejects deletion of active workflow-owned work", async () => {
-    const h = setup();
-    h.taskStore.create("workflow", "d", undefined, { loopId: "9", stateId: "fix", transitionSeq: 1 });
-
-    expect(await h.text("TaskDelete", { id: "1" })).toContain("managed by workflow #9");
-    expect(h.taskStore.get("1")).toBeDefined();
   });
 
   it("reports not found for an unknown id", async () => {

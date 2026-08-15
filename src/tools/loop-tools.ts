@@ -62,7 +62,6 @@ export interface LoopToolsOptions {
   maybeBootstrapTaskLoop: (entry: LoopEntry) => Promise<boolean>;
   isTaskSystemReady: () => boolean;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
-  closeWorkflowTask: (taskId: string, claimId?: string) => Promise<boolean>;
 }
 
 function validateTrigger(trigger: Trigger): string | null {
@@ -214,7 +213,6 @@ export function registerLoopTools(options: LoopToolsOptions): void {
     maybeBootstrapTaskLoop,
     isTaskSystemReady,
     onDynamicLoopActivated,
-    closeWorkflowTask,
   } = options;
 
   pi.registerTool({
@@ -506,7 +504,6 @@ Do not use this after a normal loop fire, an unchanged check, an empty iteration
     parameters: Type.Object({
       id: Type.String({ description: "Loop ID to delete or pause" }),
       action: Type.Optional(Type.String({ description: "delete or pause (default: delete)", enum: ["delete", "pause"], default: "delete" })),
-      claimId: Type.Optional(Type.String({ description: "Claim token for an active workflow task" })),
     }),
     async execute(_toolCallId, params) {
       const { id, action } = params;
@@ -531,14 +528,6 @@ Do not use this after a normal loop fire, an unchanged check, an empty iteration
         }));
       }
 
-      const current = getStore().get(id);
-      const activeTaskId = current?.workflow?.activeTaskId;
-      if (activeTaskId && !await closeWorkflowTask(activeTaskId, params.claimId)) {
-        const message = `Loop #${id} could not close active task #${activeTaskId}; reclaim the task and pass claimId before retrying deletion.`;
-        return textResult(message, {
-          kind: "loop", action: "delete", tone: "error", summary: `Loop #${id} deletion blocked by task #${activeTaskId}`, expanded: [message],
-        });
-      }
       getTriggerSystem().remove(id);
       const deleted = getStore().delete(id);
       updateWidget();

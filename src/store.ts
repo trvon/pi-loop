@@ -2,10 +2,44 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
 import { isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowDefinition, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
+
+/**
+ * One-time normalization for workflows persisted by v0.7.3, which linked state
+ * work to an external TaskStore record (`activeTaskId`). The external link is
+ * dropped; when the current state declares task work with no embedded
+ * execution, an unleased execution is synthesized so the workflow fails closed
+ * until a runtime claims it.
+ */
+function normalizeWorkflowRunState(workflow: WorkflowRunState): WorkflowRunState {
+  const legacy = workflow as WorkflowRunState & { activeTaskId?: string };
+  const active = workflow.activeExecution;
+  const state = workflow.definition.states[workflow.currentState];
+  if (!legacy.activeTaskId && active) return workflow;
+  const { activeTaskId: _dropped, ...withoutLegacy } = legacy;
+  const needsExecution = Boolean(
+    state?.task
+    && (!active || active.stateId !== workflow.currentState || active.transitionSeq !== workflow.transitionSeq),
+  );
+  return {
+    ...withoutLegacy,
+    ...(needsExecution ? {
+      activeExecution: {
+        id: `${workflow.currentState}:${workflow.transitionSeq}`,
+        stateId: workflow.currentState,
+        transitionSeq: workflow.transitionSeq,
+        subject: state!.task!.subject,
+        description: state!.task!.description,
+        status: "active" as const,
+        createdAt: workflow.stateEnteredAt,
+        updatedAt: workflow.stateEnteredAt,
+      },
+    } : {}),
+  };
+}
 const MAX_LOOPS = 25;
 const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
 
@@ -20,7 +54,10 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         toReducerState: (nextId, entries) => ({ nextId, loopsById: Object.fromEntries(entries.entries()) }),
         fromReducerState: (state) => ({ nextId: state.nextId, entries: new Map(Object.entries(state.loopsById)) }),
         serialize: (nextId, entries) => ({ nextId, loops: Array.from(entries.values()) }),
-        deserialize: (data) => ({ nextId: data.nextId, entries: new Map(data.loops.map((l) => [l.id, l])) }),
+        deserialize: (data) => ({
+          nextId: data.nextId,
+          entries: new Map(data.loops.map((l) => [l.id, l.workflow ? { ...l, workflow: normalizeWorkflowRunState(l.workflow) } : l])),
+        }),
       },
       listIdOrPath,
     );
@@ -295,7 +332,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       const entry = this.entries.get(id);
       if (!entry) return { claimed: false, error: `Loop #${id} not found` };
       const execution = entry.workflow?.activeExecution;
-      if (!execution || execution.status !== "active") {
+      if (execution?.status !== "active") {
         return { claimed: false, error: `Workflow #${id} has no active execution` };
       }
       const now = Date.now();
@@ -315,31 +352,6 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         payload: { id, actor, leaseMs: leaseSeconds * 1000 },
       });
       return { entry: this.entries.get(id), claimed: true };
-    });
-  }
-
-  setWorkflowActiveTask(
-    id: string,
-    taskId?: string,
-    expected?: { currentState: string; transitionSeq: number; activeTaskId?: string },
-  ): LoopEntry | undefined {
-    return this.withLock(() => {
-      const entry = this.entries.get(id);
-      if (!entry?.workflow) return undefined;
-      if (expected && (
-        entry.workflow.currentState !== expected.currentState
-        || entry.workflow.transitionSeq !== expected.transitionSeq
-        || entry.workflow.activeTaskId !== expected.activeTaskId
-      )) return undefined;
-      this.applyReducerEvent({
-        type: "LOOP_WORKFLOW_TASK_SET",
-        at: Date.now(),
-        source: "tool",
-        entityType: "loop",
-        entityId: id,
-        payload: { id, taskId },
-      });
-      return this.entries.get(id);
     });
   }
 

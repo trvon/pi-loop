@@ -34,10 +34,10 @@ const workflowDefinition = {
   initialState: "work",
   states: {
     work: {
-      prompt: "Claim the active task. On attempt 1 transition with retry; on attempt 2 transition with done.",
+      prompt: "On attempt 1 transition with retry; on attempt 2 transition with done.",
       task: {
         subject: "Live workflow attempt",
-        description: "Claim this workflow-owned task and settle it only through WorkflowTransition.",
+        description: "Embedded workflow work settled only through WorkflowTransition.",
       },
       on: { retry: "work", done: "done" },
       maxAttempts: 3,
@@ -48,12 +48,11 @@ const workflowDefinition = {
 
 const prompt = [
   "Run this live pi-loop workflow conformance scenario.",
-  "Call WorkflowCreate exactly once with goal='Live linked-task workflow' and this exact JSON definition:",
+  "Call WorkflowCreate exactly once with goal='Live embedded-execution workflow' and this exact JSON definition:",
   JSON.stringify(workflowDefinition),
   "Then follow every workflow wake until terminal completion.",
-  "For each wake: read the shown Attempt and Active task, call TaskClaim for that task, retain claimId, then call WorkflowTransition with that claimId and concise evidence.",
+  "For each wake: read the shown Attempt and Active workflow work line, then call WorkflowTransition with id, one outcome, and concise evidence. Never call TaskClaim, TaskUpdate, LoopUpdate, or LoopDelete.",
   "On attempt 1 choose outcome retry. On attempt 2 choose outcome done.",
-  "Never call TaskUpdate completed or closed for a workflow-owned task. Never call LoopUpdate or LoopDelete for this workflow.",
   "Do not create unrelated tasks or loops. Reply LIVE_WORKFLOW_DONE only after WorkflowTransition reports terminal completion.",
 ].join("\n");
 
@@ -78,44 +77,29 @@ function validate() {
   const creates = toolCalls.filter((call) => call.name === "WorkflowCreate");
   const claims = toolCalls.filter((call) => call.name === "TaskClaim");
   const transitions = toolCalls.filter((call) => call.name === "WorkflowTransition");
-  const forbiddenTerminalUpdates = toolCalls.filter((call) =>
-    call.name === "TaskUpdate" && (call.args?.status === "completed" || call.args?.status === "closed"));
+  const taskUpdates = toolCalls.filter((call) => call.name === "TaskUpdate");
 
   if (creates.length !== 1) throw new Error(`expected one WorkflowCreate call, got ${creates.length}`);
-  if (claims.length !== 2) throw new Error(`expected two TaskClaim calls, got ${claims.length}`);
+  if (claims.length !== 0) throw new Error(`expected zero TaskClaim calls, got ${claims.length}`);
   if (transitions.length !== 2) throw new Error(`expected two WorkflowTransition calls, got ${transitions.length}`);
   if (transitions[0]?.args?.outcome !== "retry" || transitions[1]?.args?.outcome !== "done") {
     throw new Error(`expected transition outcomes retry,done; got ${transitions.map((call) => call.args?.outcome).join(",")}`);
   }
-  if (forbiddenTerminalUpdates.length > 0) throw new Error("agent terminally updated a workflow-owned task");
+  if (transitions.some((call) => call.args?.claimId !== undefined)) throw new Error("workflow transitions must not carry claimId");
+  if (taskUpdates.length > 0) throw new Error("agent called TaskUpdate during workflow execution");
   if (loops.length !== 0) throw new Error(`expected terminal workflow deletion, found ${loops.length} loop(s)`);
-  if (tasks.length !== 2) throw new Error(`expected two linked attempt tasks, found ${tasks.length}`);
-  if (tasks.some((task) => task.status !== "completed")) {
-    throw new Error(`expected completed attempt tasks, got ${tasks.map((task) => task.status).join(",")}`);
-  }
-  const sequences = tasks.map((task) => task.workflow?.transitionSeq);
-  if (sequences[0] !== 0 || sequences[1] !== 1) {
-    throw new Error(`expected workflow task sequences 0,1; got ${sequences.join(",")}`);
-  }
+  if (tasks.length !== 0) throw new Error(`expected zero standalone tasks, found ${tasks.length}`);
   return { loops, tasks };
-}
-
-function sanitizeArgs(args) {
-  return args?.claimId ? { ...args, claimId: "<redacted>" } : args;
-}
-
-function redactClaimIds(text) {
-  return text.replace(/claimId:\s*[^\s]+/g, "claimId: <redacted>");
 }
 
 function summarizeEvent(event) {
   if (event.type === "message_update" || event.type === "extension_ui_request") return undefined;
   if (event.type === "tool_execution_start") {
-    return { type: event.type, toolName: event.toolName, args: sanitizeArgs(event.args) };
+    return { type: event.type, toolName: event.toolName, args: event.args };
   }
   if (event.type === "tool_execution_end") {
     const text = event.result?.content?.map((item) => item.text ?? "").join("\n") ?? "";
-    return { type: event.type, toolName: event.toolName, isError: event.isError, result: redactClaimIds(text).slice(0, 1000) };
+    return { type: event.type, toolName: event.toolName, isError: event.isError, result: text.slice(0, 1000) };
   }
   if (event.type === "message_start" || event.type === "message_end") {
     return { type: event.type, role: event.message?.role, stopReason: event.message?.stopReason };
@@ -139,13 +123,12 @@ function summarizeEvent(event) {
 
 function writeArtifact(status, state) {
   mkdirSync(artifactDir, { recursive: true });
-  const sanitizedToolCalls = toolCalls.map((call) => ({ ...call, args: sanitizeArgs(call.args) }));
   const report = {
     status,
     model,
     timeoutMs,
     settledCount,
-    toolCalls: sanitizedToolCalls,
+    toolCalls,
     state,
     failure: failure instanceof Error ? failure.message : failure,
     stderr: stderr.slice(-12_000),
@@ -241,7 +224,7 @@ try {
   send(child, { id: "workflow-live", type: "prompt", message: prompt });
   const state = await outcome;
   writeArtifact("passed", state);
-  console.log(`PASS: live linked workflow completed with ${toolCalls.length} tool calls`);
+  console.log(`PASS: live embedded workflow completed with ${toolCalls.length} tool calls`);
   console.log(`Artifact: ${join(artifactDir, "latest.json")}`);
 } catch (error) {
   failure = error;

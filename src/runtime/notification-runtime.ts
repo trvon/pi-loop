@@ -151,11 +151,15 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
         const fires = data.workflow.stateFireCounts?.[data.workflow.currentState] ?? 0;
         lines.push(`State cadence: ${state.loop.schedule} · fires: ${fires}/${state.loop.maxFires ?? "unbounded"}`);
       }
-      if (data.workflow.activeTaskId) {
+      const execution = data.workflow.activeExecution;
+      if (execution) {
+        const lease = execution.lease;
+        const leaseLine = lease
+          ? `Lease owned by ${lease.ownerSessionId}/${lease.ownerRuntimeId} until ${new Date(lease.expiresAt).toISOString()}.`
+          : "Lease unowned — call WorkflowClaim before continuing.";
         lines.push(
-          `Active task: #${data.workflow.activeTaskId}`,
-          `State task lifecycle: Task #${data.workflow.activeTaskId} is workflow-owned. Claim it before work and retain the returned claimId. Do not complete or close it with TaskUpdate; call WorkflowTransition with claimId: "<returned claimId>". WorkflowTransition settles this attempt and creates the next linked task.`,
-        );
+          `Active workflow work: ${execution.subject} (${execution.id})`,
+          `State work lifecycle: ${leaseLine} Transition it with WorkflowTransition; do not call TaskClaim or TaskUpdate for it.`,        );
       }
       if (outcomes.length > 0) lines.push(`Allowed outcomes: ${outcomes.join(", ")}`);
       if (availability.unavailable.length > 0) {
@@ -171,7 +175,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       } else {
         lines.push(
           `Workflow lifecycle: Loop #${loopId} is an opt-in state controller. Do not call LoopDelete after this state.`,
-          "Before ending this turn, call WorkflowTransition exactly once with id, one allowed outcome, evidence, and the returned claimId when an active task exists. WorkflowTransition does not accept activeTaskId. Terminal outcomes complete or pause the workflow automatically.",
+          "Before ending this turn, call WorkflowTransition exactly once with id, one allowed outcome, and evidence. Terminal outcomes complete or pause the workflow automatically.",
         );
       }
       return lines.join("\n");

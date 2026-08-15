@@ -105,7 +105,6 @@ export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
           t.claim
             ? `    claim ${t.claim.claimId} · owner ${t.claim.ownerSessionId}/${t.claim.ownerRuntimeId} · expires ${new Date(t.claim.leaseExpiresAt).toISOString()}`
             : undefined,
-          t.workflow ? `    workflow #${t.workflow.loopId} · state ${t.workflow.stateId}` : undefined,
         ].filter((line): line is string => line !== undefined);
         lines.push(row, ...context);
         expanded.push(row, ...context);
@@ -126,7 +125,7 @@ export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
     label: "TaskGet",
     renderCall: renderToolCall("Task", (args) => `get · #${String(toolArg(args, "id") ?? "?")}`),
     renderResult: renderToolResult,
-    description: `Read full task context by ID: subject, untruncated description, status, timestamps, metadata, and workflow link.
+    description: `Read full task context by ID: subject, untruncated description, status, timestamps, and metadata.
 
 Use when TaskList's excerpt is truncated or you need the complete goal-state and next-step text before starting a chained task. Read-only — does not change task state.`,
     promptGuidelines: [
@@ -157,9 +156,6 @@ Use when TaskList's excerpt is truncated or you need the complete goal-state and
       if (t.completedAt) lines.push(`Completed: ${new Date(t.completedAt).toISOString()}`);
       if (t.reopenedAt) lines.push(`Reopened: ${new Date(t.reopenedAt).toISOString()}`);
       if (t.closedAt) lines.push(`Closed: ${new Date(t.closedAt).toISOString()}`);
-      if (t.workflow) {
-        lines.push(`workflow #${t.workflow.loopId} · state ${t.workflow.stateId} · transition ${t.workflow.transitionSeq}`);
-      }
       if (t.metadata && Object.keys(t.metadata).length > 0) {
         lines.push(`Metadata: ${JSON.stringify(t.metadata)}`);
       }
@@ -274,7 +270,6 @@ Parameters: id, status, subject, description, claimId`,
       "TaskUpdate uses parameter `id`, not `taskId`.",
       "Accepted parameters: `id` (required), `status`, `subject`, `description`, `claimId`.",
       "TaskClaim already sets in_progress; do not repeat that update. Pass claimId when completing or closing claimed work.",
-      "Do not complete or close workflow-owned state tasks with TaskUpdate; pass their claimId to WorkflowTransition instead.",
       "When validation fails with 'must have required properties id', you passed `taskId` instead of `id`. Correct silently and retry.",
     ],
     parameters: Type.Object({
@@ -326,7 +321,7 @@ Parameters: id, status, subject, description, claimId`,
     label: "TaskDelete",
     renderCall: renderToolCall("Task", (args) => `delete · #${String(toolArg(args, "id") ?? "?")}`),
     renderResult: renderToolResult,
-    description: "Delete a task. Live claims require claimId; active workflow tasks use the workflow.",
+    description: "Delete a task. Live claims require claimId.",
     parameters: Type.Object({
       id: Type.String({ description: "Task ID to delete" }),
       claimId: Type.Optional(Type.String({ description: "Claim token required to delete live claimed work" })),

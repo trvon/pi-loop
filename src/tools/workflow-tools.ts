@@ -175,7 +175,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     renderResult: renderToolResult,
     description: "Advance one declared workflow outcome. The controller authorizes the current runtime lease; it never accepts a claim token.",
     promptGuidelines: [
-      "WorkflowTransition uses id, outcome, and optional evidence; claimId and activeTaskId are invalid.",
+      "WorkflowTransition uses id, outcome, and optional evidence; claimId is invalid.",
       "Use an exact outcome; inspect LoopList for state and attempt count.",
     ],
     parameters: Type.Object({

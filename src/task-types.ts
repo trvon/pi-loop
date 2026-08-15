@@ -1,11 +1,5 @@
 export type TaskStatus = "pending" | "in_progress" | "completed" | "closed";
 
-export interface TaskWorkflowLink {
-  loopId: string;
-  stateId: string;
-  transitionSeq: number;
-}
-
 export interface TaskClaim {
   claimId: string;
   ownerSessionId: string;
@@ -29,7 +23,6 @@ export interface TaskEntry {
   reopenedAt?: number;
   closedAt?: number;
   metadata?: Record<string, unknown>;
-  workflow?: TaskWorkflowLink;
 }
 
 export interface TaskStoreData {

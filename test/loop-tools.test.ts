@@ -11,9 +11,6 @@ function setup() {
   const scheduler = { nextFire: vi.fn(() => undefined) };
   const monitorManager = { get: vi.fn(() => undefined) };
   const onDynamicLoopActivated = vi.fn();
-  const createWorkflowTask = vi.fn(async (_entry: unknown) => undefined as string | undefined);
-  const completeWorkflowTask = vi.fn(async (_taskId: string, _claimId?: string) => true);
-  const closeWorkflowTask = vi.fn(async (_taskId: string, _claimId?: string) => true);
   const maybeBootstrapTaskLoop = vi.fn(async () => false);
   const isTaskSystemReady = vi.fn(() => true);
   registerLoopTools({
@@ -26,7 +23,6 @@ function setup() {
     maybeBootstrapTaskLoop,
     isTaskSystemReady,
     onDynamicLoopActivated,
-    closeWorkflowTask,
   });
   registerWorkflowTools({
     pi,
@@ -38,7 +34,7 @@ function setup() {
   });
   const result = async (name: string, args: any) => await toolMap.get(name)!.execute!("t", args);
   const text = async (name: string, args: any) => (await result(name, args)).content[0].text as string;
-  return { store, triggerSystem, text, result, toolMap, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated, createWorkflowTask, completeWorkflowTask, closeWorkflowTask };
+  return { store, triggerSystem, text, result, toolMap, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated };
 }
 
 describe("LoopCreate", () => {
@@ -427,7 +423,6 @@ describe("Workflow tools", () => {
         lease: { ownerSessionId: "test-session", ownerRuntimeId: "test-runtime" },
       },
     });
-    expect(h.createWorkflowTask).not.toHaveBeenCalled();
   });
 
   it("atomically settles source work and activates destination work", async () => {
@@ -440,14 +435,12 @@ describe("Workflow tools", () => {
       activeExecution: { id: "fix:1", status: "active", subject: "Fix regression" },
       executionHistory: [{ id: "investigate:0", status: "completed", evidence: "Reproduced locally." }],
     });
-    expect(h.createWorkflowTask).not.toHaveBeenCalled();
-    expect(h.completeWorkflowTask).not.toHaveBeenCalled();
   });
 
   it("does not expose claim tokens in transition schema or guidance", () => {
     const transition = h.toolMap.get("WorkflowTransition") as any;
     expect(transition.description).toContain("never accepts a claim token");
-    expect(transition.promptGuidelines.join("\n")).toContain("claimId and activeTaskId are invalid");
+    expect(transition.promptGuidelines.join("\n")).toContain("claimId is invalid");
     expect(transition.parameters.properties.claimId).toBeUndefined();
   });
 
@@ -464,7 +457,6 @@ describe("Workflow tools", () => {
     const out = await h.text("WorkflowTransition", { id: "1", outcome: "passing" });
     expect(out).toContain("Workflow #1 completed and deleted");
     expect(h.store.get("1")).toBeUndefined();
-    expect(h.completeWorkflowTask).not.toHaveBeenCalled();
   });
 
   it("documents embedded task definitions and outcome evidence", () => {

@@ -130,8 +130,6 @@ export interface WorkflowRunState {
   stateFireCounts: Record<string, number>;
   activeExecution?: WorkflowExecutionRecord;
   executionHistory?: WorkflowExecutionRecord[];
-  /** Legacy external task reference; retained only while persisted loops migrate. */
-  activeTaskId?: string;
   waitingMonitor?: WorkflowMonitorWait;
   lastTransition?: WorkflowTransitionRecord;
 }

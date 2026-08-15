@@ -203,6 +203,9 @@ export function transitionWorkflowRun(
     if (!active || active.stateId !== run.currentState || active.transitionSeq !== run.transitionSeq || active.status !== "active") {
       return { applied: false, error: "Workflow execution is missing or does not match the active state" };
     }
+    if (!active.lease) {
+      return { applied: false, error: "Workflow execution is unowned; claim it before transitioning" };
+    }
     if (!actorOwnsLiveLease(active, input.actor, at)) {
       return { applied: false, error: "Workflow execution is leased to another active runtime" };
     }
@@ -262,7 +265,6 @@ export function transitionWorkflowRun(
     stateFireCounts: run.stateFireCounts ?? {},
     activeExecution: destinationExecution,
     executionHistory: settledExecution ? [...(run.executionHistory ?? []), settledExecution] : run.executionHistory,
-    activeTaskId: undefined,
     waitingMonitor: undefined,
     lastTransition,
   };

@@ -105,14 +105,6 @@ export type LoopReducerEvent =
     };
   }
   | {
-    type: "LOOP_WORKFLOW_TASK_SET";
-    at: number;
-    source: ReducerSource;
-    entityType?: "loop";
-    entityId?: string;
-    payload: { id: string; taskId?: string };
-  }
-  | {
     type: "LOOP_WORKFLOW_EXECUTION_CLAIMED";
     at: number;
     source: ReducerSource;
@@ -316,15 +308,9 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
     loop.updatedAt = event.at;
   }
 
-  if (event.type === "LOOP_WORKFLOW_TASK_SET") {
-    if (!loop.workflow) return { state, effects: [] };
-    loop.workflow = { ...loop.workflow, activeTaskId: event.payload.taskId };
-    loop.updatedAt = event.at;
-  }
-
   if (event.type === "LOOP_WORKFLOW_EXECUTION_CLAIMED") {
     const execution = loop.workflow?.activeExecution;
-    if (!execution || execution.status !== "active") return { state, effects: [] };
+    if (execution?.status !== "active") return { state, effects: [] };
     const lease = execution.lease;
     const sameOwner = lease
       && lease.ownerSessionId === event.payload.actor.sessionId

@@ -663,6 +663,64 @@ describe("LoopStore workflow execution leases", () => {
     },
   };
 
+  it("normalizes legacy activeTaskId on load and fails closed until claimed", () => {
+    const lPath = join(tmpdir(), `pi-loop-legacy-workflow-${Date.now()}.json`);
+    const legacy = {
+      nextId: 2,
+      loops: [{
+        id: "1",
+        prompt: "legacy",
+        trigger: { type: "dynamic" },
+        status: "active",
+        recurring: true,
+        createdAt: 1,
+        updatedAt: 1,
+        expiresAt: Date.now() + 60_000,
+        dynamic: { goal: "legacy", state: "work", iteration: 0 },
+        workflow: {
+          definition: {
+            version: 1,
+            initialState: "work",
+            states: {
+              work: {
+                prompt: "Do the work.",
+                task: { subject: "Legacy work", description: "Old model task." },
+                on: { done: "complete" },
+              },
+              complete: { prompt: "Report.", terminal: "completed" },
+            },
+          },
+          currentState: "work",
+          transitionSeq: 2,
+          stateEnteredAt: 1,
+          attemptsByState: { work: 3 },
+          stateFireCounts: {},
+          activeTaskId: "7",
+        },
+      }],
+    };
+    writeFileSync(lPath, JSON.stringify(legacy));
+    try {
+      const store = new LoopStore(lPath);
+      const workflow = store.get("1")?.workflow;
+      expect(workflow?.activeTaskId).toBeUndefined();
+      expect(workflow?.activeExecution).toMatchObject({
+        id: "work:2",
+        stateId: "work",
+        transitionSeq: 2,
+        status: "active",
+        subject: "Legacy work",
+      });
+      expect(workflow?.activeExecution?.lease).toBeUndefined();
+      const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
+      expect(store.claimWorkflowExecution("1", foreign, 60).claimed).toBe(true);
+    } finally {
+      rmSync(lPath, { force: true });
+      rmSync(lPath + ".lock", { force: true });
+      rmSync(lPath + ".tmp", { force: true });
+    }
+  });
+
   it("renews its owner and only permits takeover after expiry", () => {
     const store = new LoopStore();
     const owner = { sessionId: "session-a", runtimeId: "runtime-a" };

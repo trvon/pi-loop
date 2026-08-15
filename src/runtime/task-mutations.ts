@@ -36,7 +36,6 @@ type TaskMutationRejectionCode =
   | "claim_expired"
   | "mutation_conflict"
   | "invalid_transition"
-  | "workflow_owned"
   | "terminal";
 
 type TaskMutationOutcome =
@@ -47,7 +46,6 @@ type TaskMutationOutcome =
       entry?: TaskEntry;
       fromStatus?: TaskStatus;
       toStatus?: TaskStatus;
-      workflowLoopId?: string;
     };
 
 export function taskMutationRejectionMessage(id: string, result: Extract<TaskMutationOutcome, { applied: false }>): string {
@@ -57,7 +55,6 @@ export function taskMutationRejectionMessage(id: string, result: Extract<TaskMut
   if (result.code === "claim_missing") return `Task #${id} has no live claim; claim the task before sending a heartbeat.`;
   if (result.code === "claim_mismatch") return "Claim token does not match the live task owner.";
   if (result.code === "claim_expired") return `Task #${id} claim lease expired; reclaim the task before modifying it.`;
-  if (result.code === "workflow_owned") return `Task #${id} is managed by workflow #${result.workflowLoopId}; transition or cancel the workflow instead.`;
   if (result.code === "terminal") return `Task #${id} is ${result.entry?.status}; terminal tasks cannot renew claims.`;
   if (result.code === "mutation_conflict") return `Task #${id} changed while the update was applied; refresh it and retry.`;
   return `Transition from ${result.fromStatus} to ${result.toStatus} is not allowed.`;
@@ -133,15 +130,6 @@ export async function updateTask(
   if (status === undefined && subject === undefined && description === undefined) {
     return { applied: false, code: "no_changes", entry };
   }
-  if (entry.workflow && (status === "completed" || status === "closed"
-    || (status === "pending" && (entry.status === "completed" || entry.status === "closed")))) {
-    return {
-      applied: false,
-      code: "workflow_owned",
-      entry,
-      workflowLoopId: entry.workflow.loopId,
-    };
-  }
 
   const previousStatus = entry.status;
   if (status === entry.status && (status === "pending" || status === "in_progress")) {
@@ -203,17 +191,11 @@ export async function deleteTask(
 ): Promise<TaskMutationOutcome> {
   const existing = ctx.taskStore.get(params.id);
   if (!existing) return { applied: false, code: "not_found" };
-  if (existing.workflow && (existing.status === "pending" || existing.status === "in_progress")) {
-    return { applied: false, code: "workflow_owned", entry: existing, workflowLoopId: existing.workflow.loopId };
-  }
   const rejection = claimRejection(existing, params.claimId, Date.now());
   if (rejection) return { applied: false, code: rejection, entry: existing };
   if (!ctx.taskStore.delete(params.id, params.claimId)) {
     const current = ctx.taskStore.get(params.id);
     if (!current) return { applied: false, code: "not_found" };
-    if (current.workflow && (current.status === "pending" || current.status === "in_progress")) {
-      return { applied: false, code: "workflow_owned", entry: current, workflowLoopId: current.workflow.loopId };
-    }
     const lateClaimRejection = claimRejection(current, params.claimId, Date.now());
     return lateClaimRejection
       ? { applied: false, code: lateClaimRejection, entry: current }

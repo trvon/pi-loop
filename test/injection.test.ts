@@ -116,7 +116,7 @@ describe("loop:fire custom message delivery", () => {
           version: 1,
           initialState: "investigate",
           states: {
-            investigate: { prompt: "Find the cause.", on: { found: "fix", blocked: "blocked" }, maxAttempts: 3 },
+            investigate: { prompt: "Find the cause.", task: { subject: "Investigate regression", description: "Find and reproduce the root cause." }, on: { found: "fix", blocked: "blocked" }, maxAttempts: 3 },
             fix: { prompt: "Implement the fix." },
             blocked: { prompt: "Report the blocker.", terminal: "paused" },
           },
@@ -125,7 +125,24 @@ describe("loop:fire custom message delivery", () => {
         transitionSeq: 0,
         stateEnteredAt: Date.now(),
         attemptsByState: { investigate: 1 },
-        activeTaskId: "12",
+        activeExecution: {
+          id: "investigate:0",
+          stateId: "investigate",
+          transitionSeq: 0,
+          subject: "Investigate regression",
+          description: "Find and reproduce the root cause.",
+          status: "active",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          lease: {
+            ownerSessionId: "session-a",
+            ownerRuntimeId: "runtime-a",
+            acquiredAt: Date.now(),
+            heartbeatAt: Date.now(),
+            expiresAt: Date.now() + 1_800_000,
+            attempt: 1,
+          },
+        },
       },
     });
     await flushAsync();
@@ -135,9 +152,9 @@ describe("loop:fire custom message delivery", () => {
     expect(content).toContain("State: investigate");
     expect(content).toContain("Find the cause.");
     expect(content).toContain("Attempt: 1/3");
-    expect(content).toContain("Active task: #12");
-    expect(content).toContain("workflow-owned");
-    expect(content).toContain("Do not complete or close it with TaskUpdate");
+    expect(content).toContain("Active workflow work: Investigate regression (investigate:0)");
+    expect(content).toContain("Lease owned by session-a/runtime-a");
+    expect(content).toContain("do not call TaskClaim or TaskUpdate");
     expect(content).toContain("Allowed outcomes: found, blocked");
     expect(content).toContain("WorkflowTransition");
     expect(content).not.toContain("call LoopUpdate exactly once");
@@ -208,7 +225,6 @@ describe("loop:fire custom message delivery", () => {
         transitionSeq: 1,
         stateEnteredAt: Date.now(),
         attemptsByState: { investigate: 1, fix: 1 },
-        activeTaskId: "13",
         lastTransition: {
           from: "investigate",
           to: "fix",
