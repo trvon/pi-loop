@@ -29,6 +29,7 @@ export interface LoopFireEvent {
   dynamic?: DynamicLoopState;
   workflow?: WorkflowRunState;
   monitorOutcome?: MonitorOutcome;
+  sessionGeneration?: number;
 }
 
 export interface PendingNotification extends LoopFireEvent {
@@ -41,6 +42,7 @@ export interface MonitorStartedEvent {
   command: string;
   description?: string;
   timestamp: number;
+  sessionGeneration?: number;
 }
 
 export interface NotificationRuntimeOptions {
@@ -69,6 +71,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     hasPendingMessages: false,
   };
   let flushPromise: Promise<void> | undefined;
+  let sessionGeneration = 0;
 
   type NotificationDispatchResult = {
     kind: "delivery";
@@ -215,6 +218,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     const key = data.recurring ? `loop:${data.loopId}` : `loop:${data.loopId}:${data.timestamp}`;
     return {
       ...data,
+      sessionGeneration: data.sessionGeneration ?? sessionGeneration,
       key,
       message: buildLoopFireMessage(data),
     };
@@ -223,6 +227,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   function buildMonitorStartedNotification(data: MonitorStartedEvent): PendingNotification {
     const label = data.description ?? data.command.slice(0, 80);
     return {
+      sessionGeneration: data.sessionGeneration ?? sessionGeneration,
       loopId: `monitor:${data.monitorId}`,
       prompt: label,
       trigger: { type: "event", source: "monitor:started" },
@@ -236,8 +241,13 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   }
 
   async function deliverNotification(notification: ReducerNotification): Promise<boolean> {
+    const deliveryGeneration = notification.sessionGeneration ?? sessionGeneration;
     if (notification.autoTask) {
       const pending = await hasPendingTasks();
+      if (deliveryGeneration !== sessionGeneration) {
+        debug?.(`loop:fire #${notification.loopId} — session changed during task lookup, dropping wake`);
+        return false;
+      }
       if (pending === 0) {
         debug?.(`loop:fire #${notification.loopId} — no pending tasks at delivery time, dropping wake`);
         await cleanDoneTasks();
@@ -245,6 +255,10 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       }
     }
 
+    if (deliveryGeneration !== sessionGeneration) {
+      debug?.(`loop:fire #${notification.loopId} — session changed before delivery, dropping wake`);
+      return false;
+    }
     syncRuntimeState({ agentRunning: true });
     pi.sendMessage({
       customType: "pi-loop",
@@ -294,6 +308,10 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   }
 
   async function queueOrDeliverNotification(data: LoopFireEvent): Promise<void> {
+    if (data.sessionGeneration !== undefined && data.sessionGeneration !== sessionGeneration) {
+      debug?.(`loop:fire #${data.loopId} — stale session generation, dropping wake`);
+      return;
+    }
     const notification = buildPendingNotification(data);
     applyNotificationEvent({
       type: "NOTIFICATION_QUEUED",
@@ -307,6 +325,10 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   }
 
   async function queueOrDeliverMonitorStarted(data: MonitorStartedEvent): Promise<void> {
+    if (data.sessionGeneration !== undefined && data.sessionGeneration !== sessionGeneration) {
+      debug?.(`monitor:started #${data.monitorId} — stale session generation, dropping wake`);
+      return;
+    }
     const notification = buildMonitorStartedNotification(data);
     await notificationCoordinator.dispatch({
       type: "NOTIFICATION_QUEUED",
@@ -316,6 +338,16 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       entityId: notification.key,
       payload: { notification },
     });
+    if (notification.sessionGeneration !== sessionGeneration) {
+      applyNotificationEvent({
+        type: "NOTIFICATION_DROPPED",
+        at: Date.now(),
+        source: "session",
+        entityType: "notification",
+        entityId: notification.key,
+        payload: { key: notification.key, reason: "session_switch" },
+      });
+    }
   }
 
   function discardMonitorStarted(monitorId: string): void {
@@ -331,6 +363,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   }
 
   function clear(reason: "session_shutdown" | "session_switch") {
+    sessionGeneration++;
     syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
     applyNotificationEvent({
       type: "NOTIFICATION_CLEARED",

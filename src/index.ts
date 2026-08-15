@@ -36,9 +36,9 @@ import { registerLoopTools } from "./tools/loop-tools.js";
 import { registerMonitorTools } from "./tools/monitor-tools.js";
 import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
-import type { LoopEntry, MonitorEntry, Trigger } from "./types.js";
+import type { LoopEntry, LoopFireOrigin, MonitorEntry, Trigger } from "./types.js";
 import { LoopWidget } from "./ui/widget.js";
-import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop } from "./workflow-reducer.js";
+import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop, isTerminalWorkflowRun } from "./workflow-reducer.js";
 
 const DEBUG = !!process.env.PI_LOOP_DEBUG;
 function debug(...args: unknown[]) {
@@ -50,6 +50,7 @@ export default function (pi: ExtensionAPI) {
   const piLoopEnv = process.env.PI_LOOP;
   const piLoopScope = process.env.PI_LOOP_SCOPE as "memory" | "session" | "project" | undefined;
   let loopScope: "memory" | "session" | "project" = piLoopScope ?? "session";
+  let sessionGeneration = 0;
 
   const getScopeOptions = () => ({ piLoopEnv, loopScope });
 
@@ -63,8 +64,8 @@ export default function (pi: ExtensionAPI) {
   // call), so stale monitors don't linger in the count between turns.
   monitorManager.setOnChange(() => widget.update());
 
-  scheduler = new CronScheduler(store, onLoopFire);
-  triggerSystem = new TriggerSystem(pi, scheduler, store, onLoopFire);
+  scheduler = new CronScheduler(store, (entry, origin) => onLoopFire(entry, undefined, origin));
+  triggerSystem = new TriggerSystem(pi, scheduler, store, (entry, origin) => onLoopFire(entry, undefined, origin));
 
   let taskProvider: TaskProviderRuntime | undefined;
   const activeTaskBacklogWakes = new Set<string>();
@@ -162,9 +163,11 @@ export default function (pi: ExtensionAPI) {
     resolveStorePath: () => resolveTaskStorePath(getScopeOptions(), _sessionId),
     getSessionId: () => _sessionId,
     evaluateTaskBacklog,
-    onReady: async () => {
-      await adoptTaskBacklogLoops();
+    onReady: async (detectionGeneration) => {
+      const generation = detectionGeneration ?? sessionGeneration;
+      await adoptTaskBacklogLoops(undefined, () => generation === sessionGeneration);
     },
+    getSessionGeneration: () => sessionGeneration,
     updateWidget: () => {
       widget.update();
     },
@@ -188,6 +191,7 @@ export default function (pi: ExtensionAPI) {
       taskBacklog: entry.taskBacklog,
       dynamic: entry.dynamic,
       workflow: entry.workflow,
+      sessionGeneration,
       monitorOutcome: monitor
         ? {
             monitorId: monitor.id,
@@ -200,29 +204,39 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function onLoopFire(entry: LoopEntry, monitor?: MonitorEntry): void {
+  function onLoopFire(
+    entry: LoopEntry,
+    monitor?: MonitorEntry,
+    origin: LoopFireOrigin = monitor ? "monitor" : "dynamic",
+  ): void {
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
-    if (store.get(entry.id)?.workflow?.waitingMonitor) {
+    const current = store.get(entry.id);
+    if (current?.status !== "active" || isTerminalWorkflowRun(current?.workflow)) {
+      triggerSystem.remove(entry.id);
+      return;
+    }
+    if (current.workflow?.waitingMonitor) {
       debug(`workflow #${entry.id} — waiting on monitor; suppressing cadence wake`);
       return;
     }
 
-    const isTaskBacklog = taskBacklogRuntime.isTaskBacklogLoop(entry);
+    const isTaskBacklog = taskBacklogRuntime.isTaskBacklogLoop(current);
     if (isTaskBacklog && activeTaskBacklogWakes.has(entry.id)) {
       debug(`task backlog loop #${entry.id} — wake already active, adopting event into current wake`);
       return;
     }
 
-    if (atMaxFires(entry)) {
-      debug(`loop #${entry.id} — reached maxFires ${entry.maxFires}, retiring`);
-      triggerSystem.remove(entry.id);
-      if (entry.workflow || entry.taskBacklog) store.pause(entry.id);
-      else store.delete(entry.id);
+    if (atMaxFires(current)) {
+      debug(`loop #${current.id} — reached maxFires ${current.maxFires}, retiring`);
+      triggerSystem.remove(current.id);
+      if (current.workflow || current.taskBacklog) store.pause(current.id);
+      else store.delete(current.id);
       widget.update();
       return;
     }
-    if (isTaskBacklog) activeTaskBacklogWakes.add(entry.id);
-    const fired = store.fire(entry.id) ?? entry;
+    if (isTaskBacklog) activeTaskBacklogWakes.add(current.id);
+    const fired = store.fire(current.id, origin);
+    if (!fired) return;
 
     const firedAt = Date.now();
     const stateLoop = fired.workflow && getActiveWorkflowStateLoop(fired.workflow);
@@ -250,9 +264,9 @@ export default function (pi: ExtensionAPI) {
       widget.update();
     }
 
-    if (entry.autoTask) {
-      taskProvider?.autoCreateTask(entry).then((taskId) => {
-        if (taskId) debug(`loop #${entry.id} → task #${taskId}`);
+    if (current.autoTask) {
+      taskProvider?.autoCreateTask(current).then((taskId) => {
+        if (taskId) debug(`loop #${current.id} → task #${taskId}`);
       });
     }
 
@@ -268,6 +282,8 @@ export default function (pi: ExtensionAPI) {
     pi,
     getLoopScope: () => loopScope,
     getPiLoopEnv: () => piLoopEnv,
+    getSessionGeneration: () => sessionGeneration,
+    advanceSessionGeneration: () => ++sessionGeneration,
     recreateSessionStore: (sessionId: string) => {
       const path = resolveLoopStorePath(getScopeOptions(), sessionId);
       if (path) store = new LoopStore(path);
@@ -276,8 +292,8 @@ export default function (pi: ExtensionAPI) {
         memoryLoopStores.set(sessionId, store);
       }
       widget.setStore(store);
-      scheduler = new CronScheduler(store, onLoopFire);
-      triggerSystem = new TriggerSystem(pi, scheduler, store, onLoopFire);
+      scheduler = new CronScheduler(store, (entry, origin) => onLoopFire(entry, undefined, origin));
+      triggerSystem = new TriggerSystem(pi, scheduler, store, (entry, origin) => onLoopFire(entry, undefined, origin));
     },
     clearAllLoops: () => {
       store.clearAll({ preserveWorkflows: true });
@@ -326,6 +342,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.events.on("monitor:started", async (event: unknown) => {
+    const sourceGeneration = sessionGeneration;
     const data = event as {
       monitorId?: string;
       command?: string;
@@ -338,6 +355,7 @@ export default function (pi: ExtensionAPI) {
       command: data.command,
       description: data.description,
       timestamp: data.timestamp ?? Date.now(),
+      sessionGeneration: sourceGeneration,
     });
   });
 
@@ -373,6 +391,7 @@ export default function (pi: ExtensionAPI) {
     onDynamicLoopActivated: (entry) => {
       onLoopFire(entry);
     },
+    isTaskSystemReady: () => taskProvider?.isReady() ?? false,
     createWorkflowTask: (entry) => taskProvider?.createWorkflowTask(entry) ?? Promise.resolve(undefined),
     completeWorkflowTask: (taskId, claimId) => taskProvider?.completeWorkflowTask(taskId, claimId) ?? Promise.resolve(false),
     closeWorkflowTask: (taskId, claimId) => taskProvider?.closeWorkflowTask(taskId, claimId) ?? Promise.resolve(false),

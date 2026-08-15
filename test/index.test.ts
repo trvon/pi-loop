@@ -1880,7 +1880,9 @@ describe("monitor tool wrappers", () => {
     const waiting = await toolMap.get("LoopList")!.execute!("list-waiting", {});
     expect(waiting.content[0].text).toContain("Waiting on monitor #1");
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await vi.waitFor(() => {
+      expect(emittedEvents.some((event) => event.name === "loop:fire" && event.payload?.loopId === workflowId)).toBe(true);
+    }, { timeout: 2_000 });
     for (const handler of extensionHandlers.get("agent_end") ?? []) {
       await handler(null, createCtx());
     }
@@ -1892,7 +1894,7 @@ describe("monitor tool wrappers", () => {
       payload: expect.objectContaining({
         loopId: workflowId,
         monitorOutcome: expect.objectContaining({ monitorId: "1", status: "completed" }),
-        workflow: expect.objectContaining({ stateFireCounts: { validate: 2 } }),
+        workflow: expect.objectContaining({ stateFireCounts: {} }),
       }),
     })]);
     expect(sentCustomMessages).toHaveLength(1);
@@ -2132,6 +2134,38 @@ describe("monitor tool wrappers", () => {
     expect((sentCustomMessages[0].message as { content: string }).content).toContain("Monitor timed out");
     const loops = await loopList!.execute?.("2", {});
     expect(loops.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+  }, 10000);
+
+  it("alerts the agent when a monitor times out without onDone", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "test-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+
+    await toolMap.get("MonitorCreate")!.execute!("timeout-alert-monitor", {
+      command: "exec sleep 30",
+      timeout: 50,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    expect(sentCustomMessages).toHaveLength(1);
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain(
+      "Monitor #1 timed out",
+    );
   }, 10000);
 
   it("does not deliver monitor completion wake if the completion loop is deleted", async () => {

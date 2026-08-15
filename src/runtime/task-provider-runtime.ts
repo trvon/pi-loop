@@ -17,7 +17,8 @@ export interface TaskProviderRuntimeOptions {
   resolveStorePath: () => string | undefined;
   getSessionId: () => string | undefined;
   evaluateTaskBacklog: (taskStore: TaskStore, pendingCount: number) => Promise<TaskBacklogResult>;
-  onReady?: () => Promise<void> | void;
+  onReady?: (detectionGeneration?: number) => Promise<void> | void;
+  getSessionGeneration?: () => number;
   updateWidget: () => void;
   isStaleExtensionContextError: (error: unknown) => boolean;
   debug?: (...args: unknown[]) => void;
@@ -44,6 +45,7 @@ export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): 
     getSessionId,
     evaluateTaskBacklog,
     onReady,
+    getSessionGeneration,
     updateWidget,
     isStaleExtensionContextError,
     debug,
@@ -56,12 +58,13 @@ export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): 
   const nativeTaskStores = new Map<string, TaskStore>();
   let nativeToolsRegistered = false;
   let readyNotified = false;
+  let detectionGeneration = getSessionGeneration?.();
 
   function notifyReady(): void {
     if (readyNotified) return;
     readyNotified = true;
     Promise.resolve()
-      .then(() => onReady?.())
+      .then(() => onReady?.(detectionGeneration))
       .catch((error) => debug?.("task provider ready callback failed", error));
   }
 
@@ -95,6 +98,7 @@ export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): 
     },
     onDetectionStarted: () => {
       detectionSettled = false;
+      detectionGeneration = getSessionGeneration?.();
     },
     onDetectionSettled: () => {
       detectionSettled = true;

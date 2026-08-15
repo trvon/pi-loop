@@ -15,6 +15,7 @@ function setup() {
   const completeWorkflowTask = vi.fn(async (_taskId: string, _claimId?: string) => true);
   const closeWorkflowTask = vi.fn(async (_taskId: string, _claimId?: string) => true);
   const maybeBootstrapTaskLoop = vi.fn(async () => false);
+  const isTaskSystemReady = vi.fn(() => true);
   registerLoopTools({
     pi,
     getStore: () => store as any,
@@ -23,7 +24,7 @@ function setup() {
     getMonitorManager: () => monitorManager as any,
     updateWidget: vi.fn(),
     maybeBootstrapTaskLoop,
-    isTaskSystemReady: () => true,
+    isTaskSystemReady,
     onDynamicLoopActivated,
     closeWorkflowTask,
   });
@@ -32,6 +33,7 @@ function setup() {
     getStore: () => store,
     getTriggerSystem: () => triggerSystem,
     updateWidget: vi.fn(),
+    isTaskSystemReady,
     onDynamicLoopActivated,
     createWorkflowTask,
     completeWorkflowTask,
@@ -39,7 +41,7 @@ function setup() {
   });
   const result = async (name: string, args: any) => await toolMap.get(name)!.execute!("t", args);
   const text = async (name: string, args: any) => (await result(name, args)).content[0].text as string;
-  return { store, triggerSystem, text, result, toolMap, maybeBootstrapTaskLoop, onDynamicLoopActivated, createWorkflowTask, completeWorkflowTask, closeWorkflowTask };
+  return { store, triggerSystem, text, result, toolMap, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated, createWorkflowTask, completeWorkflowTask, closeWorkflowTask };
 }
 
 describe("LoopCreate", () => {
@@ -103,6 +105,19 @@ describe("LoopCreate", () => {
       triggerType: "idle",
       taskBacklog: true,
     })).toContain('For a broad goal, use trigger "idle" with triggerType "idle" and omit taskBacklog.');
+    expect(h.store.list()).toHaveLength(0);
+  });
+
+  it("rejects autoTask on a task-backlog worker", async () => {
+    const out = await h.text("LoopCreate", {
+      trigger: "tasks:created",
+      prompt: "adopt unfinished tasks",
+      triggerType: "event",
+      taskBacklog: true,
+      autoTask: true,
+    });
+
+    expect(out).toContain("taskBacklog loops cannot enable autoTask");
     expect(h.store.list()).toHaveLength(0);
   });
 
@@ -364,6 +379,32 @@ describe("Workflow tools", () => {
       done: { prompt: "Report completion.", terminal: "completed" },
     },
   });
+  const initialTaskDefinition = JSON.stringify({
+    version: 1,
+    initialState: "investigate",
+    states: {
+      investigate: {
+        prompt: "Find the cause.",
+        task: { subject: "Investigate regression", description: "Find the root cause." },
+        on: { found: "fix" },
+      },
+      fix: { prompt: "Fix it.", on: { passing: "done" } },
+      done: { prompt: "Report completion.", terminal: "completed" },
+    },
+  });
+  const destinationTaskDefinition = JSON.stringify({
+    version: 1,
+    initialState: "investigate",
+    states: {
+      investigate: { prompt: "Find the cause.", on: { found: "fix" } },
+      fix: {
+        prompt: "Fix it.",
+        task: { subject: "Fix regression", description: "Apply the fix." },
+        on: { passing: "done" },
+      },
+      done: { prompt: "Report completion.", terminal: "completed" },
+    },
+  });
 
   beforeEach(() => {
     h = setup();
@@ -423,6 +464,7 @@ describe("Workflow tools", () => {
       },
     });
 
+    h.createWorkflowTask.mockResolvedValueOnce("12");
     const out = await h.text("WorkflowCreate", { goal: "Process records", definition: scheduledDefinition });
 
     expect(out).toContain("State cadence: 0 7 * * * · state fires: 0/4 · controller fires: 0/4");
@@ -476,12 +518,79 @@ describe("Workflow tools", () => {
       return "12";
     });
 
-    const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition });
+    const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition: initialTaskDefinition });
 
     expect(out).toContain("changed while initial task #12 was created");
     expect(h.closeWorkflowTask).toHaveBeenCalledWith("12");
     expect(h.triggerSystem.add).not.toHaveBeenCalled();
     expect(h.onDynamicLoopActivated).not.toHaveBeenCalled();
+  });
+
+  it("rejects a task-bearing workflow until task-provider detection settles", async () => {
+    h.isTaskSystemReady.mockReturnValue(false);
+    const definitionWithTask = JSON.stringify({
+      version: 1,
+      initialState: "investigate",
+      states: {
+        investigate: {
+          prompt: "Find the cause.",
+          task: { subject: "Investigate regression", description: "Find the root cause." },
+          on: { found: "done" },
+        },
+        done: { prompt: "Report completion.", terminal: "completed" },
+      },
+    });
+
+    const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition: definitionWithTask });
+
+    expect(out).toContain("Task system is still initializing");
+    expect(h.store.list()).toHaveLength(0);
+    expect(h.createWorkflowTask).not.toHaveBeenCalled();
+  });
+
+  it("rolls back a task-bearing workflow when its initial task cannot be created", async () => {
+    const definitionWithTask = JSON.stringify({
+      version: 1,
+      initialState: "investigate",
+      states: {
+        investigate: {
+          prompt: "Find the cause.",
+          task: { subject: "Investigate regression", description: "Find the root cause." },
+          on: { found: "done" },
+        },
+        done: { prompt: "Report completion.", terminal: "completed" },
+      },
+    });
+
+    const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition: definitionWithTask });
+
+    expect(out).toContain("initial task could not be created");
+    expect(h.store.list()).toHaveLength(0);
+    expect(h.triggerSystem.add).not.toHaveBeenCalled();
+  });
+
+  it("does not advance into a task-bearing state when its task cannot be created", async () => {
+    const destinationTaskDefinition = JSON.stringify({
+      version: 1,
+      initialState: "investigate",
+      states: {
+        investigate: { prompt: "Find the cause.", on: { found: "fix" } },
+        fix: {
+          prompt: "Apply the fix.",
+          task: { subject: "Apply fix", description: "Implement and validate the fix." },
+          on: { passing: "done" },
+        },
+        done: { prompt: "Report completion.", terminal: "completed" },
+      },
+    });
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: destinationTaskDefinition });
+    h.triggerSystem.add.mockClear();
+
+    const out = await h.text("WorkflowTransition", { id: "1", outcome: "found" });
+
+    expect(out).toContain("destination task could not be created");
+    expect(h.store.get("1")?.workflow?.currentState).toBe("investigate");
+    expect(h.triggerSystem.add).not.toHaveBeenCalled();
   });
 
   it("creates and records a task declared by the active workflow state", async () => {
@@ -508,7 +617,7 @@ describe("Workflow tools", () => {
 
   it("closes an active state task before deleting its workflow", async () => {
     h.createWorkflowTask.mockResolvedValueOnce("12");
-    await h.text("WorkflowCreate", { goal: "Fix the regression", definition });
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: initialTaskDefinition });
 
     expect(await h.text("LoopDelete", { id: "1", claimId: "claim-12" })).toBe("Loop #1 deleted");
     expect(h.closeWorkflowTask).toHaveBeenCalledWith("12", "claim-12");
@@ -518,7 +627,7 @@ describe("Workflow tools", () => {
   it("keeps a workflow when its active state task cannot be closed", async () => {
     h.createWorkflowTask.mockResolvedValueOnce("12");
     h.closeWorkflowTask.mockResolvedValueOnce(false);
-    await h.text("WorkflowCreate", { goal: "Fix the regression", definition });
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: initialTaskDefinition });
 
     const out = await h.text("LoopDelete", { id: "1", claimId: "stale" });
 
@@ -683,13 +792,14 @@ describe("Workflow tools", () => {
     expect(out).toContain("Source task #10 could not be completed");
     expect(out).toContain("reclaim it and pass claimId");
     expect(h.store.get("1")).toEqual(before);
-    expect(h.createWorkflowTask).toHaveBeenCalledTimes(1);
+    expect(h.createWorkflowTask).toHaveBeenCalledTimes(2);
+    expect(h.closeWorkflowTask).toHaveBeenCalledWith("11");
     expect(h.triggerSystem.add).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a stale transition instead of skipping a concurrently-entered state", async () => {
     h.createWorkflowTask.mockResolvedValueOnce("10");
-    await h.text("WorkflowCreate", { goal: "Fix the regression", definition });
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: initialTaskDefinition });
     h.completeWorkflowTask.mockImplementationOnce(async () => {
       h.store.transitionWorkflow("1", { outcome: "found", evidence: "Concurrent transition." });
       return true;
@@ -703,20 +813,17 @@ describe("Workflow tools", () => {
   });
 
   it("closes an unbound destination task when the workflow advances concurrently", async () => {
-    h.createWorkflowTask
-      .mockResolvedValueOnce(undefined)
-      .mockImplementationOnce(async () => {
-        h.store.transitionWorkflow("1", { outcome: "passing", evidence: "Concurrent completion." });
-        return "11";
-      });
-    await h.text("WorkflowCreate", { goal: "Fix the regression", definition });
+    h.createWorkflowTask.mockImplementationOnce(async () => {
+      h.store.transitionWorkflow("1", { outcome: "found", evidence: "Concurrent transition." });
+      return "11";
+    });
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: destinationTaskDefinition });
 
     const out = await h.text("WorkflowTransition", { id: "1", outcome: "found" });
 
-    expect(out).toContain("changed while destination task #11 was created");
+    expect(out).toContain("Workflow #1 changed; inspect LoopList and retry");
     expect(h.closeWorkflowTask).toHaveBeenCalledWith("11");
-    expect(h.store.get("1")?.workflow?.currentState).toBe("done");
-    expect(h.store.get("1")?.workflow?.activeTaskId).toBeUndefined();
+    expect(h.store.get("1")?.workflow?.currentState).toBe("fix");
   });
 
   it("rejects an undeclared outcome without changing or re-arming the workflow", async () => {

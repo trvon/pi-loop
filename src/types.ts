@@ -12,6 +12,8 @@ export type LoopDeletionTombstoneInput = Omit<LoopDeletionTombstone, "id" | "del
 
 export type LoopStatus = "active" | "paused";
 
+export type LoopFireOrigin = "scheduler" | "event" | "dynamic" | "monitor";
+
 export interface CronTrigger {
   type: "cron";
   schedule: string;
@@ -168,6 +170,7 @@ export interface MonitorProcess {
   waiters: Array<() => void>;
   completionCallbacks: Array<(monitor: MonitorEntry) => void>;
   terminalCallbacks: Array<(monitor: MonitorEntry) => void>;
+  terminalReady: boolean;
   lastOutputEventAt: number;
   lastProgressChangeAt: number;
   progressChangeTimer?: ReturnType<typeof setTimeout>;

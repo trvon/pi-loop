@@ -195,6 +195,22 @@ describe("task backlog adoption", () => {
     expect(opts.adoptLoop).toHaveBeenNthCalledWith(2, loops[1]);
   });
 
+  it("reports work adopted before its session guard becomes stale", async () => {
+    let current = true;
+    const adoptLoop = vi.fn(() => {
+      current = false;
+    });
+    const { runtime, loops } = setup({
+      hasPendingTasks: vi.fn(async () => 2),
+      adoptLoop,
+    });
+    loops.push(makeLoop({ id: "1", taskBacklog: true }), makeLoop({ id: "2", taskBacklog: true }));
+
+    expect(await runtime.adoptTaskBacklogLoops(undefined, () => current)).toBe(1);
+    expect(adoptLoop).toHaveBeenCalledTimes(1);
+    expect(adoptLoop).toHaveBeenCalledWith(loops[0]);
+  });
+
   it("skips workers that already fired after the agent turn began", async () => {
     const { runtime, opts, loops } = setup({ hasPendingTasks: vi.fn(async () => 1) });
     loops.push(makeLoop({ taskBacklog: true, fireCount: 3 }));
@@ -237,6 +253,24 @@ describe("explicit backlog policy", () => {
 });
 
 describe("cleanupTaskBacklogLoops", () => {
+  it("does not mutate backlog loops when its session guard becomes stale during lookup", async () => {
+    let resolvePending: ((pending: number) => void) | undefined;
+    const pending = new Promise<number>((resolve) => {
+      resolvePending = resolve;
+    });
+    let current = true;
+    const { runtime, opts, loops } = setup({ hasPendingTasks: vi.fn(() => pending) });
+    loops.push(makeLoop({ id: "1" }));
+
+    const cleanup = runtime.cleanupTaskBacklogLoops(() => current);
+    current = false;
+    resolvePending?.(0);
+
+    expect(await cleanup).toBe(0);
+    expect(loops).toHaveLength(1);
+    expect(opts.deleteLoop).not.toHaveBeenCalled();
+  });
+
   it("deletes backlog loops when zero tasks are pending and emits explicit signals", async () => {
     const { runtime, opts, loops } = setup({ hasPendingTasks: vi.fn(async () => 0) });
     loops.push(makeLoop({ id: "1" }));

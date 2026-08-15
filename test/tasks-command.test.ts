@@ -195,6 +195,35 @@ describe("registerTasksCommand", () => {
     expect(ui.notify).toHaveBeenCalledWith("Task #1 completed", "info");
   });
 
+  it("rejects terminal actions for workflow-owned tasks", async () => {
+    const h = setup();
+    h.taskStore.create("workflow attempt", "Use WorkflowTransition.", undefined, {
+      loopId: "9",
+      stateId: "fix",
+      transitionSeq: 1,
+    });
+
+    let taskVisits = 0;
+    const ui = {
+      select: vi.fn(async (title: string) => {
+        if (title === "Tasks") return taskVisits++ === 0 ? "* #1 [pending] workflow attempt" : "< Back";
+        if (title.startsWith("#1")) return "ok Complete";
+        return "< Back";
+      }),
+      input: vi.fn(),
+      notify: vi.fn(),
+    };
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(h.taskStore.get("1")?.status).toBe("pending");
+    expect(h.emittedEvents.some((e) => e.name === "tasks:completed" && e.payload.taskId === "1")).toBe(false);
+    expect(ui.notify).toHaveBeenCalledWith(
+      "Task #1 unchanged: Task #1 is managed by workflow #9; transition or cancel the workflow instead.",
+      "warning",
+    );
+  });
+
   it("selecting a task and choosing Close without completing transitions it and emits tasks:closed", async () => {
     const h = setup();
     h.taskStore.create("subject", "desc");

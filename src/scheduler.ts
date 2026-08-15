@@ -1,7 +1,7 @@
 import { computeJitter, cronToNextFire } from "./loop-parse.js";
 import type { LoopStore } from "./store.js";
-import type { LoopEntry } from "./types.js";
-import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop } from "./workflow-reducer.js";
+import type { LoopEntry, LoopFireOrigin } from "./types.js";
+import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop, isTerminalWorkflowRun } from "./workflow-reducer.js";
 
 function computeNextFire(entry: LoopEntry): Date {
   const workflowLoop = entry.workflow && getActiveWorkflowStateLoop(entry.workflow);
@@ -20,13 +20,13 @@ export class CronScheduler {
 
   constructor(
     private store: LoopStore,
-    private onFire: (entry: LoopEntry) => void,
+    private onFire: (entry: LoopEntry, origin: LoopFireOrigin) => void,
   ) {}
 
   start(): void {
     for (const storedEntry of this.store.list()) {
       let entry = storedEntry;
-      if (entry.status !== "active" || entry.workflow?.waitingMonitor) continue;
+      if (entry.status !== "active" || entry.workflow?.waitingMonitor || isTerminalWorkflowRun(entry.workflow)) continue;
       if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic") {
         if (entry.trigger.type === "dynamic" && entry.dynamic?.awaitingUpdate && !this.fireTimes.has(entry.id)) {
           entry = this.store.updateDynamic(entry.id, {
@@ -47,7 +47,7 @@ export class CronScheduler {
   }
 
   add(entry: LoopEntry): void {
-    if (!entry.workflow?.waitingMonitor && (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic")) {
+    if (!entry.workflow?.waitingMonitor && !isTerminalWorkflowRun(entry.workflow) && (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic")) {
       this.armTimer(entry);
     }
   }
@@ -93,7 +93,7 @@ export class CronScheduler {
       if (now < fireTime) continue;
 
       const entry = this.store.get(id);
-      if (entry?.status !== "active" || entry.workflow?.waitingMonitor) {
+      if (entry?.status !== "active" || entry.workflow?.waitingMonitor || isTerminalWorkflowRun(entry.workflow)) {
         this.fireTimes.delete(id);
         continue;
       }
@@ -107,7 +107,7 @@ export class CronScheduler {
         continue;
       }
 
-      this.onFire(entry);
+      this.onFire(entry, "scheduler");
 
       const fresh = this.store.get(id);
       if (!fresh) {

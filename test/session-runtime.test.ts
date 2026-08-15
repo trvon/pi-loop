@@ -4,11 +4,14 @@ import { createCtx, createMockPi } from "./helpers/mock-pi.js";
 
 function setup(overrides: Partial<SessionRuntimeOptions> = {}) {
   const { pi, extensionHandlers } = createMockPi();
+  let sessionGeneration = 0;
   const scheduler = { nextFire: vi.fn(() => undefined), pump: vi.fn() };
   const options: SessionRuntimeOptions = {
     pi,
     getLoopScope: () => "memory",
     getPiLoopEnv: () => undefined,
+    getSessionGeneration: () => sessionGeneration,
+    advanceSessionGeneration: () => ++sessionGeneration,
     recreateSessionStore: vi.fn(),
     clearAllLoops: vi.fn(),
     getStore: () => ({ list: () => [], clearExpired: vi.fn(), expireEventLoops: vi.fn() }) as any,
@@ -37,8 +40,8 @@ function setup(overrides: Partial<SessionRuntimeOptions> = {}) {
     ...overrides,
   };
   registerSessionRuntimeHooks(options);
-  const drive = async (name: string) => {
-    for (const handler of extensionHandlers.get(name) ?? []) await handler(null, createCtx());
+  const drive = async (name: string, sessionId = "test-session") => {
+    for (const handler of extensionHandlers.get(name) ?? []) await handler(null, createCtx({ sessionId }));
   };
   return { scheduler, drive };
 }
@@ -144,6 +147,33 @@ describe("session-runtime heartbeat lifecycle", () => {
     expect(clearIntervalSpy).toHaveBeenCalledWith(timer);
   });
 
+  it("fully rebinds session-scoped runtime after shutdown", async () => {
+    const recreateSessionStore = vi.fn();
+    const setSessionId = vi.fn();
+    const triggerSystem = { start: vi.fn(), stop: vi.fn() };
+    const { drive } = setup({
+      getLoopScope: () => "session",
+      recreateSessionStore,
+      setSessionId,
+      getStore: () => ({
+        list: () => [{ id: "8", status: "active" }],
+        clearExpired: vi.fn(),
+        expireEventLoops: vi.fn(),
+      }) as any,
+      getTriggerSystem: () => triggerSystem,
+    });
+
+    await drive("session_start", "session-one");
+    await drive("session_shutdown");
+    await drive("session_start", "session-two");
+
+    expect(recreateSessionStore).toHaveBeenNthCalledWith(1, "session-one");
+    expect(recreateSessionStore).toHaveBeenNthCalledWith(2, "session-two");
+    expect(triggerSystem.stop).toHaveBeenCalledOnce();
+    expect(triggerSystem.start).toHaveBeenCalledTimes(2);
+    expect(setSessionId.mock.calls).toEqual([["session-one"], [undefined], ["session-two"]]);
+  });
+
   it("clears workflow monitor waits before stopping monitors", async () => {
     const calls: string[] = [];
     const { drive } = setup({
@@ -183,6 +213,43 @@ describe("session-runtime heartbeat lifecycle", () => {
     await drive("session_switch");
 
     expect(shutdownMonitors).toHaveBeenCalledOnce();
+  });
+
+  it("does not pump a newly rebound scheduler after shutdown during task lookup", async () => {
+    let resolvePending: (() => void) | undefined;
+    let notifyPendingLookup: (() => void) | undefined;
+    const pendingLookupStarted = new Promise<void>((resolve) => {
+      notifyPendingLookup = resolve;
+    });
+    const pendingTasks = new Promise<number>((resolve) => {
+      resolvePending = () => resolve(0);
+    });
+    const scheduler = { nextFire: vi.fn(() => Date.now()), pump: vi.fn() };
+    const { drive } = setup({
+      getStore: () => ({
+        list: () => [{
+          id: "8",
+          status: "active",
+          autoTask: true,
+          trigger: { type: "cron", schedule: "*/5 * * * *" },
+        }],
+        clearExpired: vi.fn(),
+        expireEventLoops: vi.fn(),
+      }) as any,
+      getScheduler: () => scheduler as any,
+      hasPendingTasks: vi.fn(() => {
+        notifyPendingLookup?.();
+        return pendingTasks;
+      }),
+    });
+
+    const turnStart = drive("turn_start");
+    await pendingLookupStarted;
+    await drive("session_shutdown");
+    resolvePending?.();
+    await turnStart;
+
+    expect(scheduler.pump).not.toHaveBeenCalled();
   });
 
   it("does not leak an unhandled rejection when a heartbeat pump throws", async () => {

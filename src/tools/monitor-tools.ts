@@ -69,7 +69,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
   pi.registerTool({ name: "MonitorCreate", label: "MonitorCreate",
   renderShell: "self",
   renderCall: hideToolTranscript,
-  renderResult: hideToolTranscript, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nPass onDone to create one completion wake for success, failure, or timeout. Pass workflowId to pause its workflow until a terminal result. Commands may emit JSONL progress as {"progress":{"current":42,"total":100,"message":"..."}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone when the agent must resume automatically after completion; do not create a separate polling loop.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
+  renderResult: hideToolTranscript, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nTimed monitors always wake the agent if they time out. Pass onDone to create a completion wake for success, failure, or timeout. Pass workflowId to pause its workflow until a terminal result. Commands may emit JSONL progress as {"progress":{"current":42,"total":100,"message":"..."}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone when the agent must resume automatically after success or failure; timed monitors already alert on timeout.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
     command: Type.String({ description: "Shell command to run in background" }),
     description: Type.Optional(Type.String({ description: "Human-readable description" })),
     timeout: Type.Optional(Type.Number({ description: "Auto-stop after N ms (default: 300000, 0 = no timeout)", default: 300000 })),
@@ -131,6 +131,15 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
       const doneLoop = store.create(doneTrigger, params.onDone, { recurring: false });
       handleMonitorDoneLoop(doneLoop, entry.id);
       onDoneMsg = `\nCompletion wake loop #${doneLoop.id}: fires when the monitor completes — no polling needed`;
+    } else if (!workflow && entry.timeout > 0) {
+      const timeoutTrigger: Trigger = { type: "event", source: "monitor:timeout", filter: JSON.stringify({ monitorId: entry.id }) };
+      const timeoutLoop = store.create(
+        timeoutTrigger,
+        `Monitor #${entry.id} timed out. Inspect MonitorList, report the failure, and decide whether to retry with a smaller bounded command.`,
+        { recurring: false },
+      );
+      handleMonitorDoneLoop(timeoutLoop, entry.id);
+      onDoneMsg = `\nTimeout alert loop #${timeoutLoop.id}: wakes the agent only if the monitor times out`;
     }
 
     return Promise.resolve(textResult(
@@ -145,7 +154,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
         expanded: [
           `Command: ${entry.command}`,
           `Timeout: ${params.timeout ? `${params.timeout / 1000}s` : "none"}`,
-          workflow ? `Workflow #${workflow.id}: waiting for terminal monitor outcome` : params.onDone ? "Completion wake: enabled" : "Completion wake: off",
+          workflow ? `Workflow #${workflow.id}: waiting for terminal monitor outcome` : params.onDone ? "Completion wake: enabled" : entry.timeout > 0 ? "Timeout alert: enabled" : "Completion wake: off",
         ],
       },
     ));

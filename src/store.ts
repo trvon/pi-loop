@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowTerminalStatus } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowTerminalStatus } from "./types.js";
 import { isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowDefinition, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
@@ -106,17 +106,17 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     });
   }
 
-  fire(id: string): LoopEntry | undefined {
+  fire(id: string, origin: LoopFireOrigin = "scheduler"): LoopEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
-      if (!entry) return undefined;
+      if (entry?.status !== "active" || isTerminalWorkflowRun(entry?.workflow)) return undefined;
       this.applyReducerEvent({
         type: "LOOP_FIRED",
         at: Date.now(),
         source: "system",
         entityType: "loop",
         entityId: id,
-        payload: { id },
+        payload: { id, origin },
       });
       return this.entries.get(id);
     });
@@ -247,8 +247,9 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         return { applied: false, error: result.error, failure: result.failure };
       }
 
+      const eventType = result.terminal ? "LOOP_WORKFLOW_TERMINAL_TRANSITION" : "LOOP_WORKFLOW_TRANSITION";
       this.applyReducerEvent({
-        type: "LOOP_WORKFLOW_TRANSITION",
+        type: eventType,
         at: result.run.stateEnteredAt,
         source: "tool",
         entityType: "loop",
@@ -258,9 +259,29 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           outcome: input.outcome,
           evidence: input.evidence,
           activeTaskId: input.activeTaskId,
+          ...(result.terminal ? { terminal: result.terminal } : {}),
         },
-      });
-      return { entry: this.entries.get(id), applied: true, terminal: result.terminal };
+      } as LoopReducerEvent);
+      if (result.terminal) {
+        const terminalEntry: LoopEntry = {
+          ...entry,
+          status: result.terminal === "paused" ? "paused" : entry.status,
+          updatedAt: result.run.stateEnteredAt,
+          dynamic: {
+            goal: entry.dynamic?.goal ?? entry.prompt,
+            state: result.run.currentState,
+            metrics: entry.dynamic?.metrics,
+            doneCriteria: entry.dynamic?.doneCriteria,
+            iteration: (entry.dynamic?.iteration ?? 0) + 1,
+            nextWakeAt: undefined,
+            awaitingUpdate: false,
+            lastUpdatedAt: result.run.stateEnteredAt,
+          },
+          workflow: result.run,
+        };
+        return { entry: terminalEntry, applied: true, terminal: result.terminal };
+      }
+      return { entry: this.entries.get(id), applied: true };
     });
   }
 

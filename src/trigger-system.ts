@@ -2,7 +2,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { atMaxFires } from "./loop-reducer.js";
 import type { CronScheduler } from "./scheduler.js";
 import type { LoopStore } from "./store.js";
-import type { LoopEntry } from "./types.js";
+import type { LoopEntry, LoopFireOrigin } from "./types.js";
+import { isTerminalWorkflowRun } from "./workflow-reducer.js";
 
 export class TriggerSystem {
   private eventSubscriptions = new Map<string, Map<string, () => void>>();
@@ -13,13 +14,13 @@ export class TriggerSystem {
     private pi: ExtensionAPI,
     private scheduler: CronScheduler,
     private store: LoopStore,
-    private onFire: (entry: LoopEntry) => void,
+    private onFire: (entry: LoopEntry, origin: LoopFireOrigin) => void,
   ) {}
 
   start(): void {
     this.scheduler.start();
     for (const entry of this.store.list()) {
-      if (entry.status !== "active") continue;
+      if (entry.status !== "active" || isTerminalWorkflowRun(entry.workflow)) continue;
       if (entry.trigger.type !== "event" && entry.trigger.type !== "hybrid") continue;
       const event = entry.trigger.type === "hybrid" ? entry.trigger.event : entry.trigger;
       this.subscribeEvent(entry, event.source, event.filter);
@@ -37,6 +38,7 @@ export class TriggerSystem {
   }
 
   add(entry: LoopEntry): void {
+    if (isTerminalWorkflowRun(entry.workflow)) return;
     if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic") {
       this.scheduler.add(entry);
     }
@@ -110,13 +112,13 @@ export class TriggerSystem {
 
   private fireLoop(entry: LoopEntry): void {
     const current = this.store.get(entry.id);
-    if (!current || current.status !== "active") {
+    if (current?.status !== "active" || isTerminalWorkflowRun(current?.workflow)) {
       this.remove(entry.id);
       return;
     }
 
     this.lastFireTime.set(current.id, Date.now());
-    this.onFire(current);
+    this.onFire(current, "event");
 
     const fresh = this.store.get(entry.id);
     if (!fresh) {

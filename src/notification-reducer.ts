@@ -15,6 +15,7 @@ export interface ReducerNotification {
   readOnly?: boolean;
   dynamic?: DynamicLoopState;
   workflow?: WorkflowRunState;
+  sessionGeneration?: number;
 }
 
 export interface NotificationReducerState {

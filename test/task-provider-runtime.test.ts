@@ -12,6 +12,7 @@ afterEach(() => {
 
 function setup(respondToTaskPing = false) {
   let sessionId = "session-a";
+  let sessionGeneration = 0;
   const mock = createMockPi({ respondToTaskPing });
   const evaluateTaskBacklog = vi.fn(async () => ({ created: false, cleaned: 0 }));
   const onReady = vi.fn(async () => {});
@@ -22,10 +23,18 @@ function setup(respondToTaskPing = false) {
     getSessionId: () => sessionId,
     evaluateTaskBacklog,
     onReady,
+    getSessionGeneration: () => sessionGeneration,
     updateWidget: vi.fn(),
     isStaleExtensionContextError: () => false,
   });
-  return { ...mock, runtime, evaluateTaskBacklog, onReady, setSessionId: (next: string) => { sessionId = next; } };
+  return {
+    ...mock,
+    runtime,
+    evaluateTaskBacklog,
+    onReady,
+    setSessionId: (next: string) => { sessionId = next; },
+    setSessionGeneration: (next: number) => { sessionGeneration = next; },
+  };
 }
 
 describe("task-provider-runtime", () => {
@@ -43,6 +52,15 @@ describe("task-provider-runtime", () => {
     expect(toolMap.has("TaskCreate")).toBe(true);
     expect(runtime.isReady()).toBe(true);
     expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries the detection generation into delayed readiness", async () => {
+    const { onReady, setSessionGeneration } = setup();
+
+    setSessionGeneration(1);
+    await vi.advanceTimersByTimeAsync(6_100);
+
+    expect(onReady).toHaveBeenCalledWith(0);
   });
 
   it("lets an external provider win without registering native tools", async () => {

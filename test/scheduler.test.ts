@@ -176,6 +176,28 @@ describe("CronScheduler", () => {
     expect(store.get(entry.id)?.workflow?.stateFireCounts).toEqual({ collect: 1 });
   });
 
+  it("does not arm a legacy active terminal workflow after restart", () => {
+    const workflow = store.create({ type: "dynamic" }, "Finish", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Do the work.", on: { done: "done" } },
+          done: { prompt: "Report completion.", terminal: "completed" },
+        },
+      },
+    });
+    const stale = store.get(workflow.id)!;
+    stale.workflow!.currentState = "done";
+
+    scheduler.start();
+    scheduler.pump(Date.now());
+
+    expect(scheduler.nextFire(workflow.id)).toBeUndefined();
+    expect(fired).toEqual([]);
+  });
+
   it("suppresses workflow cadence while waiting on a monitor", () => {
     const entry = store.create({ type: "dynamic" }, "Validate", {
       recurring: true,

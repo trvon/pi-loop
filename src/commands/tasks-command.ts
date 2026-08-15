@@ -1,12 +1,14 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { emitNativeTaskEvent } from "../runtime/task-events.js";
+import {
+  createTask,
+  deleteTask,
+  type TaskBacklogResult,
+  type TaskMutationContext,
+  taskMutationRejectionMessage,
+  updateTask,
+} from "../runtime/task-mutations.js";
 import { TaskStore } from "../task-store.js";
-import type { TaskEntry } from "../task-types.js";
 
-export interface TaskBacklogResult {
-  created: boolean;
-  entry?: { id: string };
-}
 
 export interface TasksCommandOptions {
   pi: ExtensionAPI;
@@ -18,13 +20,14 @@ export interface TasksCommandOptions {
 export function registerTasksCommand(options: TasksCommandOptions): void {
   const { pi, getNativeTaskStore, evaluateTaskBacklog, updateWidget } = options;
 
-  async function emitCreated(entry: TaskEntry) {
-    emitNativeTaskEvent(pi, "tasks:created", entry);
+  function mutationContext(taskStore: TaskStore): TaskMutationContext {
+    return { pi, taskStore, evaluateTaskBacklog, updateWidget };
+  }
+
+  async function createNativeTask(subject: string, description: string) {
     const taskStore = getNativeTaskStore();
-    if (!taskStore) return { created: false } satisfies TaskBacklogResult;
-    const backlog = await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
-    updateWidget();
-    return backlog;
+    if (!taskStore) return undefined;
+    return await createTask(mutationContext(taskStore), { subject, description });
   }
 
   async function createNativeTaskInteractively(ui: ExtensionUIContext) {
@@ -37,11 +40,11 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
     const subject = await ui.input("Task subject");
     if (!subject) return;
     const description = await ui.input("Task description") || subject;
-    const entry = taskStore.create(subject, description);
-    const backlog = await emitCreated(entry);
-    ui.notify(`Task #${entry.id} created`, "info");
-    if (backlog.created && backlog.entry) {
-      ui.notify(`Backlog worker loop #${backlog.entry.id} created`, "info");
+    const created = await createNativeTask(subject, description);
+    if (!created) return;
+    ui.notify(`Task #${created.entry.id} created`, "info");
+    if (created.backlog.created && created.backlog.entry) {
+      ui.notify(`Backlog worker loop #${created.backlog.entry.id} created`, "info");
     }
   }
 
@@ -96,29 +99,30 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
     }
 
     let changed = false;
+    let rejection: string | undefined;
     if (action === "x Delete") {
-      changed = taskStore.delete(task.id, claimId);
-      if (changed) emitNativeTaskEvent(pi, "tasks:deleted", task, task.status);
-    } else if (action === "> Start") {
-      const next = taskStore.start(task.id);
-      changed = next !== undefined;
-      if (next) emitNativeTaskEvent(pi, "tasks:started", next, task.status);
-    } else if (action === "ok Complete") {
-      const next = taskStore.complete(task.id, claimId);
-      changed = next !== undefined;
-      if (next) emitNativeTaskEvent(pi, "tasks:completed", next, task.status);
-    } else if (action === "x Close without completing") {
-      const next = taskStore.close(task.id, claimId);
-      changed = next !== undefined;
-      if (next) emitNativeTaskEvent(pi, "tasks:closed", next, task.status);
-    } else if (action === "* Reopen") {
-      const next = taskStore.reopen(task.id);
-      changed = next !== undefined;
-      if (next) emitNativeTaskEvent(pi, "tasks:reopened", next, task.status);
+      const result = await deleteTask(mutationContext(taskStore), { id: task.id, claimId });
+      changed = result.applied;
+      if (!result.applied) rejection = taskMutationRejectionMessage(task.id, result);
+    } else {
+      const status = action === "> Start"
+        ? "in_progress"
+        : action === "ok Complete"
+          ? "completed"
+          : action === "x Close without completing"
+            ? "closed"
+            : action === "* Reopen"
+              ? "pending"
+              : undefined;
+      if (status) {
+        const result = await updateTask(mutationContext(taskStore), { id: task.id, status, claimId });
+        changed = result.applied;
+        if (!result.applied) rejection = taskMutationRejectionMessage(task.id, result);
+      }
     }
 
     if (!changed) {
-      ui.notify(`Task #${task.id} unchanged: operation rejected`, "warning");
+      ui.notify(`Task #${task.id} unchanged: ${rejection ?? "operation rejected"}`, "warning");
       return viewNativeTasks(ui);
     }
     const pastTense = action === "x Delete" ? "deleted"
@@ -127,8 +131,6 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
           : action === "x Close without completing" ? "closed without completing"
             : "reopened";
     ui.notify(`Task #${task.id} ${pastTense}`, "info");
-    updateWidget();
-    await evaluateTaskBacklog(taskStore, taskStore.pendingCount());
     return viewNativeTasks(ui);
   }
 
@@ -142,11 +144,11 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
         return;
       }
       if (trimmed) {
-        const entry = taskStore.create(trimmed.slice(0, 80), trimmed);
-        const backlog = await emitCreated(entry);
-        ctx.ui.notify(`Task #${entry.id} created`, "info");
-        if (backlog.created && backlog.entry) {
-          ctx.ui.notify(`Backlog worker loop #${backlog.entry.id} created`, "info");
+        const created = await createNativeTask(trimmed.slice(0, 80), trimmed);
+        if (!created) return;
+        ctx.ui.notify(`Task #${created.entry.id} created`, "info");
+        if (created.backlog.created && created.backlog.entry) {
+          ctx.ui.notify(`Backlog worker loop #${created.backlog.entry.id} created`, "info");
         }
         return;
       }

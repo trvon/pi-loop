@@ -39,6 +39,17 @@ function appendMonitorOutcome(prompt: string, monitor: MonitorEntry | undefined)
   return lines.join("\n");
 }
 
+function isTimeoutAlertLoop(entry: LoopEntry): boolean {
+  const trigger = entry.trigger;
+  return typeof trigger === "object"
+    && trigger?.type === "event"
+    && trigger.source === "monitor:timeout";
+}
+
+function timedOut(monitor: MonitorEntry | undefined): boolean {
+  return monitor?.status === "stopped" && monitor.stopReason === "timeout";
+}
+
 export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions): MonitorOnDoneRuntime {
   const {
     monitorManager,
@@ -78,24 +89,33 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
   });
 
   function register(doneLoop: LoopEntry, monitorId: string): void {
+    const timeoutAlert = isTimeoutAlertLoop(doneLoop);
     const deliver = (monitor?: MonitorEntry) => {
+      const outcome = monitor ?? monitorManager.get(monitorId);
+      if (timeoutAlert && !timedOut(outcome)) {
+        debug?.(`timeout alert loop #${doneLoop.id} — monitor #${monitorId} ended without timing out, expiring`);
+        deleteLoop(doneLoop.id);
+        return;
+      }
       void monitorCompletionCoordinator.dispatch({
         type: "MONITOR_ONDONE_TRIGGERED",
         at: Date.now(),
         source: "monitor",
         entityType: "monitor",
         entityId: monitorId,
-        payload: { loopId: doneLoop.id, monitorId, monitor },
+        payload: { loopId: doneLoop.id, monitorId, monitor: outcome },
       });
     };
 
-    const registered = monitorManager.onComplete(monitorId, deliver);
+    const registered = timeoutAlert
+      ? monitorManager.onTerminal(monitorId, deliver)
+      : monitorManager.onComplete(monitorId, deliver);
     if (registered) return;
 
     const monitor = monitorManager.get(monitorId);
     if (monitor && monitor.status !== "running") {
-      if (monitor.status === "completed" || monitor.status === "error") {
-        deliver();
+      if (timeoutAlert || monitor.status === "completed" || monitor.status === "error") {
+        deliver(monitor);
         return;
       }
       debug?.(`onDone loop #${doneLoop.id} — monitor #${monitorId} already ${monitor.status}, expiring`);

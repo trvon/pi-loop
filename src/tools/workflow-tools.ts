@@ -46,6 +46,7 @@ export interface WorkflowToolsOptions {
   getTriggerSystem: () => TriggerSystemLike;
   updateWidget: () => void;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
+  isTaskSystemReady: () => boolean;
   createWorkflowTask?: (entry: LoopEntry) => Promise<string | undefined>;
   completeWorkflowTask?: (taskId: string, claimId?: string) => Promise<boolean>;
   closeWorkflowTask?: (taskId: string, claimId?: string) => Promise<boolean>;
@@ -138,6 +139,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     getTriggerSystem,
     updateWidget,
     onDynamicLoopActivated,
+    isTaskSystemReady,
     createWorkflowTask,
     completeWorkflowTask,
     closeWorkflowTask,
@@ -175,14 +177,31 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         });
       }
 
+      const initialState = parsed.definition.states[parsed.definition.initialState];
+      if (initialState?.task && !isTaskSystemReady()) {
+        const message = "Task system is still initializing; retry WorkflowCreate after task-provider detection settles.";
+        return textResult(message, {
+          kind: "workflow", action: "create", tone: "error", summary: "Workflow creation deferred", expanded: [message],
+        });
+      }
+
       let entry = getStore().create({ type: "dynamic" }, params.goal, {
         recurring: true,
         maxFires: params.maxFires ?? workflowDefaultMaxFires(parsed.definition),
         dynamic: { goal: params.goal, state: parsed.definition.initialState, iteration: 0 },
         workflow: parsed.definition,
       });
-      const createdTaskId = await createWorkflowTask?.(entry);
+      const requiresInitialTask = Boolean(entry.workflow && initialState?.task && !initialState.terminal);
+      const createdTaskId = requiresInitialTask ? await createWorkflowTask?.(entry) : undefined;
       let taskId: string | undefined;
+      if (requiresInitialTask && !createdTaskId) {
+        getStore().delete(entry.id);
+        const message = `Workflow #${entry.id} was not created because its initial task could not be created. Retry after the task provider is available.`;
+        updateWidget();
+        return textResult(message, {
+          kind: "workflow", action: "create", tone: "error", summary: `Workflow #${entry.id} task creation failed`, expanded: [message],
+        });
+      }
       if (createdTaskId && entry.workflow) {
         const bound = getStore().setWorkflowActiveTask(entry.id, createdTaskId, {
           currentState: entry.workflow.currentState,
@@ -194,7 +213,8 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
           taskId = createdTaskId;
         } else {
           const closed = await closeWorkflowTask?.(createdTaskId);
-          const message = `Workflow #${entry.id} changed while initial task #${createdTaskId} was created; task cleanup ${closed ? "succeeded" : "failed"}. Inspect LoopList before retrying.`;
+          getStore().delete(entry.id);
+          const message = `Workflow #${entry.id} changed while initial task #${createdTaskId} was created; task cleanup ${closed ? "succeeded" : "failed"}.`;
           updateWidget();
           return textResult(message, {
             kind: "workflow", action: "create", tone: "error", summary: `Workflow #${entry.id} task binding rejected`, expanded: [message],
@@ -251,6 +271,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       const transitionInput = { outcome: params.outcome, evidence: params.evidence };
       const currentEntry = store.get(params.id);
       const sourceTaskId = currentEntry?.workflow?.activeTaskId;
+      let destinationTaskId: string | undefined;
       if (currentEntry?.workflow) {
         const preview = transitionWorkflowRun(currentEntry.workflow, transitionInput, Date.now());
         if (!preview.applied) {
@@ -260,9 +281,20 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
             { kind: "workflow", action: "transition", tone: "error", summary: `Workflow #${params.id} remains in ${currentEntry.workflow.currentState}`, expanded: [error] },
           );
         }
+        const destinationState = preview.run.definition.states[preview.run.currentState];
+        if (destinationState?.task && !destinationState.terminal) {
+          destinationTaskId = await createWorkflowTask?.({ ...currentEntry, workflow: preview.run });
+          if (!destinationTaskId) {
+            const message = `Workflow #${params.id} did not transition because its destination task could not be created. Retry after the task provider is available.`;
+            return textResult(message, {
+              kind: "workflow", action: "transition", tone: "error", summary: `Workflow #${params.id} destination task creation failed`, expanded: [message],
+            });
+          }
+        }
       }
       const sourceTaskClosed = sourceTaskId ? await completeWorkflowTask?.(sourceTaskId, params.claimId) : undefined;
       if (sourceTaskId && !sourceTaskClosed) {
+        if (destinationTaskId) await closeWorkflowTask?.(destinationTaskId);
         const message = `Source task #${sourceTaskId} could not be completed; reclaim it and pass claimId before retrying the workflow transition.`;
         return textResult(message, {
           kind: "workflow", action: "transition", tone: "error", summary: `Workflow #${params.id} transition blocked by task #${sourceTaskId}`, expanded: [message],
@@ -277,6 +309,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         : undefined;
       const result = store.transitionWorkflow(params.id, transitionInput, expected);
       if (!result.applied || !result.entry) {
+        if (destinationTaskId) await closeWorkflowTask?.(destinationTaskId);
         const current = store.get(params.id);
         if (current?.workflow) {
           const error = result.error ?? "unknown transition error";
@@ -291,7 +324,6 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       const entry = result.entry;
       getTriggerSystem().remove(entry.id);
       if (result.terminal === "completed") {
-        store.delete(entry.id);
         updateWidget();
         return textResult(
           `Workflow #${entry.id} completed and deleted\nFinal transition: ${entry.workflow?.lastTransition?.from ?? "?"} → ${entry.workflow?.currentState ?? "?"}\nNext: no further workflow transition is needed.`,
@@ -306,7 +338,6 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         );
       }
       if (result.terminal === "paused") {
-        store.pause(entry.id);
         updateWidget();
         return textResult(
           `Workflow #${entry.id} paused\nFinal state: ${entry.workflow?.currentState ?? "?"}\nNext: inspect it with LoopList. Terminal workflow states cannot be resumed; delete the loop when it is no longer needed.`,
@@ -322,25 +353,23 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       }
 
       const resumedEntry = entry.status === "paused" ? store.resume(entry.id) ?? entry : entry;
-      const existingTaskId = resumedEntry.workflow?.activeTaskId;
-      const createdTaskId = existingTaskId ? undefined : await createWorkflowTask?.(resumedEntry);
       let updatedEntry = resumedEntry;
-      if (createdTaskId && resumedEntry.workflow) {
-        const bound = store.setWorkflowActiveTask(resumedEntry.id, createdTaskId, {
+      if (destinationTaskId && resumedEntry.workflow) {
+        const bound = store.setWorkflowActiveTask(resumedEntry.id, destinationTaskId, {
           currentState: resumedEntry.workflow.currentState,
           transitionSeq: resumedEntry.workflow.transitionSeq,
           activeTaskId: resumedEntry.workflow.activeTaskId,
         });
         if (!bound) {
-          await closeWorkflowTask?.(createdTaskId);
-          const message = `Workflow #${resumedEntry.id} changed while destination task #${createdTaskId} was created; the task was closed. Inspect LoopList before retrying.`;
+          await closeWorkflowTask?.(destinationTaskId);
+          const message = `Workflow #${resumedEntry.id} changed while destination task #${destinationTaskId} was created; the task was closed. Inspect LoopList before retrying.`;
           return textResult(message, {
             kind: "workflow", action: "transition", tone: "error", summary: `Workflow #${resumedEntry.id} task binding rejected`, expanded: [message],
           });
         }
         updatedEntry = bound;
       }
-      const taskId = existingTaskId ?? createdTaskId;
+      const taskId = destinationTaskId;
       getTriggerSystem().add(updatedEntry);
       updateWidget();
       if (stateLoopStartsImmediately(updatedEntry)) onDynamicLoopActivated?.(updatedEntry);

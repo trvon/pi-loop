@@ -90,7 +90,8 @@ describe("loop reducer", () => {
           transitionSeq: 0,
           stateEnteredAt: 10,
           attemptsByState: { investigate: 1 },
-        },
+          stateFireCounts: {},
+        }
       },
     ], 2);
 
@@ -113,6 +114,48 @@ describe("loop reducer", () => {
     });
   });
 
+  it("reduces a completed terminal transition directly to a delete effect", () => {
+    const terminalWorkflow: WorkflowDefinition = {
+      version: 1,
+      initialState: "fix",
+      states: {
+        fix: { prompt: "Apply the fix.", on: { passing: "done" } },
+        done: { prompt: "Report completion.", terminal: "completed" },
+      },
+    };
+    const initial = makeState([{
+      id: "1",
+      prompt: "Fix the regression",
+      trigger: { type: "dynamic" },
+      status: "active",
+      recurring: true,
+      createdAt: 10,
+      updatedAt: 10,
+      expiresAt: 20,
+      fireCount: 0,
+      workflow: {
+        definition: terminalWorkflow,
+        currentState: "fix",
+        transitionSeq: 0,
+        stateEnteredAt: 10,
+        attemptsByState: { fix: 1 },
+        stateFireCounts: {},
+      },
+    }], 2);
+
+    const result = apply(initial, {
+      type: "LOOP_WORKFLOW_TERMINAL_TRANSITION",
+      at: 100,
+      source: "tool",
+      entityType: "loop",
+      entityId: "1",
+      payload: { id: "1", outcome: "passing", terminal: "completed" },
+    });
+
+    expect(result.state.loopsById).toEqual({});
+    expect(result.effects).toEqual([{ type: "DELETE_LOOP", entityType: "loop", entityId: "1", payload: { id: "1" } }]);
+  });
+
   it("records the task created for the active workflow state", () => {
     const initial = makeState([
       {
@@ -131,7 +174,8 @@ describe("loop reducer", () => {
           transitionSeq: 0,
           stateEnteredAt: 10,
           attemptsByState: { investigate: 1 },
-        },
+          stateFireCounts: {},
+        }
       },
     ], 2);
 

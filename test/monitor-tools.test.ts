@@ -59,7 +59,10 @@ describe("MonitorCreate", () => {
     expect(out).toContain("Monitor #1 started");
     expect(out).toContain("monitor:output is rate-limited");
     expect(h.manager.create).toHaveBeenCalledWith("npm test", undefined, undefined);
-    expect(h.handleMonitorDoneLoop).not.toHaveBeenCalled();
+    expect(h.handleMonitorDoneLoop).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.stringContaining("Monitor #1 timed out"),
+      trigger: expect.objectContaining({ type: "event", source: "monitor:timeout" }),
+    }), "1");
     expect(h.toolMap.get("MonitorCreate")?.renderShell).toBe("self");
     expect(h.toolMap.get("MonitorCreate")?.renderResult).toBeTypeOf("function");
   });
