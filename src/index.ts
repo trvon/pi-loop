@@ -163,9 +163,11 @@ export default function (pi: ExtensionAPI) {
     resolveStorePath: () => resolveTaskStorePath(getScopeOptions(), _sessionId),
     getSessionId: () => _sessionId,
     evaluateTaskBacklog,
-    onReady: async () => {
-      await adoptTaskBacklogLoops();
+    onReady: async (detectionGeneration) => {
+      const generation = detectionGeneration ?? sessionGeneration;
+      await adoptTaskBacklogLoops(undefined, () => generation === sessionGeneration);
     },
+    getSessionGeneration: () => sessionGeneration,
     updateWidget: () => {
       widget.update();
     },
