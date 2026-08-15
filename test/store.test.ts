@@ -648,3 +648,39 @@ describe("LoopStore (absolute path)", () => {
     }
   });
 });
+
+describe("LoopStore workflow execution leases", () => {
+  const workflow = {
+    version: 1 as const,
+    initialState: "work",
+    states: {
+      work: {
+        prompt: "Do the work.",
+        task: { subject: "Work", description: "Complete it." },
+        on: { done: "complete" },
+      },
+      complete: { prompt: "Report.", terminal: "completed" as const },
+    },
+  };
+
+  it("renews its owner and only permits takeover after expiry", () => {
+    const store = new LoopStore();
+    const owner = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
+    store.create({ type: "dynamic" }, "workflow", { recurring: true, workflow, actor: owner });
+
+    expect(store.claimWorkflowExecution("1", owner, 60).claimed).toBe(true);
+    expect(store.claimWorkflowExecution("1", foreign, 60)).toMatchObject({
+      claimed: false,
+      error: "Workflow execution is leased to another active runtime",
+    });
+
+    const active = store.get("1")?.workflow?.activeExecution;
+    if (!active?.lease) throw new Error("expected active lease");
+    active.lease.expiresAt = Date.now() - 1;
+    expect(store.claimWorkflowExecution("1", foreign, 60)).toMatchObject({
+      claimed: true,
+      entry: { workflow: { activeExecution: { lease: { ownerSessionId: "session-b", ownerRuntimeId: "runtime-b", attempt: 2 } } } },
+    });
+  });
+});

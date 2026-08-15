@@ -36,6 +36,34 @@ describe("workflow reducer", () => {
     });
   });
 
+  it("embeds and leases initial state work in the workflow aggregate", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: {
+          prompt: "Do the work.",
+          task: { subject: "Work", description: "Complete the bounded work." },
+          on: { done: "complete" },
+        },
+        complete: { prompt: "Report completion.", terminal: "completed" },
+      },
+    };
+
+    expect(createWorkflowRun(taskDefinition, 100, { sessionId: "session-a", runtimeId: "runtime-a" }))
+      .toMatchObject({
+        activeExecution: {
+          id: "work:0",
+          stateId: "work",
+          transitionSeq: 0,
+          subject: "Work",
+          description: "Complete the bounded work.",
+          status: "active",
+          lease: { ownerSessionId: "session-a", ownerRuntimeId: "runtime-a", expiresAt: 100 + 30 * 60 * 1000 },
+        },
+      });
+  });
+
   it("moves only along a declared outcome and records evidence", () => {
     const run = createWorkflowRun(definition, 100);
     const result = transitionWorkflowRun(run, { outcome: "root_cause_found", evidence: "Null config reaches parser." }, 200);
@@ -57,6 +85,60 @@ describe("workflow reducer", () => {
         },
       }),
     });
+  });
+
+  it("settles source work and leases destination work atomically", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "investigate",
+      states: {
+        investigate: {
+          prompt: "Investigate.",
+          task: { subject: "Investigate", description: "Find the cause." },
+          on: { found: "fix" },
+        },
+        fix: {
+          prompt: "Fix it.",
+          task: { subject: "Fix", description: "Implement the repair." },
+          on: { done: "complete" },
+        },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const run = createWorkflowRun(taskDefinition, 100, actor);
+
+    const result = transitionWorkflowRun(run, { outcome: "found", actor }, 200);
+
+    expect(result).toMatchObject({
+      applied: true,
+      run: {
+        currentState: "fix",
+        activeExecution: {
+          id: "fix:1",
+          status: "active",
+          lease: { ownerSessionId: "session-a", ownerRuntimeId: "runtime-a" },
+        },
+        executionHistory: [{ id: "investigate:0", status: "completed", settledAt: 200 }],
+      },
+    });
+  });
+
+  it("rejects a workflow transition from a different live lease owner", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", task: { subject: "Work", description: "Do it." }, on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, { sessionId: "session-a", runtimeId: "runtime-a" });
+
+    expect(transitionWorkflowRun(run, {
+      outcome: "done",
+      actor: { sessionId: "session-b", runtimeId: "runtime-b" },
+    }, 200)).toEqual({ applied: false, error: "Workflow execution is leased to another active runtime" });
   });
 
   it("rejects undeclared outcomes without changing the run", () => {

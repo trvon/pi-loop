@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowTerminalStatus } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
 import { isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowDefinition, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
@@ -26,7 +26,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     );
   }
 
-  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition }): LoopEntry {
+  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition; actor?: WorkflowRuntimeActor }): LoopEntry {
     return this.withLock(() => {
       if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
@@ -52,6 +52,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           maxFires: opts.maxFires,
           dynamic: opts.dynamic,
           workflow: opts.workflow,
+          actor: opts.actor,
         },
       });
       return this.entries.get(String(this.nextId - 1))!;
@@ -228,7 +229,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   transitionWorkflow(
     id: string,
     input: WorkflowTransitionInput,
-    expected?: { currentState: string; transitionSeq: number; activeTaskId?: string },
+    expected?: { currentState: string; transitionSeq: number; activeExecutionId?: string },
   ): { entry?: LoopEntry; applied: boolean; error?: string; failure?: WorkflowTransitionFailure; terminal?: WorkflowTerminalStatus } {
     return this.withLock(() => {
       const entry = this.entries.get(id);
@@ -237,7 +238,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       if (expected && (
         entry.workflow.currentState !== expected.currentState
         || entry.workflow.transitionSeq !== expected.transitionSeq
-        || entry.workflow.activeTaskId !== expected.activeTaskId
+        || entry.workflow.activeExecution?.id !== expected.activeExecutionId
       )) {
         return { applied: false, error: `Workflow #${id} changed; inspect LoopList and retry the transition.` };
       }
@@ -258,7 +259,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           id,
           outcome: input.outcome,
           evidence: input.evidence,
-          activeTaskId: input.activeTaskId,
+          actor: input.actor,
           ...(result.terminal ? { terminal: result.terminal } : {}),
         },
       } as LoopReducerEvent);
@@ -282,6 +283,38 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         return { entry: terminalEntry, applied: true, terminal: result.terminal };
       }
       return { entry: this.entries.get(id), applied: true };
+    });
+  }
+
+  claimWorkflowExecution(
+    id: string,
+    actor: WorkflowRuntimeActor,
+    leaseSeconds = 1800,
+  ): { entry?: LoopEntry; claimed: boolean; error?: string } {
+    return this.withLock(() => {
+      const entry = this.entries.get(id);
+      if (!entry) return { claimed: false, error: `Loop #${id} not found` };
+      const execution = entry.workflow?.activeExecution;
+      if (!execution || execution.status !== "active") {
+        return { claimed: false, error: `Workflow #${id} has no active execution` };
+      }
+      const now = Date.now();
+      const lease = execution.lease;
+      const sameOwner = lease
+        && lease.ownerSessionId === actor.sessionId
+        && lease.ownerRuntimeId === actor.runtimeId;
+      if (lease && lease.expiresAt > now && !sameOwner) {
+        return { claimed: false, error: "Workflow execution is leased to another active runtime" };
+      }
+      this.applyReducerEvent({
+        type: "LOOP_WORKFLOW_EXECUTION_CLAIMED",
+        at: now,
+        source: "tool",
+        entityType: "loop",
+        entityId: id,
+        payload: { id, actor, leaseMs: leaseSeconds * 1000 },
+      });
+      return { entry: this.entries.get(id), claimed: true };
     });
   }
 

@@ -84,6 +84,34 @@ export interface WorkflowDefinition {
   states: Record<string, WorkflowStateDefinition>;
 }
 
+export interface WorkflowRuntimeActor {
+  sessionId: string;
+  runtimeId: string;
+}
+
+export interface WorkflowExecutionLease {
+  ownerSessionId: string;
+  ownerRuntimeId: string;
+  acquiredAt: number;
+  heartbeatAt: number;
+  expiresAt: number;
+  attempt: number;
+}
+
+export interface WorkflowExecutionRecord {
+  id: string;
+  stateId: string;
+  transitionSeq: number;
+  subject: string;
+  description: string;
+  status: "active" | "completed" | "cancelled";
+  createdAt: number;
+  updatedAt: number;
+  settledAt?: number;
+  evidence?: string;
+  lease?: WorkflowExecutionLease;
+}
+
 export interface WorkflowTransitionRecord {
   from: string;
   to: string;
@@ -100,6 +128,9 @@ export interface WorkflowRunState {
   stateEnteredAt: number;
   attemptsByState: Record<string, number>;
   stateFireCounts: Record<string, number>;
+  activeExecution?: WorkflowExecutionRecord;
+  executionHistory?: WorkflowExecutionRecord[];
+  /** Legacy external task reference; retained only while persisted loops migrate. */
   activeTaskId?: string;
   waitingMonitor?: WorkflowMonitorWait;
   lastTransition?: WorkflowTransitionRecord;
