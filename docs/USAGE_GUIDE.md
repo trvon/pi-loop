@@ -86,28 +86,28 @@ WorkflowCreate goal="Fix the regression" definition='{
 }'
 ```
 
-The initial state must be non-terminal. Each wake presents the current state, state instructions, active task, allowed outcomes, and — after the first transition — the last transition and its recorded evidence, so the next state can act on what the previous one found. The agent finishes the state by selecting one declared outcome:
+The initial state must be non-terminal. Each wake presents the current state, state instructions, the active workflow execution (subject + lease owner/expiry), allowed outcomes, and — after the first transition — the last transition and its recorded evidence, so the next state can act on what the previous one found. The agent finishes the state by selecting one declared outcome:
 
 ```text
-WorkflowTransition id="1" outcome="root_cause_found" evidence="A null config reaches the parser." claimId="<active-task-claim>"
-WorkflowTransition id="1" outcome="tests_pass" evidence="Targeted and full test suites pass." claimId="<active-task-claim>"
+WorkflowTransition id="1" outcome="root_cause_found" evidence="A null config reaches the parser."
+WorkflowTransition id="1" outcome="tests_pass" evidence="Targeted and full test suites pass."
 ```
 
-`WorkflowTransition` validates the branch, settles the current state task, records evidence, creates the next state's optional task, and queues the next wake. Pass `claimId` when the current state task was claimed; do not complete or close a linked state task with `TaskUpdate`. A self-loop creates a fresh linked attempt and increments the displayed attempt count. A task settlement failure leaves the workflow in its source state. When a target reaches `maxAttempts`, only outcomes leading to that target become unavailable; other declared outcomes remain selectable. Reaching a `completed` terminal state deletes the workflow loop; reaching a `paused` terminal state preserves it in paused state for inspection or deletion. Terminal workflow states cannot be resumed. Task status does not guess an outcome—the model selects one explicitly. LoopList and workflow wakes omit outcomes whose target state has exhausted `maxAttempts`.
+`WorkflowTransition` validates the branch, settles the current execution, records evidence, and activates the next state's execution in the same locked write. Workflow work is embedded in the loop controller — never call `TaskClaim` or `TaskUpdate` for it. The current runtime's lease authorizes the transition; after a restart, `WorkflowClaim id="1"` renews or takes over (only after expiry). A self-loop creates a fresh attempt execution and increments the displayed attempt count. When a target reaches `maxAttempts`, only outcomes leading to that target become unavailable; other declared outcomes remain selectable. Reaching a `completed` terminal state deletes the workflow loop; reaching a `paused` terminal state preserves it in paused state for inspection or deletion. Terminal workflow states cannot be resumed. Task status does not guess an outcome—the model selects one explicitly. LoopList and workflow wakes omit outcomes whose target state has exhausted `maxAttempts`.
 
-To repeat a state until evidence supports an outcome, add a cron-only state policy: `"loop":{"schedule":"0 7 * * *","maxFires":10,"startImmediately":false}`. Only the active state's policy is armed. Scheduled wakes retain the linked state task; `WorkflowTransition` remains the only operation that settles it and unlocks the destination task and cadence. `maxFires` is local to that state and pauses the workflow when exhausted. State policies do not wake immediately unless `startImmediately` is `true`.
+To repeat a state until evidence supports an outcome, add a cron-only state policy: `"loop":{"schedule":"0 7 * * *","maxFires":10,"startImmediately":false}`. Only the active state's policy is armed. Scheduled wakes retain the active execution; `WorkflowTransition` remains the only operation that settles it and unlocks the destination execution and cadence. `maxFires` is local to that state and pauses the workflow when exhausted. State policies do not wake immediately unless `startImmediately` is `true`.
 
-`LoopList` includes workflow state, active task, transition evidence, and valid outcomes alongside ordinary loops.
+`LoopList` includes workflow state, active execution, transition evidence, and valid outcomes alongside ordinary loops.
 
 ### Inspecting and stopping loops
 
 ```text
 LoopList
 LoopDelete id="1" action="pause"
-LoopDelete id="1" action="delete" claimId="<active-workflow-task-claim>"
+LoopDelete id="1" action="delete"
 ```
 
-`LoopDelete` defaults to `action="delete"`. Deleting a workflow first closes its active state task; pass that task's `claimId` when claimed.
+`LoopDelete` defaults to `action="delete"` and removes the controller and its embedded executions.
 
 ## Background monitors
 

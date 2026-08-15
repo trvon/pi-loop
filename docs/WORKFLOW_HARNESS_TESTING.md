@@ -53,8 +53,11 @@ The workflow wake/task guidance was evaluated with fresh clean-slate executors u
 | Baseline | first attempt, second attempt, rejected-close recovery | failure | 80%, 80%, 87.5% | executors confused `claimId` with the removed `activeTaskId` field |
 | Revision | first attempt, rejected-close recovery | success | 100%, 100% | none |
 | Holdout | attempt 3/3 with retry exhausted | success | 100% | none |
+| Embedded execution | retry self-loop, terminal completion, restart claim | success | 100%, 100%, 100% | none |
 
 The minimal revision names the exact `WorkflowTransition` fields in both wake and tool guidance, explicitly says that `activeTaskId` is invalid, and lists only outcomes whose target attempt limits remain available. The holdout executor correctly claimed the linked task and chose `done` instead of the exhausted `retry` self-loop.
+
+The embedded-execution revision removed the external task link entirely: wake guidance names the active workflow execution and its lease instead of a task, `WorkflowTransition` accepts only `id`/`outcome`/`evidence`, and the live harness asserts zero `TaskClaim`/`TaskUpdate` calls and an empty TaskStore.
 
 This evaluation complements deterministic tests: it measures whether an unbiased executor understands the prompt, while the integration suite proves that the resulting tool sequence preserves state.
 
