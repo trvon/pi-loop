@@ -227,7 +227,6 @@ Set triggerType to cron, event, hybrid, or idle. Polling loops need maxFires; ob
 A completed iteration, unchanged result, or temporarily empty check is not a reason to delete the loop. Recurring loops persist; dynamic loops advance through LoopUpdate.`,
     promptGuidelines: [
       "Prefer event triggers over cron; use triggerType `idle` with trigger `idle` for agent-paced continuation.",
-      "Always set maxFires on polling loops and readOnly for observation-only work.",
       "For autonomous backlogs use event `tasks:created`, recurring true, taskBacklog true, and bounded maxFires. It adopts unfinished tasks until terminal. Do not use autoTask.",
       "Use an idle loop, not taskBacklog, to continue a broad goal without a native task queue.",
       "Recurring loops are persistent controllers. Do not call LoopDelete after a normal fire, an unchanged check, or one completed iteration; only delete when the user explicitly asks to cancel or the loop's stated stop condition is satisfied.",

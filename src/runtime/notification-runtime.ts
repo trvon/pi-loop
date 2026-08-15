@@ -162,6 +162,9 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
           `State work lifecycle: ${leaseLine} Transition it with WorkflowTransition; do not call TaskClaim or TaskUpdate for it.`,        );
       }
       if (outcomes.length > 0) lines.push(`Allowed outcomes: ${outcomes.join(", ")}`);
+      if (outcomes.length === 0 && availability.unavailable.length === 0 && !state?.terminal) {
+        lines.push(`This state declares no outcomes ("on"). Add on:{outcome:targetState} to the definition to advance it.`);
+      }
       if (availability.unavailable.length > 0) {
         lines.push(`Unavailable outcomes: ${availability.unavailable.map((item) => item.outcome).join(", ")} (attempt limit reached)`);
       }
@@ -170,7 +173,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       } else if (state?.loop) {
         lines.push(
           `Workflow lifecycle: Loop #${loopId} runs this state on its configured cadence until an acceptance condition is met.`,
-          "Continue the linked task and preserve its claim. Do not call WorkflowTransition merely because this iteration finished; call it only with a declared outcome and supporting evidence when the state can advance.",
+          "Complete the active workflow work. Do not call WorkflowTransition merely because this iteration finished; call it only with a declared outcome and supporting evidence when the state can advance.",
         );
       } else {
         lines.push(

@@ -218,6 +218,10 @@ describe("workflow reducer", () => {
     expect(validateWorkflowDefinition({ ...definition, initialState: "missing" })).toBe('Initial state "missing" is not defined');
     expect(validateWorkflowDefinition({
       ...definition,
+      states: { ...definition.states, done: { ...definition.states.done, terminal: true } },
+    } as unknown as WorkflowDefinition)).toBe('State "done" terminal must be "completed" or "paused"');
+    expect(validateWorkflowDefinition({
+      ...definition,
       states: {
         ...definition.states,
         investigate: { ...definition.states.investigate, on: { continue: "missing" } },

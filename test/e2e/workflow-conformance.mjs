@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -20,6 +20,7 @@ const fixtureDir = mkdtempSync(join(tmpdir(), "pi-loop-live-workflow-"));
 const extensionPath = join(projectDir, "dist", "index.js");
 const traceEvents = [];
 const toolCalls = [];
+const successfulCreates = [];
 let stderr = "";
 let eventCount = 0;
 let stdoutBytes = 0;
@@ -29,31 +30,14 @@ let failure;
 let resolveCompletion;
 let rejectCompletion;
 
-const workflowDefinition = {
-  version: 1,
-  initialState: "work",
-  states: {
-    work: {
-      prompt: "On attempt 1 transition with retry; on attempt 2 transition with done.",
-      task: {
-        subject: "Live workflow attempt",
-        description: "Embedded workflow work settled only through WorkflowTransition.",
-      },
-      on: { retry: "work", done: "done" },
-      maxAttempts: 3,
-    },
-    done: { prompt: "The live workflow is complete.", terminal: "completed" },
-  },
-};
-
+// Goal-seeded, not scripted: the model must discover WorkflowCreate /
+// WorkflowTransition from their descriptions and author its own definition.
 const prompt = [
-  "Run this live pi-loop workflow conformance scenario.",
-  "Call WorkflowCreate exactly once with goal='Live embedded-execution workflow' and this exact JSON definition:",
-  JSON.stringify(workflowDefinition),
-  "Then follow every workflow wake until terminal completion.",
-  "For each wake: read the shown Attempt and Active workflow work line, then call WorkflowTransition with id, one outcome, and concise evidence. Never call TaskClaim, TaskUpdate, LoopUpdate, or LoopDelete.",
-  "On attempt 1 choose outcome retry. On attempt 2 choose outcome done.",
-  "Do not create unrelated tasks or loops. Reply LIVE_WORKFLOW_DONE only after WorkflowTransition reports terminal completion.",
+  "Run a live conformance exercise for the durable workflow tools installed in this session.",
+  "Goal: model a bounded task that allows at most three attempts. On the first attempt, surface one follow-up case and retry; on the second attempt, complete the work and report done.",
+  "The work itself must be embedded in the workflow states — do not create it as separate tasks.",
+  "Use only the workflow tools this session provides; do not create standalone tasks, loops, or monitors.",
+  "When a workflow tool reports terminal completion, reply exactly LIVE_WORKFLOW_DONE and nothing else.",
 ].join("\n");
 
 function send(child, command) {
@@ -63,30 +47,49 @@ function send(child, command) {
 function readState() {
   const loopPath = join(fixtureDir, ".pi", "loops", "loops.json");
   const taskPath = join(fixtureDir, ".pi", "tasks", "tasks.json");
+  // Terminal completion deletes the last loop and standalone tasks are never
+  // created, so both files may legitimately not exist.
+  const loops = existsSync(loopPath) ? JSON.parse(readFileSync(loopPath, "utf8")).loops : [];
+  const tasks = existsSync(taskPath) ? JSON.parse(readFileSync(taskPath, "utf8")).tasks : [];
+  return { loops, tasks };
+}
+
+function validateDefinition(args) {
+  if (!args || typeof args.definition !== "string") throw new Error("WorkflowCreate was not called with a JSON definition string");
+  let definition;
   try {
-    const loops = JSON.parse(readFileSync(loopPath, "utf8")).loops;
-    const tasks = JSON.parse(readFileSync(taskPath, "utf8")).tasks;
-    return { loops, tasks };
-  } catch (cause) {
-    throw new Error("live workflow state is unavailable or invalid", { cause });
+    definition = JSON.parse(args.definition);
+  } catch {
+    throw new Error("WorkflowCreate definition is not valid JSON");
   }
+  if (definition?.version !== 1) throw new Error("workflow definition must be version 1");
+  const initial = definition.states?.[definition.initialState];
+  if (!initial) throw new Error(`initial state "${definition.initialState}" is not defined`);
+  if (initial.terminal) throw new Error("initial state must be non-terminal");
+  if (!initial.task?.subject) throw new Error("initial state must embed task work");
+  if (!Object.values(initial.on ?? {}).includes(definition.initialState)) {
+    throw new Error("initial state must declare a self-loop outcome");
+  }
+  if (!Object.values(definition.states).some((state) => state?.terminal === "completed")) {
+    throw new Error("workflow must declare a completed terminal state");
+  }
+  return definition;
 }
 
 function validate() {
   const { loops, tasks } = readState();
-  const creates = toolCalls.filter((call) => call.name === "WorkflowCreate");
   const claims = toolCalls.filter((call) => call.name === "TaskClaim");
   const transitions = toolCalls.filter((call) => call.name === "WorkflowTransition");
-  const taskUpdates = toolCalls.filter((call) => call.name === "TaskUpdate");
+  const forbidden = toolCalls.filter((call) =>
+    ["TaskUpdate", "TaskCreate", "LoopCreate", "LoopDelete", "LoopUpdate"].includes(call.name));
 
-  if (creates.length !== 1) throw new Error(`expected one WorkflowCreate call, got ${creates.length}`);
+  if (successfulCreates.length !== 1) throw new Error(`expected one accepted WorkflowCreate call, got ${successfulCreates.length}`);
+  validateDefinition(successfulCreates[0].args);
   if (claims.length !== 0) throw new Error(`expected zero TaskClaim calls, got ${claims.length}`);
-  if (transitions.length !== 2) throw new Error(`expected two WorkflowTransition calls, got ${transitions.length}`);
-  if (transitions[0]?.args?.outcome !== "retry" || transitions[1]?.args?.outcome !== "done") {
-    throw new Error(`expected transition outcomes retry,done; got ${transitions.map((call) => call.args?.outcome).join(",")}`);
-  }
+  if (transitions.length < 2) throw new Error(`expected at least two WorkflowTransition calls, got ${transitions.length}`);
   if (transitions.some((call) => call.args?.claimId !== undefined)) throw new Error("workflow transitions must not carry claimId");
-  if (taskUpdates.length > 0) throw new Error("agent called TaskUpdate during workflow execution");
+  if (forbidden.length > 0) throw new Error(`agent called forbidden tools: ${forbidden.map((call) => call.name).join(", ")}`);
+  if (!finished) throw new Error("no WorkflowTransition reported terminal completion");
   if (loops.length !== 0) throw new Error(`expected terminal workflow deletion, found ${loops.length} loop(s)`);
   if (tasks.length !== 0) throw new Error(`expected zero standalone tasks, found ${tasks.length}`);
   return { loops, tasks };
@@ -182,6 +185,17 @@ child.stdout.on("data", (chunk) => {
     eventCount++;
     const summary = summarizeEvent(event);
     if (summary && traceEvents.length < 2000) traceEvents.push(summary);
+    if (event.type === "tool_execution_end" && event.toolName === "WorkflowCreate") {
+      const text = event.result?.content?.map((item) => item.text ?? "").join("\n") ?? "";
+      const rejected = Boolean(event.isError || text.includes("Workflow definition rejected"));
+      if (!rejected) {
+        const start = [...toolCalls].reverse().find((call) => call.name === "WorkflowCreate" && !call.recorded);
+        if (start) {
+          start.recorded = true;
+          successfulCreates.push(start);
+        }
+      }
+    }
     if (event.type === "tool_execution_start") {
       toolCalls.push({ name: event.toolName, args: event.args, toolCallId: event.toolCallId });
     }
@@ -221,10 +235,10 @@ const outcome = new Promise((resolveOutcome, rejectOutcome) => {
 
 try {
   await new Promise((resolveWait) => setTimeout(resolveWait, 6500));
-  send(child, { id: "workflow-live", type: "prompt", message: prompt });
+  send(child, { id: "workflow-conformance", type: "prompt", message: prompt });
   const state = await outcome;
   writeArtifact("passed", state);
-  console.log(`PASS: live embedded workflow completed with ${toolCalls.length} tool calls`);
+  console.log(`PASS: goal-seeded workflow completed with ${toolCalls.length} tool calls`);
   console.log(`Artifact: ${join(artifactDir, "latest.json")}`);
 } catch (error) {
   failure = error;

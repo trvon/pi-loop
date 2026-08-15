@@ -84,6 +84,9 @@ export function validateWorkflowDefinition(definition: WorkflowDefinition): stri
     if (state.terminal && state.on && Object.keys(state.on).length > 0) {
       return `Terminal state "${stateId}" cannot declare transitions`;
     }
+    if (state.terminal !== undefined && state.terminal !== "completed" && state.terminal !== "paused") {
+      return `State "${stateId}" terminal must be "completed" or "paused"`;
+    }
     if (state.maxAttempts !== undefined && (!Number.isInteger(state.maxAttempts) || state.maxAttempts < 1)) {
       return `State "${stateId}" maxAttempts must be a positive integer`;
     }

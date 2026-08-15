@@ -444,6 +444,20 @@ describe("Workflow tools", () => {
     expect(transition.parameters.properties.claimId).toBeUndefined();
   });
 
+  it("guides a fix when a state declares no outcomes", async () => {
+    const noOutcomes = JSON.stringify({
+      version: 1,
+      initialState: "stuck",
+      states: {
+        stuck: { prompt: "No exits declared." },
+        done: { prompt: "Report.", terminal: "completed" },
+      },
+    });
+    const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition: noOutcomes });
+    expect(out).toContain("Needs attention: this state declares no outcomes");
+    expect(out).toContain('Add on: {outcome: targetState}');
+  });
+
   it("rejects an undeclared outcome without changing the workflow", async () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     const out = await h.text("WorkflowTransition", { id: "1", outcome: "ship_it" });

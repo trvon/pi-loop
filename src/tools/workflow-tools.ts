@@ -100,6 +100,9 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   const unavailable = availability.unavailable.sort((left, right) => Number(left.outcome === failure?.outcome) - Number(right.outcome === failure?.outcome));
   if (unavailable.length > 0) message += `\nUnavailable outcomes: ${unavailable.map((item) => `${item.outcome} — ${item.targetState} exhausted ${item.maxAttempts} attempt(s)`).join("; ")}.`;
   if (state?.terminal) return `${message}\nTerminal: ${state.terminal}`;
+  if (availability.available.length === 0 && unavailable.length === 0) {
+    return `${message}\nNeeds attention: this state declares no outcomes ("on"). Add on: {outcome: targetState} to advance it.`;
+  }
   if (availability.available.length === 0) return `${message}\nBlocked: all declared outcomes are unavailable.`;
   return `${message}\nChoose outcome: ${availability.available.join(", ")}\nNext: WorkflowTransition({ id: "${entry.id}", outcome: "${availability.available[0]}", evidence: "..." })`;
 }
@@ -112,16 +115,17 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     label: "WorkflowCreate",
     renderCall: renderToolCall("Workflow", (args) => `create · ${String(toolArg(args, "goal") ?? "workflow").slice(0, 56)}`),
     renderResult: renderToolResult,
-    description: "Create a task-driven workflow for named phases and outcomes. State work is embedded atomically in the workflow controller.",
+    description: "Create a task-driven workflow for named phases and outcomes. State work is embedded atomically in the workflow controller. Definition schema: {version:1, initialState, states:{stateId:{prompt, on:{outcome:targetState}, task?:{subject,description}, maxAttempts?, loop?:{schedule,maxFires?,startImmediately?}, terminal?}}}. Declare state work with task:{subject,description}; terminal is \"completed\" or \"paused\".",
     promptGuidelines: [
       "Use WorkflowCreate for named phase/outcome flows, not flat backlogs.",
       "Give nonterminal states concise prompts and explicit outcomes.",
+      "Declare state work with task:{subject,description}; use prompt for instructions.",
       "Workflow state work is controller-owned; do not call TaskClaim or TaskUpdate for it.",
-      "Model rework as outcome cycles bounded by maxAttempts; re-entry increments attempts.",
+      "Model rework as outcome cycles bounded by maxAttempts.",
     ],
     parameters: Type.Object({
       goal: Type.String({ description: "Overall workflow goal" }),
-      definition: Type.String({ description: "Workflow JSON: version, initialState, and named states" }),
+      definition: Type.String({ description: "Workflow definition JSON; see the tool description for the schema" }),
       maxFires: Type.Optional(Type.Integer({ description: "Maximum workflow wakes before automatic expiry (default: 30)", default: 30, minimum: 1 })),
     }),
     async execute(_toolCallId, params) {
