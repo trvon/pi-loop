@@ -28,8 +28,8 @@ export interface SessionRuntimeOptions {
   notificationRuntime: NotificationRuntime;
   flushPendingNotifications: (options?: { ignorePendingMessages?: boolean }) => Promise<void>;
   migrateTaskBacklogLoops: () => number;
-  cleanupTaskBacklogLoops: () => Promise<number>;
-  adoptTaskBacklogLoops: (baselineFireCounts?: ReadonlyMap<string, number>) => Promise<number>;
+  cleanupTaskBacklogLoops: (isCurrent?: () => boolean) => Promise<number>;
+  adoptTaskBacklogLoops: (baselineFireCounts?: ReadonlyMap<string, number>, isCurrent?: () => boolean) => Promise<number>;
   releaseTaskBacklogWakes: () => void;
   clearWorkflowMonitorWaits: () => void;
   shutdownMonitors: () => Promise<void>;
@@ -120,7 +120,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
       ensureHeartbeat();
     }
     if (!isCurrentGeneration(generation)) return;
-    await adoptTaskBacklogLoops();
+    await adoptTaskBacklogLoops(undefined, () => isCurrentGeneration(generation));
   }
 
   async function pumpLoops(generation = getSessionGeneration()): Promise<void> {
@@ -195,9 +195,9 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
       hasPendingMessages: ctx.hasPendingMessages(),
     });
     releaseTaskBacklogWakes();
-    await cleanupTaskBacklogLoops();
+    await cleanupTaskBacklogLoops(() => isCurrentGeneration(generation));
     if (!isCurrentGeneration(generation)) return;
-    await adoptTaskBacklogLoops(agentStartFireCounts);
+    await adoptTaskBacklogLoops(agentStartFireCounts, () => isCurrentGeneration(generation));
     if (!isCurrentGeneration(generation)) return;
     agentStartFireCounts = undefined;
     await flushPendingNotifications({ ignorePendingMessages: true });

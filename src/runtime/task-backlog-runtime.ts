@@ -52,8 +52,8 @@ export interface TaskBacklogRuntimeOptions {
 }
 
 export interface TaskBacklogRuntime {
-  cleanupTaskBacklogLoops(): Promise<number>;
-  adoptTaskBacklogLoops(baselineFireCounts?: ReadonlyMap<string, number>): Promise<number>;
+  cleanupTaskBacklogLoops(isCurrent?: () => boolean): Promise<number>;
+  adoptTaskBacklogLoops(baselineFireCounts?: ReadonlyMap<string, number>, isCurrent?: () => boolean): Promise<number>;
   evaluateTaskBacklog(taskStore?: TaskStore, pendingCount?: number): Promise<{ entry?: LoopEntry; created: boolean; cleaned: number }>;
   isAutoTaskWorkerLoop(entry: LoopEntry): boolean;
   isTaskBacklogLoop(entry: LoopEntry): boolean;
@@ -112,26 +112,34 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     emitLoopAutodeleted?.(buildLoopAutodeletedPayload(entry, pendingCount));
   }
 
-  async function adoptTaskBacklogLoops(baselineFireCounts?: ReadonlyMap<string, number>): Promise<number> {
+  async function adoptTaskBacklogLoops(
+    baselineFireCounts?: ReadonlyMap<string, number>,
+    isCurrent?: () => boolean,
+  ): Promise<number> {
+    if (isCurrent && !isCurrent()) return 0;
     const backlogLoops = getLoops().filter((entry) => isTaskBacklogLoop(entry)
       && (baselineFireCounts === undefined || (entry.fireCount ?? 0) <= (baselineFireCounts.get(entry.id) ?? 0)));
     if (backlogLoops.length === 0) return 0;
 
     const pending = await hasPendingTasks();
+    if (isCurrent && !isCurrent()) return 0;
     if (pending <= 0) return 0;
 
     for (const entry of backlogLoops) {
+      if (isCurrent && !isCurrent()) return 0;
       debug?.(`task backlog loop #${entry.id} — adopting ${pending} unfinished task(s)`);
       await adoptLoop(entry);
     }
     return backlogLoops.length;
   }
 
-  async function cleanupTaskBacklogLoops(): Promise<number> {
+  async function cleanupTaskBacklogLoops(isCurrent?: () => boolean): Promise<number> {
+    if (isCurrent && !isCurrent()) return 0;
     const backlogLoops = getLoops().filter(isTaskBacklogLoop);
     if (backlogLoops.length === 0) return 0;
 
     const pending = await hasPendingTasks();
+    if (isCurrent && !isCurrent()) return 0;
     if (pending < 0 || pending > 0) return 0;
 
     const deletedLoopIds = backlogLoops.map((entry) => entry.id);
