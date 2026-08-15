@@ -43,7 +43,7 @@ MonitorStop monitorId="1"
 
 - Cron, event, hybrid, dynamic goal, and opt-in workflow loops
 - Idle-safe agent re-wakes with dynamic-loop restart/session-switch recovery
-- Background command monitoring with buffered output and `onDone` wakes
+- Background command monitoring with buffered output, `onDone` wakes, and timeout alerts
 - Optional `pi-tasks` integration and a native task fallback
 - Session-isolated persistence and a compact TUI status line
 

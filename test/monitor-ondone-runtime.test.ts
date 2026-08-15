@@ -48,6 +48,47 @@ function setup(manager: ReturnType<typeof mockManager>) {
 const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 
 describe("monitor-ondone-runtime", () => {
+  it("delivers timeout alerts only after terminal reaping", async () => {
+    const timeoutLoop = {
+      ...doneLoop,
+      id: "7",
+      trigger: { type: "event", source: "monitor:timeout" },
+    } as LoopEntry;
+    const manager = mockManager({ onCompleteReturns: true, onTerminalReturns: true });
+    const onLoopFire = vi.fn();
+    const deleteLoop = vi.fn();
+    const runtime = createMonitorOnDoneRuntime({
+      monitorManager: manager as any,
+      getLoop: (id) => (id === timeoutLoop.id ? timeoutLoop : undefined),
+      deleteLoop,
+      onLoopFire,
+      completeWorkflowMonitorWait: vi.fn(),
+      rearmWorkflow: vi.fn(),
+      wakeWorkflow: vi.fn(),
+    });
+
+    runtime.register(timeoutLoop, "3");
+    expect(manager.onTerminal).toHaveBeenCalledTimes(1);
+    expect(manager.onComplete).not.toHaveBeenCalled();
+
+    manager.fireTerminal({
+      id: "3",
+      command: "fold scan",
+      timeout: 300000,
+      status: "stopped",
+      stopReason: "timeout",
+      startedAt: 0,
+      outputLines: 0,
+      outputBuffer: [],
+    } as MonitorEntry);
+    await flush();
+
+    expect(onLoopFire).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.stringContaining("Monitor #3 outcome: status=stopped"),
+    }));
+    expect(deleteLoop).toHaveBeenCalledWith(timeoutLoop.id);
+  });
+
   it("registers a completion callback on a running monitor and delivers once on completion", async () => {
     const manager = mockManager({ onCompleteReturns: true });
     const { runtime, onLoopFire, deleteLoop } = setup(manager);

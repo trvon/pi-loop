@@ -121,10 +121,10 @@ Output is buffered and emitted as `monitor:output`. A monitor finishes as one of
 
 - clean exit: emits `monitor:done`
 - nonzero exit or spawn failure: emits `monitor:error`
-- timeout: stops the process, emits `monitor:error`, and reports the timeout
+- timeout: stops the process, emits `monitor:error`, and always wakes the agent after the process reaps
 - explicit `MonitorStop`: cancels the monitor without an `onDone` wake; workflow-owned monitors resume their current state with `status=stopped`
 
-Pass `onDone` whenever the agent should resume work after completion. Its one-shot wake fires on success, failure, or timeout. The default timeout is five minutes; use `timeout=0` to disable it.
+Pass `onDone` whenever the agent should resume work after success or failure. Its one-shot wake also fires on timeout; monitors without `onDone` still send a timeout-only alert. The default timeout is five minutes; use `timeout=0` to disable it.
 
 For a monitor launched from an active workflow, use `workflowId` instead of `onDone`:
 
