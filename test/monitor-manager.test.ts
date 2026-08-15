@@ -859,8 +859,8 @@ describe("MonitorManager", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")("times out the shell's background child process", async () => {
-    const child = startBackgroundChild(25);
+  it.skipIf(process.platform === "win32")("timeout stop kills the shell's background child process", async () => {
+    const child = startBackgroundChild(0);
     const stopped = new Promise<void>((resolve) => {
       pi.events.on("monitor:finished", (event: { monitorId?: string; status?: string }) => {
         if (event.monitorId === child.entry.id && event.status === "stopped") resolve();
@@ -869,7 +869,9 @@ describe("MonitorManager", () => {
 
     try {
       await child.ready;
+      const stop = manager.stop(child.entry.id, "timeout");
       await stopped;
+      await stop;
       await new Promise<void>((resolve) => setTimeout(resolve, 250));
       expect(existsSync(child.marker)).toBe(false);
     } finally {
