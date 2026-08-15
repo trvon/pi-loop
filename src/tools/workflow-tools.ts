@@ -46,6 +46,7 @@ export interface WorkflowToolsOptions {
   getTriggerSystem: () => TriggerSystemLike;
   updateWidget: () => void;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
+  isTaskSystemReady: () => boolean;
   createWorkflowTask?: (entry: LoopEntry) => Promise<string | undefined>;
   completeWorkflowTask?: (taskId: string, claimId?: string) => Promise<boolean>;
   closeWorkflowTask?: (taskId: string, claimId?: string) => Promise<boolean>;
@@ -138,6 +139,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     getTriggerSystem,
     updateWidget,
     onDynamicLoopActivated,
+    isTaskSystemReady,
     createWorkflowTask,
     completeWorkflowTask,
     closeWorkflowTask,
@@ -172,6 +174,14 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
           tone: "error",
           summary: "Workflow definition rejected",
           expanded: [parsed.error ?? "unknown validation error", "Expand the tool result for a valid definition skeleton."],
+        });
+      }
+
+      const initialState = parsed.definition.states[parsed.definition.initialState];
+      if (initialState?.task && !isTaskSystemReady()) {
+        const message = "Task system is still initializing; retry WorkflowCreate after task-provider detection settles.";
+        return textResult(message, {
+          kind: "workflow", action: "create", tone: "error", summary: "Workflow creation deferred", expanded: [message],
         });
       }
 

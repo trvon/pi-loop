@@ -58,6 +58,39 @@ describe("linked workflow task integration", () => {
     return { ...harness, ctx, taskPath, loopPath };
   }
 
+  it("defers a task-bearing workflow until native task-provider detection settles", async () => {
+    const harness = createMockPi();
+    extension(harness.pi as any);
+    const sessionId = "workflow-detection";
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => sessionId },
+    };
+    for (const handler of harness.extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+
+    const deferred = await harness.toolMap.get("WorkflowCreate")!.execute!("early-create", {
+      goal: "Finish bounded workflow work",
+      definition: RETRY_WORKFLOW,
+    });
+    expect(deferred.content[0].text).toContain("Task system is still initializing");
+    expect(harness.toolMap.get("LoopList")!.execute).toBeDefined();
+    expect((await harness.toolMap.get("LoopList")!.execute!("early-list", {})).content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+
+    await vi.advanceTimersByTimeAsync(6_100);
+    const created = await harness.toolMap.get("WorkflowCreate")!.execute!("ready-create", {
+      goal: "Finish bounded workflow work",
+      definition: RETRY_WORKFLOW,
+    });
+    expect(created.content[0].text).toContain("Active task: #1");
+    const taskPath = resolveTaskStorePath({ loopScope: "session", cwd }, sessionId)!;
+    expect(new TaskStore(taskPath).get("1")?.workflow).toMatchObject({
+      loopId: "1",
+      stateId: "work",
+      transitionSeq: 0,
+    });
+  });
+
   it("self-loops through fresh linked attempts and terminates without orphan tasks", async () => {
     const h = await setup();
     const created = await h.toolMap.get("WorkflowCreate")!.execute!("create", {

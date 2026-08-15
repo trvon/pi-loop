@@ -379,6 +379,7 @@ export default function (pi: ExtensionAPI) {
     onDynamicLoopActivated: (entry) => {
       onLoopFire(entry);
     },
+    isTaskSystemReady: () => taskProvider?.isReady() ?? false,
     createWorkflowTask: (entry) => taskProvider?.createWorkflowTask(entry) ?? Promise.resolve(undefined),
     completeWorkflowTask: (taskId, claimId) => taskProvider?.completeWorkflowTask(taskId, claimId) ?? Promise.resolve(false),
     closeWorkflowTask: (taskId, claimId) => taskProvider?.closeWorkflowTask(taskId, claimId) ?? Promise.resolve(false),

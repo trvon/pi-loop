@@ -296,7 +296,8 @@ A completed iteration, unchanged result, or temporarily empty check is not a rea
       if (trigger.type === "event") backlogEventSource = trigger.source;
       else if (trigger.type === "hybrid") backlogEventSource = trigger.event.source;
       let backlogError: string | undefined;
-      if (taskBacklog && recurring === false) backlogError = "taskBacklog loops must be recurring.";
+      if (taskBacklog && autoTask) backlogError = "taskBacklog loops cannot enable autoTask; backlog workers adopt existing tasks instead of creating more.";
+      else if (taskBacklog && recurring === false) backlogError = "taskBacklog loops must be recurring.";
       else if (taskBacklog && backlogEventSource !== "tasks:created") {
         backlogError = 'taskBacklog loops require a "tasks:created" event trigger. For a broad goal, use trigger "idle" with triggerType "idle" and omit taskBacklog.';
       }

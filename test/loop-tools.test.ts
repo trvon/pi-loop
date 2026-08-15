@@ -15,6 +15,7 @@ function setup() {
   const completeWorkflowTask = vi.fn(async (_taskId: string, _claimId?: string) => true);
   const closeWorkflowTask = vi.fn(async (_taskId: string, _claimId?: string) => true);
   const maybeBootstrapTaskLoop = vi.fn(async () => false);
+  const isTaskSystemReady = vi.fn(() => true);
   registerLoopTools({
     pi,
     getStore: () => store as any,
@@ -23,7 +24,7 @@ function setup() {
     getMonitorManager: () => monitorManager as any,
     updateWidget: vi.fn(),
     maybeBootstrapTaskLoop,
-    isTaskSystemReady: () => true,
+    isTaskSystemReady,
     onDynamicLoopActivated,
     closeWorkflowTask,
   });
@@ -32,6 +33,7 @@ function setup() {
     getStore: () => store,
     getTriggerSystem: () => triggerSystem,
     updateWidget: vi.fn(),
+    isTaskSystemReady,
     onDynamicLoopActivated,
     createWorkflowTask,
     completeWorkflowTask,
@@ -39,7 +41,7 @@ function setup() {
   });
   const result = async (name: string, args: any) => await toolMap.get(name)!.execute!("t", args);
   const text = async (name: string, args: any) => (await result(name, args)).content[0].text as string;
-  return { store, triggerSystem, text, result, toolMap, maybeBootstrapTaskLoop, onDynamicLoopActivated, createWorkflowTask, completeWorkflowTask, closeWorkflowTask };
+  return { store, triggerSystem, text, result, toolMap, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated, createWorkflowTask, completeWorkflowTask, closeWorkflowTask };
 }
 
 describe("LoopCreate", () => {
@@ -103,6 +105,19 @@ describe("LoopCreate", () => {
       triggerType: "idle",
       taskBacklog: true,
     })).toContain('For a broad goal, use trigger "idle" with triggerType "idle" and omit taskBacklog.');
+    expect(h.store.list()).toHaveLength(0);
+  });
+
+  it("rejects autoTask on a task-backlog worker", async () => {
+    const out = await h.text("LoopCreate", {
+      trigger: "tasks:created",
+      prompt: "adopt unfinished tasks",
+      triggerType: "event",
+      taskBacklog: true,
+      autoTask: true,
+    });
+
+    expect(out).toContain("taskBacklog loops cannot enable autoTask");
     expect(h.store.list()).toHaveLength(0);
   });
 
@@ -482,6 +497,28 @@ describe("Workflow tools", () => {
     expect(h.closeWorkflowTask).toHaveBeenCalledWith("12");
     expect(h.triggerSystem.add).not.toHaveBeenCalled();
     expect(h.onDynamicLoopActivated).not.toHaveBeenCalled();
+  });
+
+  it("rejects a task-bearing workflow until task-provider detection settles", async () => {
+    h.isTaskSystemReady.mockReturnValue(false);
+    const definitionWithTask = JSON.stringify({
+      version: 1,
+      initialState: "investigate",
+      states: {
+        investigate: {
+          prompt: "Find the cause.",
+          task: { subject: "Investigate regression", description: "Find the root cause." },
+          on: { found: "done" },
+        },
+        done: { prompt: "Report completion.", terminal: "completed" },
+      },
+    });
+
+    const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition: definitionWithTask });
+
+    expect(out).toContain("Task system is still initializing");
+    expect(h.store.list()).toHaveLength(0);
+    expect(h.createWorkflowTask).not.toHaveBeenCalled();
   });
 
   it("creates and records a task declared by the active workflow state", async () => {
