@@ -168,6 +168,7 @@ export interface MonitorProcess {
   waiters: Array<() => void>;
   completionCallbacks: Array<(monitor: MonitorEntry) => void>;
   terminalCallbacks: Array<(monitor: MonitorEntry) => void>;
+  terminalReady: boolean;
   lastOutputEventAt: number;
   lastProgressChangeAt: number;
   progressChangeTimer?: ReturnType<typeof setTimeout>;

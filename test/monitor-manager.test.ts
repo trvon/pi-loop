@@ -390,7 +390,7 @@ describe("MonitorManager", () => {
     });
   });
 
-  it("notifies terminal callbacks when a monitor is manually stopped", async () => {
+  it("notifies workflow terminal callbacks only after a stopped process reaps", async () => {
     vi.useFakeTimers();
     const child = createMockChildProcess({ exitCode: null });
     manager = new MonitorManager(pi, createSequentialSpawn(child));
@@ -400,17 +400,24 @@ describe("MonitorManager", () => {
       expect(manager.onTerminal(entry.id, callback)).toBe(true);
 
       const stop = manager.stop(entry.id);
+      const lateCallback = vi.fn();
+      expect(manager.onTerminal(entry.id, lateCallback)).toBe(true);
+      expect(callback).not.toHaveBeenCalled();
+      expect(lateCallback).not.toHaveBeenCalled();
+      child.emit("close", 0);
+      await stop;
+
       expect(callback).toHaveBeenCalledWith(expect.objectContaining({
         id: entry.id,
         status: "stopped",
         stopReason: "manual",
       }));
-      await vi.advanceTimersByTimeAsync(5000);
-      await stop;
+      expect(lateCallback).toHaveBeenCalledWith(expect.objectContaining({
+        id: entry.id,
+        status: "stopped",
+        stopReason: "manual",
+      }));
     } finally {
-      const stop = manager.stop(entry.id);
-      await vi.advanceTimersByTimeAsync(5000);
-      await stop;
       vi.useRealTimers();
     }
   });

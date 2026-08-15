@@ -103,6 +103,7 @@ export class MonitorManager {
   }
 
   private notifyTerminal(bp: MonitorProcess, monitor: MonitorEntry): void {
+    bp.terminalReady = true;
     if (this.shuttingDown) return;
     for (const callback of bp.terminalCallbacks) callback(monitor);
     bp.terminalCallbacks = [];
@@ -198,6 +199,7 @@ export class MonitorManager {
       waiters: [],
       completionCallbacks: [],
       terminalCallbacks: [],
+      terminalReady: false,
       lastOutputEventAt: 0,
       lastProgressChangeAt: 0,
       pendingOutputLines: 0,
@@ -382,7 +384,6 @@ export class MonitorManager {
       for (const callback of bp.completionCallbacks) callback(bp.entry);
       bp.completionCallbacks = [];
     }
-    this.notifyTerminal(bp, bp.entry);
 
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -396,6 +397,7 @@ export class MonitorManager {
       });
     });
 
+    this.notifyTerminal(bp, bp.entry);
     bp.completionCallbacks = [];
     for (const resolve of bp.waiters) resolve();
     bp.waiters = [];
@@ -428,7 +430,8 @@ export class MonitorManager {
     const bp = this.processes.get(id);
     if (!bp) return false;
     if (bp.entry.status !== "running") {
-      callback(bp.entry);
+      if (bp.terminalReady) callback(bp.entry);
+      else bp.terminalCallbacks.push(callback);
       return true;
     }
     bp.terminalCallbacks.push(callback);
