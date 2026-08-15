@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.3](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.2...pi-loop-v0.7.3) (2026-08-14)
+
+
+### Features
+
+* **workflow:** add per-state cron policies ([#31](https://github.com/trvon/pi-loop/issues/31)) ([ebdc801](https://github.com/trvon/pi-loop/commit/ebdc80193cfcce5634bef231c140ac7ed0d2d69a))
+
+
+### Bug Fixes
+
+* **monitor:** clean up terminal resources ([#35](https://github.com/trvon/pi-loop/issues/35)) ([73684e5](https://github.com/trvon/pi-loop/commit/73684e5c069482483e3d27fc51e21d334a3ce6a6))
+* **monitor:** tear down children before session replacement ([#33](https://github.com/trvon/pi-loop/issues/33)) ([7bcf457](https://github.com/trvon/pi-loop/commit/7bcf4573cf8c8733984894a1c80807ef5b8c59af))
+
 ## [0.7.2](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.1...pi-loop-v0.7.2) (2026-08-13)
 
 
