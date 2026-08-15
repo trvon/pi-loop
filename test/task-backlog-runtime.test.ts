@@ -195,6 +195,22 @@ describe("task backlog adoption", () => {
     expect(opts.adoptLoop).toHaveBeenNthCalledWith(2, loops[1]);
   });
 
+  it("reports work adopted before its session guard becomes stale", async () => {
+    let current = true;
+    const adoptLoop = vi.fn(() => {
+      current = false;
+    });
+    const { runtime, loops } = setup({
+      hasPendingTasks: vi.fn(async () => 2),
+      adoptLoop,
+    });
+    loops.push(makeLoop({ id: "1", taskBacklog: true }), makeLoop({ id: "2", taskBacklog: true }));
+
+    expect(await runtime.adoptTaskBacklogLoops(undefined, () => current)).toBe(1);
+    expect(adoptLoop).toHaveBeenCalledTimes(1);
+    expect(adoptLoop).toHaveBeenCalledWith(loops[0]);
+  });
+
   it("skips workers that already fired after the agent turn began", async () => {
     const { runtime, opts, loops } = setup({ hasPendingTasks: vi.fn(async () => 1) });
     loops.push(makeLoop({ taskBacklog: true, fireCount: 3 }));

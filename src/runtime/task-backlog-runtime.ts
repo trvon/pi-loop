@@ -125,12 +125,14 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     if (isCurrent && !isCurrent()) return 0;
     if (pending <= 0) return 0;
 
+    let adopted = 0;
     for (const entry of backlogLoops) {
-      if (isCurrent && !isCurrent()) return 0;
+      if (isCurrent && !isCurrent()) break;
       debug?.(`task backlog loop #${entry.id} — adopting ${pending} unfinished task(s)`);
       await adoptLoop(entry);
+      adopted++;
     }
-    return backlogLoops.length;
+    return adopted;
   }
 
   async function cleanupTaskBacklogLoops(isCurrent?: () => boolean): Promise<number> {
