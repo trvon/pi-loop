@@ -291,7 +291,6 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       const entry = result.entry;
       getTriggerSystem().remove(entry.id);
       if (result.terminal === "completed") {
-        store.delete(entry.id);
         updateWidget();
         return textResult(
           `Workflow #${entry.id} completed and deleted\nFinal transition: ${entry.workflow?.lastTransition?.from ?? "?"} → ${entry.workflow?.currentState ?? "?"}\nNext: no further workflow transition is needed.`,
@@ -306,7 +305,6 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         );
       }
       if (result.terminal === "paused") {
-        store.pause(entry.id);
         updateWidget();
         return textResult(
           `Workflow #${entry.id} paused\nFinal state: ${entry.workflow?.currentState ?? "?"}\nNext: inspect it with LoopList. Terminal workflow states cannot be resumed; delete the loop when it is no longer needed.`,

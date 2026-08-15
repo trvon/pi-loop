@@ -38,7 +38,7 @@ import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
 import type { LoopEntry, MonitorEntry, Trigger } from "./types.js";
 import { LoopWidget } from "./ui/widget.js";
-import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop } from "./workflow-reducer.js";
+import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop, isTerminalWorkflowRun } from "./workflow-reducer.js";
 
 const DEBUG = !!process.env.PI_LOOP_DEBUG;
 function debug(...args: unknown[]) {
@@ -202,27 +202,33 @@ export default function (pi: ExtensionAPI) {
 
   function onLoopFire(entry: LoopEntry, monitor?: MonitorEntry): void {
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
-    if (store.get(entry.id)?.workflow?.waitingMonitor) {
+    const current = store.get(entry.id);
+    if (current?.status !== "active" || isTerminalWorkflowRun(current?.workflow)) {
+      triggerSystem.remove(entry.id);
+      return;
+    }
+    if (current.workflow?.waitingMonitor) {
       debug(`workflow #${entry.id} — waiting on monitor; suppressing cadence wake`);
       return;
     }
 
-    const isTaskBacklog = taskBacklogRuntime.isTaskBacklogLoop(entry);
+    const isTaskBacklog = taskBacklogRuntime.isTaskBacklogLoop(current);
     if (isTaskBacklog && activeTaskBacklogWakes.has(entry.id)) {
       debug(`task backlog loop #${entry.id} — wake already active, adopting event into current wake`);
       return;
     }
 
-    if (atMaxFires(entry)) {
-      debug(`loop #${entry.id} — reached maxFires ${entry.maxFires}, retiring`);
-      triggerSystem.remove(entry.id);
-      if (entry.workflow || entry.taskBacklog) store.pause(entry.id);
-      else store.delete(entry.id);
+    if (atMaxFires(current)) {
+      debug(`loop #${current.id} — reached maxFires ${current.maxFires}, retiring`);
+      triggerSystem.remove(current.id);
+      if (current.workflow || current.taskBacklog) store.pause(current.id);
+      else store.delete(current.id);
       widget.update();
       return;
     }
-    if (isTaskBacklog) activeTaskBacklogWakes.add(entry.id);
-    const fired = store.fire(entry.id) ?? entry;
+    if (isTaskBacklog) activeTaskBacklogWakes.add(current.id);
+    const fired = store.fire(current.id);
+    if (!fired) return;
 
     const firedAt = Date.now();
     const stateLoop = fired.workflow && getActiveWorkflowStateLoop(fired.workflow);
@@ -250,9 +256,9 @@ export default function (pi: ExtensionAPI) {
       widget.update();
     }
 
-    if (entry.autoTask) {
-      taskProvider?.autoCreateTask(entry).then((taskId) => {
-        if (taskId) debug(`loop #${entry.id} → task #${taskId}`);
+    if (current.autoTask) {
+      taskProvider?.autoCreateTask(current).then((taskId) => {
+        if (taskId) debug(`loop #${current.id} → task #${taskId}`);
       });
     }
 

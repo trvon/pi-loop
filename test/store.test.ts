@@ -78,7 +78,7 @@ describe("LoopStore (in-memory)", () => {
     expect(entry!.status).toBe("active");
   });
 
-  it("does not resume a workflow paused in a terminal state", () => {
+  it("atomically pauses a workflow that reaches a paused terminal state", () => {
     store.create({ type: "dynamic" }, "Investigate", {
       recurring: true,
       workflow: {
@@ -91,11 +91,52 @@ describe("LoopStore (in-memory)", () => {
       },
     });
     const result = store.transitionWorkflow("1", { outcome: "blocked" });
-    expect(result.terminal).toBe("paused");
-    store.pause("1");
 
+    expect(result.terminal).toBe("paused");
     expect(store.resume("1")).toBeUndefined();
     expect(store.get("1")?.status).toBe("paused");
+  });
+
+  it("atomically removes a workflow that reaches a completed terminal state", () => {
+    const workflow = store.create({ type: "dynamic" }, "Finish", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Do the work.", on: { done: "done" } },
+          done: { prompt: "Report completion.", terminal: "completed" },
+        },
+      },
+    });
+
+    const result = store.transitionWorkflow(workflow.id, { outcome: "done" });
+
+    expect(result).toMatchObject({
+      applied: true,
+      terminal: "completed",
+      entry: { workflow: { currentState: "done" } },
+    });
+    expect(store.get(workflow.id)).toBeUndefined();
+  });
+
+  it("rejects a fire for a legacy active terminal workflow", () => {
+    const workflow = store.create({ type: "dynamic" }, "Finish", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Do the work.", on: { done: "done" } },
+          done: { prompt: "Report completion.", terminal: "completed" },
+        },
+      },
+    });
+    const stale = store.get(workflow.id)!;
+    stale.workflow!.currentState = "done";
+
+    expect(store.fire(workflow.id)).toBeUndefined();
+    expect(store.get(workflow.id)?.fireCount).toBe(0);
   });
 
   it("updates loop prompt metadata", () => {
@@ -412,6 +453,26 @@ describe("LoopStore (file-backed)", () => {
 
     const store2 = new LoopStore(filePath);
     expect(store2.list()).toHaveLength(0);
+  });
+
+  it("does not restore a completed workflow controller after restart", () => {
+    const store1 = new LoopStore(filePath);
+    const workflow = store1.create({ type: "dynamic" }, "Finish", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Do the work.", on: { done: "done" } },
+          done: { prompt: "Report completion.", terminal: "completed" },
+        },
+      },
+    });
+
+    expect(store1.transitionWorkflow(workflow.id, { outcome: "done" }).terminal).toBe("completed");
+
+    const restartedStore = new LoopStore(filePath);
+    expect(restartedStore.get(workflow.id)).toBeUndefined();
   });
 });
 

@@ -109,7 +109,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   fire(id: string): LoopEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
-      if (!entry) return undefined;
+      if (entry?.status !== "active" || isTerminalWorkflowRun(entry?.workflow)) return undefined;
       this.applyReducerEvent({
         type: "LOOP_FIRED",
         at: Date.now(),
@@ -260,6 +260,29 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           activeTaskId: input.activeTaskId,
         },
       });
+      const transitioned = this.entries.get(id);
+      if (!transitioned) return { applied: false, error: `Workflow #${id} disappeared during transition` };
+      if (result.terminal === "completed") {
+        this.applyReducerEvent({
+          type: "LOOP_DELETED",
+          at: result.run.stateEnteredAt,
+          source: "tool",
+          entityType: "loop",
+          entityId: id,
+          payload: { id },
+        });
+        return { entry: transitioned, applied: true, terminal: result.terminal };
+      }
+      if (result.terminal === "paused") {
+        this.applyReducerEvent({
+          type: "LOOP_PAUSED",
+          at: result.run.stateEnteredAt,
+          source: "tool",
+          entityType: "loop",
+          entityId: id,
+          payload: { id },
+        });
+      }
       return { entry: this.entries.get(id), applied: true, terminal: result.terminal };
     });
   }

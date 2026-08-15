@@ -702,7 +702,7 @@ describe("Workflow tools", () => {
     expect(h.store.get("1")?.workflow?.transitionSeq).toBe(1);
   });
 
-  it("closes an unbound destination task when the workflow advances concurrently", async () => {
+  it("closes an unbound destination task when the workflow completes concurrently", async () => {
     h.createWorkflowTask
       .mockResolvedValueOnce(undefined)
       .mockImplementationOnce(async () => {
@@ -715,8 +715,7 @@ describe("Workflow tools", () => {
 
     expect(out).toContain("changed while destination task #11 was created");
     expect(h.closeWorkflowTask).toHaveBeenCalledWith("11");
-    expect(h.store.get("1")?.workflow?.currentState).toBe("done");
-    expect(h.store.get("1")?.workflow?.activeTaskId).toBeUndefined();
+    expect(h.store.get("1")).toBeUndefined();
   });
 
   it("rejects an undeclared outcome without changing or re-arming the workflow", async () => {
