@@ -69,6 +69,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     hasPendingMessages: false,
   };
   let flushPromise: Promise<void> | undefined;
+  let sessionGeneration = 0;
 
   type NotificationDispatchResult = {
     kind: "delivery";
@@ -236,8 +237,13 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   }
 
   async function deliverNotification(notification: ReducerNotification): Promise<boolean> {
+    const deliveryGeneration = sessionGeneration;
     if (notification.autoTask) {
       const pending = await hasPendingTasks();
+      if (deliveryGeneration !== sessionGeneration) {
+        debug?.(`loop:fire #${notification.loopId} — session changed during task lookup, dropping wake`);
+        return false;
+      }
       if (pending === 0) {
         debug?.(`loop:fire #${notification.loopId} — no pending tasks at delivery time, dropping wake`);
         await cleanDoneTasks();
@@ -245,6 +251,10 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       }
     }
 
+    if (deliveryGeneration !== sessionGeneration) {
+      debug?.(`loop:fire #${notification.loopId} — session changed before delivery, dropping wake`);
+      return false;
+    }
     syncRuntimeState({ agentRunning: true });
     pi.sendMessage({
       customType: "pi-loop",
@@ -331,6 +341,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   }
 
   function clear(reason: "session_shutdown" | "session_switch") {
+    sessionGeneration++;
     syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
     applyNotificationEvent({
       type: "NOTIFICATION_CLEARED",

@@ -184,9 +184,14 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
   pi.on("session_shutdown", async () => {
     clearWorkflowMonitorWaits();
     await shutdownMonitors();
+    getTriggerSystem().stop();
     stopHeartbeat();
     releaseTaskBacklogWakes();
     notificationRuntime.clear("session_shutdown");
+    setSessionId(undefined);
+    storeUpgraded = false;
+    persistedShown = false;
+    agentStartFireCounts = undefined;
   });
 
   pi.on("session_switch" as never, async (event: SessionSwitchEvent, ctx: ExtensionContext) => {

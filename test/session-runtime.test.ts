@@ -37,8 +37,8 @@ function setup(overrides: Partial<SessionRuntimeOptions> = {}) {
     ...overrides,
   };
   registerSessionRuntimeHooks(options);
-  const drive = async (name: string) => {
-    for (const handler of extensionHandlers.get(name) ?? []) await handler(null, createCtx());
+  const drive = async (name: string, sessionId = "test-session") => {
+    for (const handler of extensionHandlers.get(name) ?? []) await handler(null, createCtx({ sessionId }));
   };
   return { scheduler, drive };
 }
@@ -142,6 +142,33 @@ describe("session-runtime heartbeat lifecycle", () => {
     await drive("session_shutdown");
 
     expect(clearIntervalSpy).toHaveBeenCalledWith(timer);
+  });
+
+  it("fully rebinds session-scoped runtime after shutdown", async () => {
+    const recreateSessionStore = vi.fn();
+    const setSessionId = vi.fn();
+    const triggerSystem = { start: vi.fn(), stop: vi.fn() };
+    const { drive } = setup({
+      getLoopScope: () => "session",
+      recreateSessionStore,
+      setSessionId,
+      getStore: () => ({
+        list: () => [{ id: "8", status: "active" }],
+        clearExpired: vi.fn(),
+        expireEventLoops: vi.fn(),
+      }) as any,
+      getTriggerSystem: () => triggerSystem,
+    });
+
+    await drive("session_start", "session-one");
+    await drive("session_shutdown");
+    await drive("session_start", "session-two");
+
+    expect(recreateSessionStore).toHaveBeenNthCalledWith(1, "session-one");
+    expect(recreateSessionStore).toHaveBeenNthCalledWith(2, "session-two");
+    expect(triggerSystem.stop).toHaveBeenCalledOnce();
+    expect(triggerSystem.start).toHaveBeenCalledTimes(2);
+    expect(setSessionId.mock.calls).toEqual([["session-one"], [undefined], ["session-two"]]);
   });
 
   it("clears workflow monitor waits before stopping monitors", async () => {

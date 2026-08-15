@@ -1880,7 +1880,9 @@ describe("monitor tool wrappers", () => {
     const waiting = await toolMap.get("LoopList")!.execute!("list-waiting", {});
     expect(waiting.content[0].text).toContain("Waiting on monitor #1");
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await vi.waitFor(() => {
+      expect(emittedEvents.some((event) => event.name === "loop:fire" && event.payload?.loopId === workflowId)).toBe(true);
+    }, { timeout: 2_000 });
     for (const handler of extensionHandlers.get("agent_end") ?? []) {
       await handler(null, createCtx());
     }
