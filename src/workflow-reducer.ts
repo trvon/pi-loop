@@ -178,17 +178,6 @@ function activateExecution(
   };
 }
 
-function actorOwnsLiveLease(execution: WorkflowExecutionRecord, actor: WorkflowRuntimeActor | undefined, at: number): boolean {
-  const lease = execution.lease;
-  return Boolean(
-    actor
-    && lease
-    && lease.expiresAt > at
-    && lease.ownerSessionId === actor.sessionId
-    && lease.ownerRuntimeId === actor.runtimeId,
-  );
-}
-
 export function isTerminalWorkflowRun(run: WorkflowRunState | undefined): boolean {
   return Boolean(run?.definition.states[run.currentState]?.terminal);
 }
@@ -209,7 +198,13 @@ export function transitionWorkflowRun(
     if (!active.lease) {
       return { applied: false, error: "Workflow execution is unowned; claim it before transitioning" };
     }
-    if (!actorOwnsLiveLease(active, input.actor, at)) {
+    if (!input.actor) {
+      return { applied: false, error: "Workflow transition requires an active session runtime" };
+    }
+    if (active.lease.expiresAt <= at) {
+      return { applied: false, error: "Workflow execution lease expired; claim it before transitioning" };
+    }
+    if (active.lease.ownerSessionId !== input.actor.sessionId || active.lease.ownerRuntimeId !== input.actor.runtimeId) {
       return { applied: false, error: "Workflow execution is leased to another active runtime" };
     }
   }

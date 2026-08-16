@@ -97,7 +97,7 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
     message += "\nWorkflow work: none configured for this state.";
   }
   if (workflow.waitingMonitor) return `${message}\nWaiting on monitor #${workflow.waitingMonitor.monitorId}.`;
-  const unavailable = availability.unavailable.sort((left, right) => Number(left.outcome === failure?.outcome) - Number(right.outcome === failure?.outcome));
+  const unavailable = availability.unavailable.sort((left, right) => Number(right.outcome === failure?.outcome) - Number(left.outcome === failure?.outcome));
   if (unavailable.length > 0) message += `\nUnavailable outcomes: ${unavailable.map((item) => `${item.outcome} — ${item.targetState} exhausted ${item.maxAttempts} attempt(s)`).join("; ")}.`;
   if (state?.terminal) return `${message}\nTerminal: ${state.terminal}`;
   if (availability.available.length === 0 && unavailable.length === 0) {

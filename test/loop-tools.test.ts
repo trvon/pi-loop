@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LoopStore } from "../src/store.js";
 import { registerLoopTools } from "../src/tools/loop-tools.js";
-import { registerWorkflowTools } from "../src/tools/workflow-tools.js";
+import { formatWorkflowSummary, registerWorkflowTools } from "../src/tools/workflow-tools.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
 function setup() {
@@ -470,6 +470,44 @@ describe("Workflow tools", () => {
 
   it("rejects a claim for a missing workflow", async () => {
     expect(await h.text("WorkflowClaim", { id: "99" })).toContain("Loop #99 not found");
+  });
+
+  it("surfaces the failed outcome first among unavailable outcomes", () => {
+    const entry = {
+      id: "1",
+      prompt: "Sort the blocked outcomes",
+      trigger: { type: "dynamic" },
+      status: "active",
+      recurring: true,
+      createdAt: 1,
+      updatedAt: 1,
+      expiresAt: 2,
+      workflow: {
+        definition: {
+          version: 1,
+          initialState: "investigate",
+          states: {
+            investigate: { prompt: "Investigate.", on: { to_aa: "aa_state", to_bb: "bb_state" } },
+            aa_state: { prompt: "A.", maxAttempts: 1 },
+            bb_state: { prompt: "B.", maxAttempts: 1 },
+          },
+        },
+        currentState: "investigate",
+        transitionSeq: 0,
+        stateEnteredAt: 1,
+        attemptsByState: { investigate: 1, aa_state: 1, bb_state: 1 },
+        stateFireCounts: {},
+      },
+    } as any;
+
+    const message = formatWorkflowSummary(entry, "heading", {
+      code: "target_exhausted",
+      outcome: "to_bb",
+      targetState: "bb_state",
+      maxAttempts: 1,
+    });
+
+    expect(message.indexOf("to_bb")).toBeLessThan(message.indexOf("to_aa"));
   });
 
   it("rejects an undeclared outcome without changing the workflow", async () => {

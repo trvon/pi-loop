@@ -158,6 +158,47 @@ describe("workflow reducer", () => {
     }, 200)).toEqual({ applied: false, error: "Workflow execution is unowned; claim it before transitioning" });
   });
 
+  it("requires a claim after the execution lease expires", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", task: { subject: "Work", description: "Do it." }, on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, { sessionId: "session-a", runtimeId: "runtime-a" });
+    const expired = {
+      ...run,
+      activeExecution: {
+        ...run.activeExecution!,
+        lease: { ...run.activeExecution!.lease!, expiresAt: 150 },
+      },
+    };
+
+    expect(transitionWorkflowRun(expired, {
+      outcome: "done",
+      actor: { sessionId: "session-a", runtimeId: "runtime-a" },
+    }, 200)).toEqual({ applied: false, error: "Workflow execution lease expired; claim it before transitioning" });
+  });
+
+  it("requires an active session runtime to transition task work", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", task: { subject: "Work", description: "Do it." }, on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, { sessionId: "session-a", runtimeId: "runtime-a" });
+
+    expect(transitionWorkflowRun(run, { outcome: "done" }, 150)).toEqual({
+      applied: false,
+      error: "Workflow transition requires an active session runtime",
+    });
+  });
+
   it("rejects undeclared outcomes without changing the run", () => {
     const run = createWorkflowRun(definition, 100);
     expect(transitionWorkflowRun(run, { outcome: "ship_it" }, 200)).toEqual({
