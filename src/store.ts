@@ -2,10 +2,44 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowTerminalStatus } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
 import { isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowDefinition, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
+
+/**
+ * One-time normalization for workflows persisted by v0.7.3, which linked state
+ * work to an external TaskStore record (`activeTaskId`). The external link is
+ * dropped; when the current state declares task work with no embedded
+ * execution, an unleased execution is synthesized so the workflow fails closed
+ * until a runtime claims it.
+ */
+function normalizeWorkflowRunState(workflow: WorkflowRunState): WorkflowRunState {
+  const legacy = workflow as WorkflowRunState & { activeTaskId?: string };
+  const active = workflow.activeExecution;
+  const state = workflow.definition.states[workflow.currentState];
+  if (!legacy.activeTaskId && active) return workflow;
+  const { activeTaskId: _dropped, ...withoutLegacy } = legacy;
+  const needsExecution = Boolean(
+    state?.task
+    && (!active || active.stateId !== workflow.currentState || active.transitionSeq !== workflow.transitionSeq),
+  );
+  return {
+    ...withoutLegacy,
+    ...(needsExecution ? {
+      activeExecution: {
+        id: `${workflow.currentState}:${workflow.transitionSeq}`,
+        stateId: workflow.currentState,
+        transitionSeq: workflow.transitionSeq,
+        subject: state!.task!.subject,
+        description: state!.task!.description,
+        status: "active" as const,
+        createdAt: workflow.stateEnteredAt,
+        updatedAt: workflow.stateEnteredAt,
+      },
+    } : {}),
+  };
+}
 const MAX_LOOPS = 25;
 const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
 
@@ -20,13 +54,16 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         toReducerState: (nextId, entries) => ({ nextId, loopsById: Object.fromEntries(entries.entries()) }),
         fromReducerState: (state) => ({ nextId: state.nextId, entries: new Map(Object.entries(state.loopsById)) }),
         serialize: (nextId, entries) => ({ nextId, loops: Array.from(entries.values()) }),
-        deserialize: (data) => ({ nextId: data.nextId, entries: new Map(data.loops.map((l) => [l.id, l])) }),
+        deserialize: (data) => ({
+          nextId: data.nextId,
+          entries: new Map(data.loops.map((l) => [l.id, l.workflow ? { ...l, workflow: normalizeWorkflowRunState(l.workflow) } : l])),
+        }),
       },
       listIdOrPath,
     );
   }
 
-  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition }): LoopEntry {
+  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition; actor?: WorkflowRuntimeActor }): LoopEntry {
     return this.withLock(() => {
       if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
@@ -52,6 +89,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           maxFires: opts.maxFires,
           dynamic: opts.dynamic,
           workflow: opts.workflow,
+          actor: opts.actor,
         },
       });
       return this.entries.get(String(this.nextId - 1))!;
@@ -228,7 +266,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   transitionWorkflow(
     id: string,
     input: WorkflowTransitionInput,
-    expected?: { currentState: string; transitionSeq: number; activeTaskId?: string },
+    expected?: { currentState: string; transitionSeq: number; activeExecutionId?: string },
   ): { entry?: LoopEntry; applied: boolean; error?: string; failure?: WorkflowTransitionFailure; terminal?: WorkflowTerminalStatus } {
     return this.withLock(() => {
       const entry = this.entries.get(id);
@@ -237,7 +275,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       if (expected && (
         entry.workflow.currentState !== expected.currentState
         || entry.workflow.transitionSeq !== expected.transitionSeq
-        || entry.workflow.activeTaskId !== expected.activeTaskId
+        || entry.workflow.activeExecution?.id !== expected.activeExecutionId
       )) {
         return { applied: false, error: `Workflow #${id} changed; inspect LoopList and retry the transition.` };
       }
@@ -258,7 +296,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           id,
           outcome: input.outcome,
           evidence: input.evidence,
-          activeTaskId: input.activeTaskId,
+          actor: input.actor,
           ...(result.terminal ? { terminal: result.terminal } : {}),
         },
       } as LoopReducerEvent);
@@ -285,28 +323,36 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     });
   }
 
-  setWorkflowActiveTask(
+  claimWorkflowExecution(
     id: string,
-    taskId?: string,
-    expected?: { currentState: string; transitionSeq: number; activeTaskId?: string },
-  ): LoopEntry | undefined {
+    actor: WorkflowRuntimeActor,
+    leaseSeconds = 1800,
+  ): { entry?: LoopEntry; claimed: boolean; error?: string } {
+    const leaseMs = Math.min(Math.max(leaseSeconds, 60), 3600) * 1000;
     return this.withLock(() => {
       const entry = this.entries.get(id);
-      if (!entry?.workflow) return undefined;
-      if (expected && (
-        entry.workflow.currentState !== expected.currentState
-        || entry.workflow.transitionSeq !== expected.transitionSeq
-        || entry.workflow.activeTaskId !== expected.activeTaskId
-      )) return undefined;
+      if (!entry) return { claimed: false, error: `Loop #${id} not found` };
+      const execution = entry.workflow?.activeExecution;
+      if (execution?.status !== "active") {
+        return { claimed: false, error: `Workflow #${id} has no active execution` };
+      }
+      const now = Date.now();
+      const lease = execution.lease;
+      const sameOwner = lease
+        && lease.ownerSessionId === actor.sessionId
+        && lease.ownerRuntimeId === actor.runtimeId;
+      if (lease && lease.expiresAt > now && !sameOwner) {
+        return { claimed: false, error: "Workflow execution is leased to another active runtime" };
+      }
       this.applyReducerEvent({
-        type: "LOOP_WORKFLOW_TASK_SET",
-        at: Date.now(),
+        type: "LOOP_WORKFLOW_EXECUTION_CLAIMED",
+        at: now,
         source: "tool",
         entityType: "loop",
         entityId: id,
-        payload: { id, taskId },
+        payload: { id, actor, leaseMs },
       });
-      return this.entries.get(id);
+      return { entry: this.entries.get(id), claimed: true };
     });
   }
 

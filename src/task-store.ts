@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
 import { reduceTaskState, type TaskReducerEvent, type TaskReducerState } from "./task-reducer.js";
-import type { TaskClaim, TaskEntry, TaskStoreData, TaskWorkflowLink } from "./task-types.js";
+import type { TaskClaim, TaskEntry, TaskStoreData } from "./task-types.js";
 
 const TASKS_DIR = join(homedir(), ".pi", "tasks");
 const MAX_TASKS = 200;
@@ -40,7 +40,7 @@ export class TaskStore extends ReducerBackedStore<TaskEntry, TaskReducerState, T
     );
   }
 
-  create(subject: string, description: string, metadata?: Record<string, unknown>, workflow?: TaskWorkflowLink): TaskEntry {
+  create(subject: string, description: string, metadata?: Record<string, unknown>): TaskEntry {
     return this.withLock(() => {
       if (this.entries.size >= MAX_TASKS) {
         throw new Error(`Maximum of ${MAX_TASKS} tasks reached. Delete some before creating new ones.`);
@@ -51,7 +51,7 @@ export class TaskStore extends ReducerBackedStore<TaskEntry, TaskReducerState, T
         at: now,
         source: "tool",
         entityType: "task",
-        payload: { subject, description, metadata, workflow },
+        payload: { subject, description, metadata },
       });
       return this.entries.get(String(this.nextId - 1))!;
     });
@@ -224,7 +224,6 @@ export class TaskStore extends ReducerBackedStore<TaskEntry, TaskReducerState, T
     return this.withLock(() => {
       const entry = this.entries.get(id);
       if (!entry
-        || (entry.workflow && (entry.status === "pending" || entry.status === "in_progress"))
         || (entry.claim && (entry.claim.claimId !== claimId || entry.claim.leaseExpiresAt <= now))) {
         return false;
       }

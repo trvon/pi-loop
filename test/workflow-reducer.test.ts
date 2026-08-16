@@ -36,6 +36,34 @@ describe("workflow reducer", () => {
     });
   });
 
+  it("embeds and leases initial state work in the workflow aggregate", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: {
+          prompt: "Do the work.",
+          task: { subject: "Work", description: "Complete the bounded work." },
+          on: { done: "complete" },
+        },
+        complete: { prompt: "Report completion.", terminal: "completed" },
+      },
+    };
+
+    expect(createWorkflowRun(taskDefinition, 100, { sessionId: "session-a", runtimeId: "runtime-a" }))
+      .toMatchObject({
+        activeExecution: {
+          id: "work:0",
+          stateId: "work",
+          transitionSeq: 0,
+          subject: "Work",
+          description: "Complete the bounded work.",
+          status: "active",
+          lease: { ownerSessionId: "session-a", ownerRuntimeId: "runtime-a", expiresAt: 100 + 30 * 60 * 1000 },
+        },
+      });
+  });
+
   it("moves only along a declared outcome and records evidence", () => {
     const run = createWorkflowRun(definition, 100);
     const result = transitionWorkflowRun(run, { outcome: "root_cause_found", evidence: "Null config reaches parser." }, 200);
@@ -56,6 +84,118 @@ describe("workflow reducer", () => {
           sequence: 1,
         },
       }),
+    });
+  });
+
+  it("settles source work and leases destination work atomically", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "investigate",
+      states: {
+        investigate: {
+          prompt: "Investigate.",
+          task: { subject: "Investigate", description: "Find the cause." },
+          on: { found: "fix" },
+        },
+        fix: {
+          prompt: "Fix it.",
+          task: { subject: "Fix", description: "Implement the repair." },
+          on: { done: "complete" },
+        },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const run = createWorkflowRun(taskDefinition, 100, actor);
+
+    const result = transitionWorkflowRun(run, { outcome: "found", actor }, 200);
+
+    expect(result).toMatchObject({
+      applied: true,
+      run: {
+        currentState: "fix",
+        activeExecution: {
+          id: "fix:1",
+          status: "active",
+          lease: { ownerSessionId: "session-a", ownerRuntimeId: "runtime-a" },
+        },
+        executionHistory: [{ id: "investigate:0", status: "completed", settledAt: 200 }],
+      },
+    });
+  });
+
+  it("rejects a workflow transition from a different live lease owner", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", task: { subject: "Work", description: "Do it." }, on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, { sessionId: "session-a", runtimeId: "runtime-a" });
+
+    expect(transitionWorkflowRun(run, {
+      outcome: "done",
+      actor: { sessionId: "session-b", runtimeId: "runtime-b" },
+    }, 200)).toEqual({ applied: false, error: "Workflow execution is leased to another active runtime" });
+  });
+
+  it("fails closed for an unowned execution until a runtime claims it", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", task: { subject: "Work", description: "Do it." }, on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100);
+
+    expect(transitionWorkflowRun(run, {
+      outcome: "done",
+      actor: { sessionId: "session-b", runtimeId: "runtime-b" },
+    }, 200)).toEqual({ applied: false, error: "Workflow execution is unowned; claim it before transitioning" });
+  });
+
+  it("requires a claim after the execution lease expires", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", task: { subject: "Work", description: "Do it." }, on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, { sessionId: "session-a", runtimeId: "runtime-a" });
+    const expired = {
+      ...run,
+      activeExecution: {
+        ...run.activeExecution!,
+        lease: { ...run.activeExecution!.lease!, expiresAt: 150 },
+      },
+    };
+
+    expect(transitionWorkflowRun(expired, {
+      outcome: "done",
+      actor: { sessionId: "session-a", runtimeId: "runtime-a" },
+    }, 200)).toEqual({ applied: false, error: "Workflow execution lease expired; claim it before transitioning" });
+  });
+
+  it("requires an active session runtime to transition task work", () => {
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", task: { subject: "Work", description: "Do it." }, on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, { sessionId: "session-a", runtimeId: "runtime-a" });
+
+    expect(transitionWorkflowRun(run, { outcome: "done" }, 150)).toEqual({
+      applied: false,
+      error: "Workflow transition requires an active session runtime",
     });
   });
 
@@ -117,6 +257,10 @@ describe("workflow reducer", () => {
 
   it("rejects definitions with an unknown initial or transition target", () => {
     expect(validateWorkflowDefinition({ ...definition, initialState: "missing" })).toBe('Initial state "missing" is not defined');
+    expect(validateWorkflowDefinition({
+      ...definition,
+      states: { ...definition.states, done: { ...definition.states.done, terminal: true } },
+    } as unknown as WorkflowDefinition)).toBe('State "done" terminal must be "completed" or "paused"');
     expect(validateWorkflowDefinition({
       ...definition,
       states: {

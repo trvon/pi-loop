@@ -38,7 +38,7 @@ describe("registered tool copy budget", () => {
       "nextInterval",
       "triggerType",
       "onDone",
-      "WorkflowTransition uses `id`",
+      "WorkflowTransition uses id, outcome, and optional evidence",
     ]) {
       expect(copy).toContain(required);
     }

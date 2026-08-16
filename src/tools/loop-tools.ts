@@ -62,7 +62,6 @@ export interface LoopToolsOptions {
   maybeBootstrapTaskLoop: (entry: LoopEntry) => Promise<boolean>;
   isTaskSystemReady: () => boolean;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
-  closeWorkflowTask: (taskId: string, claimId?: string) => Promise<boolean>;
 }
 
 function validateTrigger(trigger: Trigger): string | null {
@@ -214,7 +213,6 @@ export function registerLoopTools(options: LoopToolsOptions): void {
     maybeBootstrapTaskLoop,
     isTaskSystemReady,
     onDynamicLoopActivated,
-    closeWorkflowTask,
   } = options;
 
   pi.registerTool({
@@ -229,7 +227,6 @@ Set triggerType to cron, event, hybrid, or idle. Polling loops need maxFires; ob
 A completed iteration, unchanged result, or temporarily empty check is not a reason to delete the loop. Recurring loops persist; dynamic loops advance through LoopUpdate.`,
     promptGuidelines: [
       "Prefer event triggers over cron; use triggerType `idle` with trigger `idle` for agent-paced continuation.",
-      "Always set maxFires on polling loops and readOnly for observation-only work.",
       "For autonomous backlogs use event `tasks:created`, recurring true, taskBacklog true, and bounded maxFires. It adopts unfinished tasks until terminal. Do not use autoTask.",
       "Use an idle loop, not taskBacklog, to continue a broad goal without a native task queue.",
       "Recurring loops are persistent controllers. Do not call LoopDelete after a normal fire, an unchanged check, or one completed iteration; only delete when the user explicitly asks to cancel or the loop's stated stop condition is satisfied.",
@@ -506,7 +503,6 @@ Do not use this after a normal loop fire, an unchanged check, an empty iteration
     parameters: Type.Object({
       id: Type.String({ description: "Loop ID to delete or pause" }),
       action: Type.Optional(Type.String({ description: "delete or pause (default: delete)", enum: ["delete", "pause"], default: "delete" })),
-      claimId: Type.Optional(Type.String({ description: "Claim token for an active workflow task" })),
     }),
     async execute(_toolCallId, params) {
       const { id, action } = params;
@@ -531,14 +527,6 @@ Do not use this after a normal loop fire, an unchanged check, an empty iteration
         }));
       }
 
-      const current = getStore().get(id);
-      const activeTaskId = current?.workflow?.activeTaskId;
-      if (activeTaskId && !await closeWorkflowTask(activeTaskId, params.claimId)) {
-        const message = `Loop #${id} could not close active task #${activeTaskId}; reclaim the task and pass claimId before retrying deletion.`;
-        return textResult(message, {
-          kind: "loop", action: "delete", tone: "error", summary: `Loop #${id} deletion blocked by task #${activeTaskId}`, expanded: [message],
-        });
-      }
       getTriggerSystem().remove(id);
       const deleted = getStore().delete(id);
       updateWidget();

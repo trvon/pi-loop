@@ -49,7 +49,7 @@ describe("task reducer", () => {
     ]);
   });
 
-  it("preserves typed workflow ownership on a created task", () => {
+  it("preserves metadata on a created task", () => {
     const { state } = apply(makeState(), {
       type: "TASK_CREATED",
       at: 100,
@@ -58,15 +58,11 @@ describe("task reducer", () => {
       payload: {
         subject: "Investigate regression",
         description: "Find the root cause.",
-        workflow: { loopId: "7", stateId: "investigate", transitionSeq: 0 },
+        metadata: { loopId: "7", trigger: "cron" },
       },
     });
 
-    expect(state.tasksById["1"].workflow).toEqual({
-      loopId: "7",
-      stateId: "investigate",
-      transitionSeq: 0,
-    });
+    expect(state.tasksById["1"].metadata).toEqual({ loopId: "7", trigger: "cron" });
   });
 
   it("starts a task", () => {

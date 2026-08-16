@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { TaskEntry, TaskStatus, TaskWorkflowLink } from "../task-types.js";
+import type { TaskEntry, TaskStatus } from "../task-types.js";
 
 export type NativeTaskEventName =
   | "tasks:created"
@@ -21,7 +21,6 @@ export interface NativeTaskEventPayload {
   completedAt?: number;
   closedAt?: number;
   metadata?: Record<string, unknown>;
-  workflow?: TaskWorkflowLink;
 }
 
 export function emitNativeTaskEvent(
@@ -41,6 +40,5 @@ export function emitNativeTaskEvent(
     completedAt: entry.completedAt,
     closedAt: entry.closedAt,
     metadata: entry.metadata,
-    workflow: entry.workflow,
   } satisfies NativeTaskEventPayload);
 }

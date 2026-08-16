@@ -283,16 +283,15 @@ describe("registerLoopCommand", () => {
     expect(ui.notify).toHaveBeenCalledWith("Loop #1 deleted", "info");
   });
 
-  it("refuses command deletion while a workflow owns an active task", async () => {
+  it("deletes a workflow loop and its trigger from the command", async () => {
     h.store.create({ type: "dynamic" }, "workflow", {
       recurring: true,
       workflow: {
         version: 1,
         initialState: "work",
-        states: { work: { prompt: "Work.", on: { done: "done" } }, done: { prompt: "Done.", terminal: "completed" } },
+        states: { work: { prompt: "Work.", task: { subject: "Work", description: "Do it." }, on: { done: "done" } }, done: { prompt: "Done.", terminal: "completed" } },
       },
     });
-    h.store.setWorkflowActiveTask("1", "12");
     let loopVisits = 0;
     const ui = {
       select: vi.fn(async (title: string) => {
@@ -307,9 +306,8 @@ describe("registerLoopCommand", () => {
 
     await h.command.handler!("", { ui } as any);
 
-    expect(h.store.get("1")).toBeDefined();
-    expect(h.triggerSystem.remove).not.toHaveBeenCalledWith("1");
-    expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("use LoopDelete with its claimId"), "warning");
+    expect(h.store.get("1")).toBeUndefined();
+    expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
   });
 
   it("no-args 'View loops' -> select entry -> Pause pauses without deleting", async () => {

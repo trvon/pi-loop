@@ -378,7 +378,6 @@ export default function (pi: ExtensionAPI) {
     onDynamicLoopActivated: (entry) => {
       onLoopFire(entry);
     },
-    closeWorkflowTask: (taskId, claimId) => taskProvider?.closeWorkflowTask(taskId, claimId) ?? Promise.resolve(false),
   });
 
   registerWorkflowTools({
@@ -391,10 +390,7 @@ export default function (pi: ExtensionAPI) {
     onDynamicLoopActivated: (entry) => {
       onLoopFire(entry);
     },
-    isTaskSystemReady: () => taskProvider?.isReady() ?? false,
-    createWorkflowTask: (entry) => taskProvider?.createWorkflowTask(entry) ?? Promise.resolve(undefined),
-    completeWorkflowTask: (taskId, claimId) => taskProvider?.completeWorkflowTask(taskId, claimId) ?? Promise.resolve(false),
-    closeWorkflowTask: (taskId, claimId) => taskProvider?.closeWorkflowTask(taskId, claimId) ?? Promise.resolve(false),
+    getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId } : undefined,
   });
 
   function handleMonitorDoneLoop(doneLoop: LoopEntry, monitorId: string): void {

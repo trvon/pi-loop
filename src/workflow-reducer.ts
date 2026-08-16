@@ -1,7 +1,9 @@
 import { isValidCronExpression } from "./loop-parse.js";
 import type {
   WorkflowDefinition,
+  WorkflowExecutionRecord,
   WorkflowRunState,
+  WorkflowRuntimeActor,
   WorkflowStateLoopDefinition,
   WorkflowTerminalStatus,
   WorkflowTransitionRecord,
@@ -19,7 +21,7 @@ export type {
 export interface WorkflowTransitionInput {
   outcome: string;
   evidence?: string;
-  activeTaskId?: string;
+  actor?: WorkflowRuntimeActor;
 }
 
 export interface WorkflowTransitionFailure {
@@ -82,6 +84,9 @@ export function validateWorkflowDefinition(definition: WorkflowDefinition): stri
     if (state.terminal && state.on && Object.keys(state.on).length > 0) {
       return `Terminal state "${stateId}" cannot declare transitions`;
     }
+    if (state.terminal !== undefined && state.terminal !== "completed" && state.terminal !== "paused") {
+      return `State "${stateId}" terminal must be "completed" or "paused"`;
+    }
     if (state.maxAttempts !== undefined && (!Number.isInteger(state.maxAttempts) || state.maxAttempts < 1)) {
       return `State "${stateId}" maxAttempts must be a positive integer`;
     }
@@ -107,7 +112,34 @@ export function validateWorkflowDefinition(definition: WorkflowDefinition): stri
   return undefined;
 }
 
-export function createWorkflowRun(definition: WorkflowDefinition, at: number): WorkflowRunState {
+export function createWorkflowRun(
+  definition: WorkflowDefinition,
+  at: number,
+  actor?: WorkflowRuntimeActor,
+): WorkflowRunState {
+  const initial = definition.states[definition.initialState];
+  const activeExecution = initial?.task
+    ? {
+        id: `${definition.initialState}:0`,
+        stateId: definition.initialState,
+        transitionSeq: 0,
+        subject: initial.task.subject,
+        description: initial.task.description,
+        status: "active" as const,
+        createdAt: at,
+        updatedAt: at,
+        lease: actor
+          ? {
+              ownerSessionId: actor.sessionId,
+              ownerRuntimeId: actor.runtimeId,
+              acquiredAt: at,
+              heartbeatAt: at,
+              expiresAt: at + 30 * 60 * 1000,
+              attempt: 1,
+            }
+          : undefined,
+      }
+    : undefined;
   return {
     definition,
     currentState: definition.initialState,
@@ -115,6 +147,34 @@ export function createWorkflowRun(definition: WorkflowDefinition, at: number): W
     stateEnteredAt: at,
     attemptsByState: { [definition.initialState]: 1 },
     stateFireCounts: {},
+    activeExecution,
+  };
+}
+
+function activateExecution(
+  stateId: string,
+  transitionSeq: number,
+  task: NonNullable<WorkflowDefinition["states"][string]["task"]>,
+  actor: WorkflowRuntimeActor,
+  at: number,
+): WorkflowExecutionRecord {
+  return {
+    id: `${stateId}:${transitionSeq}`,
+    stateId,
+    transitionSeq,
+    subject: task.subject,
+    description: task.description,
+    status: "active",
+    createdAt: at,
+    updatedAt: at,
+    lease: {
+      ownerSessionId: actor.sessionId,
+      ownerRuntimeId: actor.runtimeId,
+      acquiredAt: at,
+      heartbeatAt: at,
+      expiresAt: at + 30 * 60 * 1000,
+      attempt: 1,
+    },
   };
 }
 
@@ -130,6 +190,24 @@ export function transitionWorkflowRun(
   const current = run.definition.states[run.currentState];
   if (!current) return { applied: false, error: `Current state "${run.currentState}" is not defined` };
   if (current.terminal) return { applied: false, error: `Workflow is already ${current.terminal}` };
+  if (current.task) {
+    const active = run.activeExecution;
+    if (!active || active.stateId !== run.currentState || active.transitionSeq !== run.transitionSeq || active.status !== "active") {
+      return { applied: false, error: "Workflow execution is missing or does not match the active state" };
+    }
+    if (!active.lease) {
+      return { applied: false, error: "Workflow execution is unowned; claim it before transitioning" };
+    }
+    if (!input.actor) {
+      return { applied: false, error: "Workflow transition requires an active session runtime" };
+    }
+    if (active.lease.expiresAt <= at) {
+      return { applied: false, error: "Workflow execution lease expired; claim it before transitioning" };
+    }
+    if (active.lease.ownerSessionId !== input.actor.sessionId || active.lease.ownerRuntimeId !== input.actor.runtimeId) {
+      return { applied: false, error: "Workflow execution is leased to another active runtime" };
+    }
+  }
 
   const target = current.on?.[input.outcome];
   if (!target) return { applied: false, error: `Outcome "${input.outcome}" is not allowed from state "${run.currentState}"` };
@@ -152,6 +230,22 @@ export function transitionWorkflowRun(
   }
 
   const sequence = run.transitionSeq + 1;
+  if (targetState.task && !targetState.terminal && !input.actor) {
+    return { applied: false, error: "Workflow execution requires a runtime lease owner" };
+  }
+  const settledExecution = run.activeExecution
+    ? {
+        ...run.activeExecution,
+        status: "completed" as const,
+        updatedAt: at,
+        settledAt: at,
+        evidence: input.evidence,
+        lease: undefined,
+      }
+    : undefined;
+  const destinationExecution = targetState.task && !targetState.terminal && input.actor
+    ? activateExecution(target, sequence, targetState.task, input.actor, at)
+    : undefined;
   const lastTransition: WorkflowTransitionRecord = {
     from: run.currentState,
     to: target,
@@ -167,7 +261,8 @@ export function transitionWorkflowRun(
     stateEnteredAt: at,
     attemptsByState: { ...run.attemptsByState, [target]: nextAttempt },
     stateFireCounts: run.stateFireCounts ?? {},
-    activeTaskId: input.activeTaskId,
+    activeExecution: destinationExecution,
+    executionHistory: settledExecution ? [...(run.executionHistory ?? []), settledExecution] : run.executionHistory,
     waitingMonitor: undefined,
     lastTransition,
   };

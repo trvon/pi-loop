@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
-import type { Trigger } from "../src/types.js";
+import type { Trigger, WorkflowRunState } from "../src/types.js";
 
 const cronTrigger: Trigger = { type: "cron", schedule: "*/5 * * * *" };
 
@@ -646,5 +646,111 @@ describe("LoopStore (absolute path)", () => {
       rmSync(lPath + ".lock", { force: true });
       rmSync(lPath + ".tmp", { force: true });
     }
+  });
+});
+
+describe("LoopStore workflow execution leases", () => {
+  const workflow = {
+    version: 1 as const,
+    initialState: "work",
+    states: {
+      work: {
+        prompt: "Do the work.",
+        task: { subject: "Work", description: "Complete it." },
+        on: { done: "complete" },
+      },
+      complete: { prompt: "Report.", terminal: "completed" as const },
+    },
+  };
+
+  it("normalizes legacy activeTaskId on load and fails closed until claimed", () => {
+    const lPath = join(tmpdir(), `pi-loop-legacy-workflow-${Date.now()}.json`);
+    const legacy = {
+      nextId: 2,
+      loops: [{
+        id: "1",
+        prompt: "legacy",
+        trigger: { type: "dynamic" },
+        status: "active",
+        recurring: true,
+        createdAt: 1,
+        updatedAt: 1,
+        expiresAt: Date.now() + 60_000,
+        dynamic: { goal: "legacy", state: "work", iteration: 0 },
+        workflow: {
+          definition: {
+            version: 1,
+            initialState: "work",
+            states: {
+              work: {
+                prompt: "Do the work.",
+                task: { subject: "Legacy work", description: "Old model task." },
+                on: { done: "complete" },
+              },
+              complete: { prompt: "Report.", terminal: "completed" },
+            },
+          },
+          currentState: "work",
+          transitionSeq: 2,
+          stateEnteredAt: 1,
+          attemptsByState: { work: 3 },
+          stateFireCounts: {},
+          activeTaskId: "7",
+        },
+      }],
+    };
+    writeFileSync(lPath, JSON.stringify(legacy));
+    try {
+      const store = new LoopStore(lPath);
+      const workflow = store.get("1")?.workflow as (WorkflowRunState & { activeTaskId?: string }) | undefined;
+      expect(workflow?.activeTaskId).toBeUndefined();
+      expect(workflow?.activeExecution).toMatchObject({
+        id: "work:2",
+        stateId: "work",
+        transitionSeq: 2,
+        status: "active",
+        subject: "Legacy work",
+      });
+      expect(workflow?.activeExecution?.lease).toBeUndefined();
+      const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
+      expect(store.claimWorkflowExecution("1", foreign, 60).claimed).toBe(true);
+    } finally {
+      rmSync(lPath, { force: true });
+      rmSync(lPath + ".lock", { force: true });
+      rmSync(lPath + ".tmp", { force: true });
+    }
+  });
+
+  it("renews its owner and only permits takeover after expiry", () => {
+    const store = new LoopStore();
+    const owner = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
+    store.create({ type: "dynamic" }, "workflow", { recurring: true, workflow, actor: owner });
+
+    expect(store.claimWorkflowExecution("1", owner, 60).claimed).toBe(true);
+    expect(store.claimWorkflowExecution("1", foreign, 60)).toMatchObject({
+      claimed: false,
+      error: "Workflow execution is leased to another active runtime",
+    });
+
+    const active = store.get("1")?.workflow?.activeExecution;
+    if (!active?.lease) throw new Error("expected active lease");
+    active.lease.expiresAt = Date.now() - 1;
+    expect(store.claimWorkflowExecution("1", foreign, 60)).toMatchObject({
+      claimed: true,
+      entry: { workflow: { activeExecution: { lease: { ownerSessionId: "session-b", ownerRuntimeId: "runtime-b", attempt: 2 } } } },
+    });
+  });
+
+  it("clamps out-of-range lease durations", () => {
+    const store = new LoopStore();
+    const owner = { sessionId: "session-a", runtimeId: "runtime-a" };
+    store.create({ type: "dynamic" }, "workflow", { recurring: true, workflow, actor: owner });
+
+    expect(store.claimWorkflowExecution("1", owner, 1).claimed).toBe(true);
+    expect(store.get("1")?.workflow?.activeExecution?.lease?.expiresAt).toBeGreaterThan(Date.now() + 55_000);
+
+    expect(store.claimWorkflowExecution("1", owner, 999_999).claimed).toBe(true);
+    expect(store.get("1")?.workflow?.activeExecution?.lease?.expiresAt).toBeLessThan(Date.now() + 3_700_000);
   });
 });

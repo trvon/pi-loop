@@ -2292,7 +2292,8 @@ describe("monitor tool wrappers", () => {
     const loops = await toolMap.get("LoopList")!.execute!("loops", {});
     const tasks = await toolMap.get("TaskList")!.execute!("tasks", {});
     expect(loops.content[0].text).toContain("#1 [paused] Preserve workflow ownership");
-    expect(tasks.content[0].text).toContain("State task");
+    expect(loops.content[0].text).toContain("Active workflow work: State task");
+    expect(tasks.content[0].text).toBe("No tasks.");
   });
 
   it("clears memory-scoped loops on non-resume session switch", async () => {

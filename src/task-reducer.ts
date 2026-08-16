@@ -1,4 +1,4 @@
-import type { TaskEntry, TaskWorkflowLink } from "./task-types.js";
+import type { TaskEntry } from "./task-types.js";
 
 export interface TaskReducerState {
   nextId: number;
@@ -16,7 +16,6 @@ export type TaskReducerEvent =
       subject: string;
       description: string;
       metadata?: Record<string, unknown>;
-      workflow?: TaskWorkflowLink;
     };
   }
   | {
@@ -89,7 +88,6 @@ export function reduceTaskState(state: TaskReducerState, event: TaskReducerEvent
       updatedAt: event.at,
       revision: 0,
       metadata: event.payload.metadata,
-      workflow: event.payload.workflow,
     };
     next.tasksById[id] = task;
     return {

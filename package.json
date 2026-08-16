@@ -64,7 +64,7 @@
     "test:watch": "vitest",
     "test:e2e": "npm run test:e2e:reminder && npm run test:e2e:workflow && npm run test:e2e:backlog",
     "test:e2e:reminder": "bash test/e2e/reminder-injection.sh",
-    "test:e2e:workflow": "npm run build && node test/e2e/workflow-linked-tasks.mjs",
+    "test:e2e:workflow": "npm run build && node test/e2e/workflow-conformance.mjs",
     "test:e2e:backlog": "npm run build && node test/e2e/backlog-action-first.mjs",
     "test:property": "TZ=UTC vitest run test/property --maxWorkers=1 --no-file-parallelism --passWithNoTests",
     "test:fuzz": "FC_NUM_RUNS=10000 npm run test:property",

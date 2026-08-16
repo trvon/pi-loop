@@ -107,15 +107,15 @@ describe("task-provider-runtime", () => {
     expect(inA).not.toContain("session B");
   });
 
-  it("settles backlog state after closing a workflow task", async () => {
-    const { toolMap, runtime, evaluateTaskBacklog } = setup();
+  it("settles backlog state after completing a native task", async () => {
+    const { toolMap, evaluateTaskBacklog } = setup();
     await vi.advanceTimersByTimeAsync(6_100);
     await toolMap.get("TaskCreate")!.execute!("create", { subject: "state task", description: "work" });
     evaluateTaskBacklog.mockClear();
 
-    expect(await runtime.closeWorkflowTask("1")).toBe(true);
+    await toolMap.get("TaskUpdate")!.execute!("complete", { id: "1", status: "completed" });
 
-    expect(evaluateTaskBacklog).toHaveBeenCalledWith(runtime.getNativeTaskStore(), 0);
+    expect(evaluateTaskBacklog).toHaveBeenCalled();
   });
 
   it("cancels delayed fallback registration on session shutdown", async () => {

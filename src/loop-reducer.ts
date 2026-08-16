@@ -1,4 +1,4 @@
-import type { DynamicLoopState, LoopEntry, LoopFireOrigin, Trigger, WorkflowDefinition, WorkflowMonitorWait } from "./types.js";
+import type { DynamicLoopState, LoopEntry, LoopFireOrigin, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRuntimeActor } from "./types.js";
 import { createWorkflowRun, transitionWorkflowRun } from "./workflow-reducer.js";
 
 export const MAX_LOOP_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
@@ -37,6 +37,7 @@ export type LoopReducerEvent =
       maxFires?: number;
       dynamic?: Partial<DynamicLoopState>;
       workflow?: WorkflowDefinition;
+      actor?: WorkflowRuntimeActor;
     };
   }
   | {
@@ -86,7 +87,7 @@ export type LoopReducerEvent =
       id: string;
       outcome: string;
       evidence?: string;
-      activeTaskId?: string;
+      actor?: WorkflowRuntimeActor;
     };
   }
   | {
@@ -99,17 +100,17 @@ export type LoopReducerEvent =
       id: string;
       outcome: string;
       evidence?: string;
-      activeTaskId?: string;
+      actor?: WorkflowRuntimeActor;
       terminal: "completed" | "paused";
     };
   }
   | {
-    type: "LOOP_WORKFLOW_TASK_SET";
+    type: "LOOP_WORKFLOW_EXECUTION_CLAIMED";
     at: number;
     source: ReducerSource;
     entityType?: "loop";
     entityId?: string;
-    payload: { id: string; taskId?: string };
+    payload: { id: string; actor: WorkflowRuntimeActor; leaseMs: number };
   }
   | {
     type: "LOOP_WORKFLOW_MONITOR_ATTACHED";
@@ -184,7 +185,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
             lastUpdatedAt: event.payload.dynamic?.lastUpdatedAt ?? event.at,
           }
         : undefined,
-      workflow: event.payload.workflow ? createWorkflowRun(event.payload.workflow, event.at) : undefined,
+      workflow: event.payload.workflow ? createWorkflowRun(event.payload.workflow, event.at, event.payload.actor) : undefined,
     };
     next.loopsById[id] = loop;
     return {
@@ -259,7 +260,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
     const result = transitionWorkflowRun(loop.workflow, {
       outcome: event.payload.outcome,
       evidence: event.payload.evidence,
-      activeTaskId: event.payload.activeTaskId,
+      actor: event.payload.actor,
     }, event.at);
     if (!result.applied) return { state, effects: [] };
     loop.workflow = result.run;
@@ -281,7 +282,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
     const result = transitionWorkflowRun(loop.workflow, {
       outcome: event.payload.outcome,
       evidence: event.payload.evidence,
-      activeTaskId: event.payload.activeTaskId,
+      actor: event.payload.actor,
     }, event.at);
     if (!result.applied || result.terminal !== event.payload.terminal) return { state, effects: [] };
     if (event.payload.terminal === "completed") {
@@ -307,9 +308,29 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
     loop.updatedAt = event.at;
   }
 
-  if (event.type === "LOOP_WORKFLOW_TASK_SET") {
-    if (!loop.workflow) return { state, effects: [] };
-    loop.workflow = { ...loop.workflow, activeTaskId: event.payload.taskId };
+  if (event.type === "LOOP_WORKFLOW_EXECUTION_CLAIMED") {
+    const execution = loop.workflow?.activeExecution;
+    if (execution?.status !== "active") return { state, effects: [] };
+    const lease = execution.lease;
+    const sameOwner = lease
+      && lease.ownerSessionId === event.payload.actor.sessionId
+      && lease.ownerRuntimeId === event.payload.actor.runtimeId;
+    if (lease && lease.expiresAt > event.at && !sameOwner) return { state, effects: [] };
+    loop.workflow = {
+      ...loop.workflow!,
+      activeExecution: {
+        ...execution,
+        updatedAt: event.at,
+        lease: {
+          ownerSessionId: event.payload.actor.sessionId,
+          ownerRuntimeId: event.payload.actor.runtimeId,
+          acquiredAt: sameOwner ? lease.acquiredAt : event.at,
+          heartbeatAt: event.at,
+          expiresAt: event.at + event.payload.leaseMs,
+          attempt: sameOwner ? lease.attempt : (lease?.attempt ?? 0) + 1,
+        },
+      },
+    };
     loop.updatedAt = event.at;
   }
 
