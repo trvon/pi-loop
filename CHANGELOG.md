@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.4](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.3...pi-loop-v0.7.4) (2026-08-16)
+
+
+### Bug Fixes
+
+* **runtime:** harden workflow execution ([#36](https://github.com/trvon/pi-loop/issues/36)) ([d88377a](https://github.com/trvon/pi-loop/commit/d88377af5112b27a88a9fe93fbee355468b5cb47))
+
 ## [0.7.3](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.2...pi-loop-v0.7.3) (2026-08-14)
 
 
