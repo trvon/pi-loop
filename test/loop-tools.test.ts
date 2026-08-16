@@ -458,6 +458,20 @@ describe("Workflow tools", () => {
     expect(out).toContain('Add on: {outcome: targetState}');
   });
 
+  it("claims and renews the workflow execution lease through the tool", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+
+    const out = await h.text("WorkflowClaim", { id: "1", leaseSeconds: 300 });
+
+    expect(out).toContain("lease active until");
+    expect(h.store.get("1")?.workflow?.activeExecution?.lease?.ownerSessionId).toBe("test-session");
+    expect(h.toolMap.get("WorkflowClaim")?.renderCall).toBeTypeOf("function");
+  });
+
+  it("rejects a claim for a missing workflow", async () => {
+    expect(await h.text("WorkflowClaim", { id: "99" })).toContain("Loop #99 not found");
+  });
+
   it("rejects an undeclared outcome without changing the workflow", async () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     const out = await h.text("WorkflowTransition", { id: "1", outcome: "ship_it" });
