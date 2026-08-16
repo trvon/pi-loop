@@ -32,48 +32,79 @@ let rejectCompletion;
 
 // Goal-seeded, not scripted: the model must discover WorkflowCreate /
 // WorkflowTransition from their descriptions and author its own definition.
-const prompt = [
-  "Run a live conformance exercise for the durable workflow tools installed in this session.",
-  "Goal: model a bounded task that allows at most three attempts. On the first attempt, surface one follow-up case and retry; on the second attempt, complete the work and report done.",
-  "The work itself must be embedded in the workflow states — do not create it as separate tasks.",
-  "Use only the workflow tools this session provides; do not create standalone tasks, loops, or monitors.",
-  "When a workflow tool reports terminal completion, reply exactly LIVE_WORKFLOW_DONE and nothing else.",
-].join("\n");
+const SCENARIOS = {
+  retry: {
+    prompt: [
+      "Run a live conformance exercise for the durable workflow tools installed in this session.",
+      "Goal: model a bounded task as one work phase that repeats itself when it surfaces a follow-up case, up to three runs total.",
+      "On the first run, surface one follow-up case and repeat the phase; on the second run, complete the work and finish.",
+      "The work itself must be embedded in the workflow states — do not create it as separate tasks.",
+      "Use only the workflow tools this session provides; do not create standalone tasks, loops, or monitors.",
+      "When a workflow tool reports terminal completion, reply exactly LIVE_WORKFLOW_DONE and nothing else.",
+    ].join("\n"),
+    validateDefinition(args) {
+      const definition = parseDefinition(args);
+      const initial = definition.states?.[definition.initialState];
+      if (!initial) throw new Error(`initial state "${definition.initialState}" is not defined`);
+      if (initial.terminal) throw new Error("initial state must be non-terminal");
+      if (!initial.task?.subject) throw new Error("initial state must embed task work");
+      if (!Object.values(initial.on ?? {}).includes(definition.initialState)) {
+        throw new Error("initial state must declare a self-loop outcome");
+      }
+      if (!Object.values(definition.states).some((state) => state?.terminal === "completed")) {
+        throw new Error("workflow must declare a completed terminal state");
+      }
+      return definition;
+    },
+  },
+  phases: {
+    prompt: [
+      "Run a live conformance exercise for the durable workflow tools installed in this session.",
+      "Goal: model a multi-phase research exercise with at least three phases — investigate, validate, and report.",
+      "The work for each phase is embedded in that phase's state; do not create it as separate tasks.",
+      "After each phase, declare an outcome that advances to the next phase, and pass what that phase found as concise evidence in each transition.",
+      "Use only the workflow tools this session provides; do not create standalone tasks, loops, or monitors.",
+      "When a workflow tool reports terminal completion, reply exactly LIVE_WORKFLOW_DONE and nothing else.",
+    ].join("\n"),
+    validateDefinition(args) {
+      const definition = parseDefinition(args);
+      const stateIds = Object.keys(definition.states ?? {});
+      if (stateIds.length < 3) throw new Error(`expected at least three phases, got ${stateIds.length}`);
+      const initial = definition.states?.[definition.initialState];
+      if (!initial) throw new Error(`initial state "${definition.initialState}" is not defined`);
+      if (initial.terminal) throw new Error("initial state must be non-terminal");
+      if (!initial.task?.subject) throw new Error("initial phase must embed task work");
+      const declared = Object.keys(initial.on ?? {});
+      if (declared.length === 0) throw new Error("initial phase must declare at least one outcome");
+      if (!Object.values(definition.states).some((state) => state?.terminal === "completed")) {
+        throw new Error("workflow must declare a completed terminal state");
+      }
+      return definition;
+    },
+  },
+};
 
-function send(child, command) {
-  child.stdin.write(`${JSON.stringify(command)}\n`);
+const scenarioName = process.env.PI_LOOP_LIVE_SCENARIO ?? "retry";
+const scenario = SCENARIOS[scenarioName];
+if (!scenario) {
+  console.error(`unknown scenario "${scenarioName}"; expected ${Object.keys(SCENARIOS).join(" or ")}`);
+  process.exit(1);
 }
 
-function readState() {
-  const loopPath = join(fixtureDir, ".pi", "loops", "loops.json");
-  const taskPath = join(fixtureDir, ".pi", "tasks", "tasks.json");
-  // Terminal completion deletes the last loop and standalone tasks are never
-  // created, so both files may legitimately not exist.
-  const loops = existsSync(loopPath) ? JSON.parse(readFileSync(loopPath, "utf8")).loops : [];
-  const tasks = existsSync(taskPath) ? JSON.parse(readFileSync(taskPath, "utf8")).tasks : [];
-  return { loops, tasks };
+function parseDefinition(args) {
+  if (!args || typeof args.definition !== "string") throw new Error("WorkflowCreate was not called with a JSON definition string");
+  try {
+    const definition = JSON.parse(args.definition);
+    if (definition?.version !== 1) throw new Error("workflow definition must be version 1");
+    return definition;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("workflow definition")) throw error;
+    throw new Error("WorkflowCreate definition is not valid JSON");
+  }
 }
 
 function validateDefinition(args) {
-  if (!args || typeof args.definition !== "string") throw new Error("WorkflowCreate was not called with a JSON definition string");
-  let definition;
-  try {
-    definition = JSON.parse(args.definition);
-  } catch {
-    throw new Error("WorkflowCreate definition is not valid JSON");
-  }
-  if (definition?.version !== 1) throw new Error("workflow definition must be version 1");
-  const initial = definition.states?.[definition.initialState];
-  if (!initial) throw new Error(`initial state "${definition.initialState}" is not defined`);
-  if (initial.terminal) throw new Error("initial state must be non-terminal");
-  if (!initial.task?.subject) throw new Error("initial state must embed task work");
-  if (!Object.values(initial.on ?? {}).includes(definition.initialState)) {
-    throw new Error("initial state must declare a self-loop outcome");
-  }
-  if (!Object.values(definition.states).some((state) => state?.terminal === "completed")) {
-    throw new Error("workflow must declare a completed terminal state");
-  }
-  return definition;
+  return scenario.validateDefinition(args);
 }
 
 function validate() {
@@ -88,10 +119,27 @@ function validate() {
   if (claims.length !== 0) throw new Error(`expected zero TaskClaim calls, got ${claims.length}`);
   if (transitions.length < 2) throw new Error(`expected at least two WorkflowTransition calls, got ${transitions.length}`);
   if (transitions.some((call) => call.args?.claimId !== undefined)) throw new Error("workflow transitions must not carry claimId");
+  if (scenarioName === "phases" && transitions.some((call) => !call.args?.evidence)) {
+    throw new Error("every phase transition must carry evidence");
+  }
   if (forbidden.length > 0) throw new Error(`agent called forbidden tools: ${forbidden.map((call) => call.name).join(", ")}`);
   if (!finished) throw new Error("no WorkflowTransition reported terminal completion");
   if (loops.length !== 0) throw new Error(`expected terminal workflow deletion, found ${loops.length} loop(s)`);
   if (tasks.length !== 0) throw new Error(`expected zero standalone tasks, found ${tasks.length}`);
+  return { loops, tasks };
+}
+
+function send(child, command) {
+  child.stdin.write(`${JSON.stringify(command)}\n`);
+}
+
+function readState() {
+  const loopPath = join(fixtureDir, ".pi", "loops", "loops.json");
+  const taskPath = join(fixtureDir, ".pi", "tasks", "tasks.json");
+  // Terminal completion deletes the last loop and standalone tasks are never
+  // created, so both files may legitimately not exist.
+  const loops = existsSync(loopPath) ? JSON.parse(readFileSync(loopPath, "utf8")).loops : [];
+  const tasks = existsSync(taskPath) ? JSON.parse(readFileSync(taskPath, "utf8")).tasks : [];
   return { loops, tasks };
 }
 
@@ -235,7 +283,7 @@ const outcome = new Promise((resolveOutcome, rejectOutcome) => {
 
 try {
   await new Promise((resolveWait) => setTimeout(resolveWait, 6500));
-  send(child, { id: "workflow-conformance", type: "prompt", message: prompt });
+  send(child, { id: "workflow-conformance", type: "prompt", message: scenario.prompt });
   const state = await outcome;
   writeArtifact("passed", state);
   console.log(`PASS: goal-seeded workflow completed with ${toolCalls.length} tool calls`);
