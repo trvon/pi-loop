@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
-import type { Trigger } from "../src/types.js";
+import type { Trigger, WorkflowRunState } from "../src/types.js";
 
 const cronTrigger: Trigger = { type: "cron", schedule: "*/5 * * * *" };
 
@@ -702,7 +702,7 @@ describe("LoopStore workflow execution leases", () => {
     writeFileSync(lPath, JSON.stringify(legacy));
     try {
       const store = new LoopStore(lPath);
-      const workflow = store.get("1")?.workflow;
+      const workflow = store.get("1")?.workflow as (WorkflowRunState & { activeTaskId?: string }) | undefined;
       expect(workflow?.activeTaskId).toBeUndefined();
       expect(workflow?.activeExecution).toMatchObject({
         id: "work:2",
@@ -740,5 +740,17 @@ describe("LoopStore workflow execution leases", () => {
       claimed: true,
       entry: { workflow: { activeExecution: { lease: { ownerSessionId: "session-b", ownerRuntimeId: "runtime-b", attempt: 2 } } } },
     });
+  });
+
+  it("clamps out-of-range lease durations", () => {
+    const store = new LoopStore();
+    const owner = { sessionId: "session-a", runtimeId: "runtime-a" };
+    store.create({ type: "dynamic" }, "workflow", { recurring: true, workflow, actor: owner });
+
+    expect(store.claimWorkflowExecution("1", owner, 1).claimed).toBe(true);
+    expect(store.get("1")?.workflow?.activeExecution?.lease?.expiresAt).toBeGreaterThan(Date.now() + 55_000);
+
+    expect(store.claimWorkflowExecution("1", owner, 999_999).claimed).toBe(true);
+    expect(store.get("1")?.workflow?.activeExecution?.lease?.expiresAt).toBeLessThan(Date.now() + 3_700_000);
   });
 });

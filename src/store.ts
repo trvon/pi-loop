@@ -328,6 +328,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     actor: WorkflowRuntimeActor,
     leaseSeconds = 1800,
   ): { entry?: LoopEntry; claimed: boolean; error?: string } {
+    const leaseMs = Math.min(Math.max(leaseSeconds, 60), 3600) * 1000;
     return this.withLock(() => {
       const entry = this.entries.get(id);
       if (!entry) return { claimed: false, error: `Loop #${id} not found` };
@@ -349,7 +350,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         source: "tool",
         entityType: "loop",
         entityId: id,
-        payload: { id, actor, leaseMs: leaseSeconds * 1000 },
+        payload: { id, actor, leaseMs },
       });
       return { entry: this.entries.get(id), claimed: true };
     });
