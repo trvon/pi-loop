@@ -91,6 +91,12 @@ describe("embedded workflow execution integration", () => {
     });
     expect(new TaskStore(h.taskPath).list()).toEqual([]);
 
+    const claimed = await h.toolMap.get("WorkflowClaim")!.execute!("claim", { id: "1" });
+    expect(claimed.content[0].text).toContain("lease active until");
+    expect(new LoopStore(h.loopPath).get("1")?.workflow?.activeExecution?.lease).toMatchObject({
+      ownerSessionId: "workflow-integration",
+    });
+
     const completed = await h.toolMap.get("WorkflowTransition")!.execute!("done", {
       id: "1",
       outcome: "done",

@@ -54,7 +54,7 @@ MonitorStop monitorId="1"
 | `/loop` | Create or manage scheduled, event, and dynamic goal loops |
 | `/tasks` | Manage native fallback tasks when `pi-tasks` is absent |
 | `LoopCreate`, `LoopList`, `LoopUpdate`, `LoopDelete` | Create and control ordinary loops |
-| `WorkflowCreate`, `WorkflowTransition` | Create and advance opt-in task-driven workflows; inspect them with `LoopList` |
+| `WorkflowCreate`, `WorkflowClaim`, `WorkflowTransition` | Create, claim, and advance opt-in task-driven workflows; inspect them with `LoopList` |
 | `MonitorCreate`, `MonitorList`, `MonitorStop` | Run and inspect background commands |
 | `TaskCreate`, `TaskList`, `TaskClaim`, `TaskHeartbeat`, `TaskUpdate`, `TaskDelete` | Native fallback task management |
 

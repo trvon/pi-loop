@@ -57,7 +57,7 @@ The workflow wake/task guidance was evaluated with fresh clean-slate executors u
 
 The minimal revision names the exact `WorkflowTransition` fields in both wake and tool guidance, explicitly says that `activeTaskId` is invalid, and lists only outcomes whose target attempt limits remain available. The holdout executor correctly claimed the linked task and chose `done` instead of the exhausted `retry` self-loop.
 
-The embedded-execution revision removed the external task link entirely: wake guidance names the active workflow execution and its lease instead of a task, `WorkflowTransition` accepts only `id`/`outcome`/`evidence`, and the live harness asserts zero `TaskClaim`/`TaskUpdate` calls and an empty TaskStore.
+The embedded-execution revision removed the external task link entirely: wake guidance names the active workflow execution and its lease instead of a task, `WorkflowTransition` accepts only `id`/`outcome`/`evidence`, and the live harness asserts zero `TaskClaim`/`TaskUpdate` calls and an empty TaskStore. Newly entered task phases are unowned claim boundaries, so the harness also requires `WorkflowClaim` before the next phase transitions.
 
 This evaluation complements deterministic tests: it measures whether an unbiased executor understands the prompt, while the integration suite proves that the resulting tool sequence preserves state.
 
@@ -82,13 +82,13 @@ Without `PI_LOOP_LIVE_MODEL`, the harness exits successfully with `SKIP`. The ru
 
 The harness fails unless all of these hold:
 
-- exactly one `WorkflowCreate`;
-- exactly two `TaskClaim` calls;
-- transitions occur as `retry`, then `done`;
-- no terminal `TaskUpdate` is attempted for linked tasks;
+- exactly one accepted `WorkflowCreate`;
+- at least two `WorkflowTransition` calls reach terminal completion;
+- newly entered unowned task work is claimed with `WorkflowClaim`;
+- no standalone `TaskClaim`, `TaskCreate`, or terminal `TaskUpdate` is attempted;
+- transitions do not carry the removed `claimId` field;
 - the workflow loop is deleted at terminal completion;
-- exactly two linked tasks remain, both completed;
-- task workflow sequence links are `0`, then `1`.
+- the standalone TaskStore remains empty.
 
 A bounded report is written to `.artifacts/live-workflow/latest.json`, including tool calls, final isolated state, the last 500 RPC events, and bounded stderr. Credentials and environment values are not recorded.
 
@@ -98,4 +98,4 @@ Run both live E2E surfaces with:
 npm run test:e2e
 ```
 
-The older reminder test may skip when its local llama endpoint is unavailable; the linked-workflow test independently skips when no live model is explicitly selected.
+The older reminder test may skip when its local llama endpoint is unavailable; the workflow-conformance test independently skips when no live model is explicitly selected.

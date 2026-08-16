@@ -87,7 +87,7 @@ describe("workflow reducer", () => {
     });
   });
 
-  it("settles source work and leases destination work atomically", () => {
+  it("settles source work and activates unowned destination work atomically", () => {
     const taskDefinition: WorkflowDefinition = {
       version: 1,
       initialState: "investigate",
@@ -117,11 +117,12 @@ describe("workflow reducer", () => {
         activeExecution: {
           id: "fix:1",
           status: "active",
-          lease: { ownerSessionId: "session-a", ownerRuntimeId: "runtime-a" },
         },
         executionHistory: [{ id: "investigate:0", status: "completed", settledAt: 200 }],
       },
     });
+    if (!result.applied) throw new Error("expected transition to apply");
+    expect(result.run.activeExecution?.lease).toBeUndefined();
   });
 
   it("rejects a workflow transition from a different live lease owner", () => {

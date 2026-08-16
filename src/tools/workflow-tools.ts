@@ -153,9 +153,9 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     label: "WorkflowClaim",
     renderCall: renderToolCall("Workflow", (args) => `claim · #${String(toolArg(args, "id") ?? "?")}`),
     renderResult: renderToolResult,
-    description: "Renew this runtime's workflow lease, or take over an expired lease. No bearer token is returned.",
+    description: "Claim unowned workflow work, renew this runtime's lease, or take over an expired lease. Returns no bearer token.",
     promptGuidelines: [
-      "Use WorkflowClaim before continuing work after a restart or when LoopList says the workflow lease expired.",
+      "Claim each newly entered task phase before work; reclaim after restart or lease expiry.",
       "A live lease owned by another runtime cannot be bypassed.",
     ],
     parameters: Type.Object({

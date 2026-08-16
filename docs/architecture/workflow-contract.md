@@ -6,9 +6,9 @@ Workflow loops are a controller layer over dynamic loops and tasks. They are not
 
 - A `LoopEntry.workflow` owns the workflow definition, the persisted run state, and the embedded execution records.
 - A state's `task` is embedded as a `WorkflowExecutionRecord` in the workflow run; no `TaskStore` record exists for workflow work.
-- `WorkflowTransition` is the only settlement path: it validates the current runtime's lease, settles the active execution, advances state, and activates the destination execution in one locked write.
-- A self-loop is an explicit retry: it increments `transitionSeq` and `attemptsByState`, settles the prior execution, and activates a fresh execution.
-- Executions carry a server-held lease (`ownerSessionId`/`ownerRuntimeId` + expiry). `WorkflowClaim` renews a same-owner lease or takes over an expired one; a live foreign lease is fail-closed.
+- `WorkflowTransition` is the only settlement path: it validates the current runtime's lease, settles the active execution, advances state, and activates an unowned destination execution in one locked write.
+- A self-loop is an explicit retry: it increments `transitionSeq` and `attemptsByState`, settles the prior execution, and activates a fresh unowned execution.
+- Newly entered task phases are unowned claim boundaries so another project runtime can take the next phase immediately. Claimed executions carry a server-held lease (`ownerSessionId`/`ownerRuntimeId` + expiry). `WorkflowClaim` claims unowned work, renews a same-owner lease, or takes over an expired one; a live foreign lease is fail-closed.
 
 ## Definition
 

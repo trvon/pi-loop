@@ -425,16 +425,18 @@ describe("Workflow tools", () => {
     });
   });
 
-  it("atomically settles source work and activates destination work", async () => {
+  it("atomically settles source work and leaves destination work claimable", async () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     const out = await h.text("WorkflowTransition", { id: "1", outcome: "found", evidence: "Reproduced locally." });
     expect(out).toContain("investigate → fix");
+    expect(out).toContain("Lease: unowned; claim it before continuing.");
     expect(h.store.get("1")?.workflow).toMatchObject({
       currentState: "fix",
       transitionSeq: 1,
       activeExecution: { id: "fix:1", status: "active", subject: "Fix regression" },
       executionHistory: [{ id: "investigate:0", status: "completed", evidence: "Reproduced locally." }],
     });
+    expect(h.store.get("1")?.workflow?.activeExecution?.lease).toBeUndefined();
   });
 
   it("does not expose claim tokens in transition schema or guidance", () => {
@@ -462,10 +464,13 @@ describe("Workflow tools", () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
 
     const out = await h.text("WorkflowClaim", { id: "1", leaseSeconds: 300 });
+    const claimTool = h.toolMap.get("WorkflowClaim") as any;
 
     expect(out).toContain("lease active until");
     expect(h.store.get("1")?.workflow?.activeExecution?.lease?.ownerSessionId).toBe("test-session");
-    expect(h.toolMap.get("WorkflowClaim")?.renderCall).toBeTypeOf("function");
+    expect(claimTool.renderCall).toBeTypeOf("function");
+    expect(claimTool.description).toContain("Claim unowned workflow work");
+    expect(claimTool.promptGuidelines.join("\n")).toContain("newly entered task phase");
   });
 
   it("rejects a claim for a missing workflow", async () => {
@@ -520,6 +525,7 @@ describe("Workflow tools", () => {
   it("completes a task-bearing workflow without TaskStore cleanup", async () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     await h.text("WorkflowTransition", { id: "1", outcome: "found" });
+    await h.text("WorkflowClaim", { id: "1" });
     const out = await h.text("WorkflowTransition", { id: "1", outcome: "passing" });
     expect(out).toContain("Workflow #1 completed and deleted");
     expect(h.store.get("1")).toBeUndefined();
