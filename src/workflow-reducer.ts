@@ -155,7 +155,6 @@ function activateExecution(
   stateId: string,
   transitionSeq: number,
   task: NonNullable<WorkflowDefinition["states"][string]["task"]>,
-  actor: WorkflowRuntimeActor,
   at: number,
 ): WorkflowExecutionRecord {
   return {
@@ -167,14 +166,6 @@ function activateExecution(
     status: "active",
     createdAt: at,
     updatedAt: at,
-    lease: {
-      ownerSessionId: actor.sessionId,
-      ownerRuntimeId: actor.runtimeId,
-      acquiredAt: at,
-      heartbeatAt: at,
-      expiresAt: at + 30 * 60 * 1000,
-      attempt: 1,
-    },
   };
 }
 
@@ -230,9 +221,6 @@ export function transitionWorkflowRun(
   }
 
   const sequence = run.transitionSeq + 1;
-  if (targetState.task && !targetState.terminal && !input.actor) {
-    return { applied: false, error: "Workflow execution requires a runtime lease owner" };
-  }
   const settledExecution = run.activeExecution
     ? {
         ...run.activeExecution,
@@ -243,8 +231,8 @@ export function transitionWorkflowRun(
         lease: undefined,
       }
     : undefined;
-  const destinationExecution = targetState.task && !targetState.terminal && input.actor
-    ? activateExecution(target, sequence, targetState.task, input.actor, at)
+  const destinationExecution = targetState.task && !targetState.terminal
+    ? activateExecution(target, sequence, targetState.task, at)
     : undefined;
   const lastTransition: WorkflowTransitionRecord = {
     from: run.currentState,

@@ -499,6 +499,53 @@ describe("LoopStore (file-backed)", () => {
     expect(restartedStore.get(workflow.id)).toBeUndefined();
   });
 
+  it("allows another project runtime to claim the next workflow phase immediately", () => {
+    const implementer = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const reviewer = { sessionId: "session-b", runtimeId: "runtime-b" };
+    const store1 = new LoopStore(filePath);
+    const workflow = store1.create({ type: "dynamic" }, "Implement and review", {
+      recurring: true,
+      actor: implementer,
+      workflow: {
+        version: 1,
+        initialState: "implement",
+        states: {
+          implement: {
+            prompt: "Implement the change.",
+            task: { subject: "Implement", description: "Write the change." },
+            on: { ready: "review" },
+          },
+          review: {
+            prompt: "Review the change.",
+            task: { subject: "Review", description: "Review the implementation." },
+            on: { approved: "done" },
+          },
+          done: { prompt: "Report completion.", terminal: "completed" },
+        },
+      },
+    });
+
+    expect(store1.transitionWorkflow(workflow.id, {
+      outcome: "ready",
+      evidence: "Implementation complete",
+      actor: implementer,
+    }).applied).toBe(true);
+
+    const store2 = new LoopStore(filePath);
+    const claim = store2.claimWorkflowExecution(workflow.id, reviewer, 60);
+
+    expect(claim.claimed, claim.error).toBe(true);
+    expect(claim.entry).toMatchObject({
+      workflow: {
+        currentState: "review",
+        activeExecution: {
+          stateId: "review",
+          lease: { ownerSessionId: "session-b", ownerRuntimeId: "runtime-b" },
+        },
+      },
+    });
+  });
+
   it("does not arm a persisted legacy active terminal workflow after restart", () => {
     const store1 = new LoopStore(filePath);
     const workflow = store1.create({ type: "dynamic" }, "Finish", {

@@ -109,14 +109,16 @@ function validateDefinition(args) {
 
 function validate() {
   const { loops, tasks } = readState();
-  const claims = toolCalls.filter((call) => call.name === "TaskClaim");
+  const taskClaims = toolCalls.filter((call) => call.name === "TaskClaim");
+  const workflowClaims = toolCalls.filter((call) => call.name === "WorkflowClaim");
   const transitions = toolCalls.filter((call) => call.name === "WorkflowTransition");
   const forbidden = toolCalls.filter((call) =>
     ["TaskUpdate", "TaskCreate", "LoopCreate", "LoopDelete", "LoopUpdate"].includes(call.name));
 
   if (successfulCreates.length !== 1) throw new Error(`expected one accepted WorkflowCreate call, got ${successfulCreates.length}`);
   validateDefinition(successfulCreates[0].args);
-  if (claims.length !== 0) throw new Error(`expected zero TaskClaim calls, got ${claims.length}`);
+  if (taskClaims.length !== 0) throw new Error(`expected zero TaskClaim calls, got ${taskClaims.length}`);
+  if (workflowClaims.length === 0) throw new Error("expected WorkflowClaim after entering unowned task work");
   if (transitions.length < 2) throw new Error(`expected at least two WorkflowTransition calls, got ${transitions.length}`);
   if (transitions.some((call) => call.args?.claimId !== undefined)) throw new Error("workflow transitions must not carry claimId");
   if (scenarioName === "phases" && transitions.some((call) => !call.args?.evidence)) {
