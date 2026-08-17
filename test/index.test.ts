@@ -1964,6 +1964,36 @@ describe("monitor tool wrappers", () => {
     );
   }, 10000);
 
+  it("drops an onDone wake when monitor completion reaches a stale extension context", async () => {
+    const { pi, toolMap, sentMessages: sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
+
+    const monitorCreate = toolMap.get("MonitorCreate");
+    expect(monitorCreate?.execute).toBeDefined();
+
+    const result = await monitorCreate!.execute?.("1", {
+      command: "node -e \"setTimeout(() => {}, 100)\"",
+      onDone: "This stale wake must be dropped",
+    });
+    expect(result.content[0].text).toContain("Completion wake loop");
+
+    const dispatch = pi.events.emit.getMockImplementation();
+    pi.events.emit.mockImplementation((name: string, payload: unknown) => {
+      if (name === "loop:fire") {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      }
+      return dispatch?.(name, payload);
+    });
+
+    await new Promise(r => setTimeout(r, 500));
+
+    expect(pi.events.emit).toHaveBeenCalledWith("loop:fire", expect.objectContaining({ loopId: "1" }));
+    expect(sentCustomMessages).toHaveLength(0);
+  }, 10000);
+
   it("onDone monitor completion does not rely on monitor:done event dispatch", async () => {
     const { pi, toolMap, sentMessages: sentCustomMessages } = createMockPi({ suppressMonitorDoneDispatch: true });
 

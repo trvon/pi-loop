@@ -179,29 +179,34 @@ export default function (pi: ExtensionAPI) {
   // ── Loop fire handler ──
 
   function emitLoopFire(entry: LoopEntry, monitor?: MonitorEntry): void {
-    pi.events.emit("loop:fire", {
-      loopId: entry.id,
-      prompt: entry.prompt,
-      trigger: entry.trigger,
-      timestamp: Date.now(),
-      readOnly: entry.readOnly,
-      recurring: entry.recurring,
-      persistent: entry.recurring,
-      autoTask: entry.autoTask,
-      taskBacklog: entry.taskBacklog,
-      dynamic: entry.dynamic,
-      workflow: entry.workflow,
-      sessionGeneration,
-      monitorOutcome: monitor
-        ? {
-            monitorId: monitor.id,
-            status: monitor.status,
-            exitCode: monitor.exitCode,
-            stopReason: monitor.stopReason,
-            outputLines: monitor.outputLines,
-          }
-        : undefined,
-    });
+    try {
+      pi.events.emit("loop:fire", {
+        loopId: entry.id,
+        prompt: entry.prompt,
+        trigger: entry.trigger,
+        timestamp: Date.now(),
+        readOnly: entry.readOnly,
+        recurring: entry.recurring,
+        persistent: entry.recurring,
+        autoTask: entry.autoTask,
+        taskBacklog: entry.taskBacklog,
+        dynamic: entry.dynamic,
+        workflow: entry.workflow,
+        sessionGeneration,
+        monitorOutcome: monitor
+          ? {
+              monitorId: monitor.id,
+              status: monitor.status,
+              exitCode: monitor.exitCode,
+              stopReason: monitor.stopReason,
+              outputLines: monitor.outputLines,
+            }
+          : undefined,
+      });
+    } catch (error) {
+      if (!isStaleExtensionContextError(error)) throw error;
+      debug(`loop:fire #${entry.id} — extension context went stale, dropping wake`);
+    }
   }
 
   function onLoopFire(
