@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.5](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.4...pi-loop-v0.7.5) (2026-08-17)
+
+
+### Features
+
+* **workflow:** support adaptive revisions ([#42](https://github.com/trvon/pi-loop/issues/42)) ([8464b17](https://github.com/trvon/pi-loop/commit/8464b1771fc33fd814f35e4a778f913c066adb88))
+
+
+### Bug Fixes
+
+* **monitor:** drop stale completion wakes ([#41](https://github.com/trvon/pi-loop/issues/41)) ([84362cc](https://github.com/trvon/pi-loop/commit/84362cc85902742f561bb33f96cf7993b184681d))
+* **workflow:** keep next phase claimable ([#39](https://github.com/trvon/pi-loop/issues/39)) ([d50e54f](https://github.com/trvon/pi-loop/commit/d50e54f1b0819dfe1ab711a4c7b893000902ef34))
+
 ## [0.7.4](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.3...pi-loop-v0.7.4) (2026-08-16)
 
 
