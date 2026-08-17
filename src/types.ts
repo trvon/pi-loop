@@ -89,6 +89,76 @@ export interface WorkflowRuntimeActor {
   runtimeId: string;
 }
 
+export type WorkflowRevisionChange =
+  | {
+      op: "add_state";
+      stateId: string;
+      state: WorkflowStateDefinition;
+    }
+  | {
+      op: "revise_state";
+      stateId: string;
+      prompt?: string;
+      task?: WorkflowTaskDefinition;
+      loop?: WorkflowStateLoopDefinition;
+      maxAttempts?: number;
+    }
+  | {
+      op: "add_transition";
+      from: string;
+      outcome: string;
+      to: string;
+    }
+  | {
+      op: "redirect_transition";
+      from: string;
+      outcome: string;
+      expectedTo: string;
+      to: string;
+    };
+
+export interface WorkflowDefinitionRevision {
+  revision: number;
+  definition: WorkflowDefinition;
+  reason: string;
+  supersededAt: number;
+  supersededBy: WorkflowRuntimeActor;
+  changes: WorkflowRevisionChange[];
+}
+
+export type WorkflowRevisionFailureCode =
+  | "loop_not_found"
+  | "not_workflow"
+  | "revision_conflict"
+  | "run_conflict"
+  | "terminal_workflow"
+  | "monitor_wait_active"
+  | "revision_limit_reached"
+  | "actor_required"
+  | "execution_missing"
+  | "execution_unowned"
+  | "lease_expired"
+  | "lease_owned_elsewhere"
+  | "invalid_patch"
+  | "current_state_immutable"
+  | "state_conflict"
+  | "edge_conflict"
+  | "dependency_not_preserved"
+  | "graph_invalid"
+  | "definition_too_large";
+
+export interface WorkflowRevisionFailure {
+  code: WorkflowRevisionFailureCode;
+  message: string;
+  expectedRevision?: number;
+  currentRevision?: number;
+  expectedState?: string;
+  currentState?: string;
+  expectedTransitionSeq?: number;
+  currentTransitionSeq?: number;
+  stateId?: string;
+}
+
 export interface WorkflowExecutionLease {
   ownerSessionId: string;
   ownerRuntimeId: string;
@@ -123,6 +193,8 @@ export interface WorkflowTransitionRecord {
 
 export interface WorkflowRunState {
   definition: WorkflowDefinition;
+  definitionRevision: number;
+  revisionHistory: WorkflowDefinitionRevision[];
   currentState: string;
   transitionSeq: number;
   stateEnteredAt: number;

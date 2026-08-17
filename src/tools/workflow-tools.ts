@@ -1,10 +1,41 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { formatLastTransitionLines } from "../loop-format.js";
-import type { LoopEntry, Trigger, WorkflowDefinition, WorkflowRuntimeActor } from "../types.js";
+import type { LoopEntry, Trigger, WorkflowDefinition, WorkflowRevisionChange, WorkflowRevisionFailure, WorkflowRuntimeActor } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
-import { getActiveWorkflowStateLoop, getWorkflowOutcomeAvailability, validateWorkflowDefinition, type WorkflowTransitionFailure } from "../workflow-reducer.js";
+import { validateWorkflowDefinition } from "../workflow-definition.js";
+import { getActiveWorkflowStateLoop, getWorkflowOutcomeAvailability, type WorkflowTransitionFailure } from "../workflow-reducer.js";
+import type { WorkflowRevisionSummary } from "../workflow-revision.js";
+import { WorkflowRevisionChangeSchema } from "../workflow-schema.js";
 import { textResult } from "./tool-result.js";
+
+function revisionRecovery(code: WorkflowRevisionFailure["code"] | undefined): string {
+  switch (code) {
+    case "revision_conflict":
+    case "run_conflict":
+      return "Inspect LoopList and re-author the revision against the current revision, state, and transition sequence.";
+    case "execution_unowned":
+    case "lease_expired":
+      return "Call WorkflowClaim, then retry against the current workflow state.";
+    case "lease_owned_elsewhere":
+      return "The active runtime owns this phase; wait for handoff or inspect LoopList after its lease expires.";
+    case "monitor_wait_active":
+      return "Wait for the attached monitor to settle before revising the workflow.";
+    case "current_state_immutable":
+      return "Preserve current work; revise only future states or outgoing transitions.";
+    case "revision_limit_reached":
+    case "terminal_workflow":
+      return "This workflow no longer accepts revisions; inspect LoopList before choosing a new controller.";
+    case "actor_required":
+      return "Retry from an active pi session so the runtime can authorize the revision.";
+    case "loop_not_found":
+    case "not_workflow":
+    case "execution_missing":
+      return "Inspect LoopList and choose an active workflow with matching execution state.";
+    default:
+      return "Correct the typed changes described above, preserve current work, and retry against the same CAS values.";
+  }
+}
 
 interface WorkflowStoreLike {
   get(id: string): LoopEntry | undefined;
@@ -17,10 +48,27 @@ interface WorkflowStoreLike {
   }): LoopEntry;
   pause(id: string): LoopEntry | undefined;
   resume(id: string): LoopEntry | undefined;
+  reviseWorkflow(
+    id: string,
+    input: {
+      expectedRevision: number;
+      expectedState: string;
+      expectedTransitionSeq: number;
+      reason: string;
+      changes: WorkflowRevisionChange[];
+    },
+    actor?: WorkflowRuntimeActor,
+  ): {
+    entry?: LoopEntry;
+    applied: boolean;
+    error?: string;
+    failure?: WorkflowRevisionFailure;
+    summary?: WorkflowRevisionSummary;
+  };
   transitionWorkflow(
     id: string,
     input: { outcome: string; evidence?: string; actor?: WorkflowRuntimeActor },
-    expected?: { currentState: string; transitionSeq: number; activeExecutionId?: string },
+    expected?: { currentState: string; transitionSeq: number; definitionRevision: number; activeExecutionId?: string },
   ): {
     entry?: LoopEntry;
     applied: boolean;
@@ -83,7 +131,7 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   const availability = getWorkflowOutcomeAvailability(workflow);
   const attempt = workflow.attemptsByState[workflow.currentState] ?? 1;
   const attemptLabel = state?.maxAttempts ? `${attempt}/${state.maxAttempts}` : String(attempt);
-  let message = `${heading}\nGoal: ${entry.prompt}\nCurrent state: ${workflow.currentState}\nAttempt: ${attemptLabel}`;
+  let message = `${heading}\nGoal: ${entry.prompt}\nDefinition revision: ${workflow.definitionRevision ?? 1}\nCurrent state: ${workflow.currentState}\nTransition sequence: ${workflow.transitionSeq}\nAttempt: ${attemptLabel}`;
   if (workflow.lastTransition) message += `\n${formatLastTransitionLines(workflow.lastTransition).join("\n")}`;
   if (state?.prompt) message += `\nInstruction: ${state.prompt}`;
   const execution = workflow.activeExecution;
@@ -115,13 +163,10 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     label: "WorkflowCreate",
     renderCall: renderToolCall("Workflow", (args) => `create · ${String(toolArg(args, "goal") ?? "workflow").slice(0, 56)}`),
     renderResult: renderToolResult,
-    description: "Create a task-driven workflow for named phases and outcomes. State work is embedded atomically in the workflow controller. Definition schema: {version:1, initialState, states:{stateId:{prompt, on:{outcome:targetState}, task?:{subject,description}, maxAttempts?, loop?:{schedule,maxFires?,startImmediately?}, terminal?}}}. Declare state work with task:{subject,description}; terminal is \"completed\" or \"paused\".",
+    description: "Create a named-state workflow. Definition: {version:1,initialState,states:{id:{prompt,on,task?:{subject,description},maxAttempts?,loop?,terminal?}}}. State work is embedded atomically; terminal is completed or paused.",
     promptGuidelines: [
-      "Use WorkflowCreate for named phase/outcome flows, not flat backlogs.",
-      "Give nonterminal states concise prompts and explicit outcomes.",
-      "Declare state work with task:{subject,description}; use prompt for instructions.",
-      "Workflow state work is controller-owned; do not call TaskClaim or TaskUpdate for it.",
-      "Model rework as outcome cycles bounded by maxAttempts.",
+      "Use workflows for phase/outcome flows, not flat backlogs; declare concise outcomes and task:{subject,description}.",
+      "Workflow work is controller-owned: never use TaskClaim/TaskUpdate. Bound rework with maxAttempts.",
     ],
     parameters: Type.Object({
       goal: Type.String({ description: "Overall workflow goal" }),
@@ -173,6 +218,62 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
   });
 
   pi.registerTool({
+    name: "WorkflowRevise",
+    label: "WorkflowRevise",
+    renderCall: renderToolCall("Workflow", (args) => `revise · #${String(toolArg(args, "id") ?? "?")} · r${String(toolArg(args, "expectedRevision") ?? "?")}`),
+    renderResult: renderToolResult,
+    description: "Revise a running workflow with typed additive changes while preserving current work and history.",
+    promptGuidelines: [
+      "Pass exact revision/state/sequence from LoopList and claim first. Insert prerequisites with add_state + redirect_transition; revise_state changes future work. Never create standalone tasks.",
+    ],
+    parameters: Type.Object({
+      id: Type.String({ description: "Workflow loop ID" }),
+      expectedRevision: Type.Integer({ description: "Definition revision reported by LoopList", minimum: 1 }),
+      expectedState: Type.String({ description: "Current state reported by LoopList", minLength: 1 }),
+      expectedTransitionSeq: Type.Integer({ description: "Transition sequence reported by LoopList", minimum: 0 }),
+      reason: Type.String({ description: "Why this revision is required", minLength: 1, maxLength: 1000 }),
+      changes: Type.Array(WorkflowRevisionChangeSchema, {
+        description: "Atomic typed changes: add_state, revise_state, add_transition, or redirect_transition",
+        minItems: 1,
+        maxItems: 64,
+      }),
+    }),
+    async execute(_toolCallId, params) {
+      const result = getStore().reviseWorkflow(params.id, {
+        expectedRevision: params.expectedRevision,
+        expectedState: params.expectedState,
+        expectedTransitionSeq: params.expectedTransitionSeq,
+        reason: params.reason,
+        changes: params.changes,
+      }, getActor());
+      if (!result.applied || !result.entry || !result.summary) {
+        const failure = result.failure;
+        return textResult(
+          `Workflow #${params.id} was not revised\nCode: ${failure?.code ?? "unknown"}\nReason: ${result.error ?? "unknown revision error"}\nNext: ${revisionRecovery(failure?.code)}`,
+        );
+      }
+      updateWidget();
+      const summary = result.summary;
+      const lines = [
+        `Workflow #${params.id} revised: revision ${params.expectedRevision} → ${result.entry.workflow?.definitionRevision}`,
+        `Reason: ${params.reason.trim()}`,
+      ];
+      if (summary.addedStates.length > 0) lines.push(`Added states: ${summary.addedStates.join(", ")}`);
+      if (summary.revisedStates.length > 0) lines.push(`Revised state work: ${summary.revisedStates.join(", ")}`);
+      if (summary.addedTransitions.length > 0) {
+        lines.push(`Added edges: ${summary.addedTransitions.map((edge) => `${edge.from}.${edge.outcome} → ${edge.to}`).join("; ")}`);
+      }
+      if (summary.redirectedTransitions.length > 0) {
+        lines.push(`Redirected edges: ${summary.redirectedTransitions.map((edge) => `${edge.from}.${edge.outcome}: ${edge.fromTarget} → ${edge.to}`).join("; ")}`);
+      }
+      const execution = result.entry.workflow?.activeExecution;
+      lines.push(`Current execution preserved: ${result.entry.workflow?.currentState}${execution ? ` (${execution.id})` : ""}`);
+      lines.push("Next: complete the active work and transition through the revised outcome.");
+      return textResult(lines.join("\n"));
+    },
+  });
+
+  pi.registerTool({
     name: "WorkflowTransition",
     label: "WorkflowTransition",
     renderCall: renderToolCall("Workflow", (args) => `transition · #${String(toolArg(args, "id") ?? "?")} → ${String(toolArg(args, "outcome") ?? "?")}`),
@@ -194,6 +295,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       const expected = current?.workflow ? {
         currentState: current.workflow.currentState,
         transitionSeq: current.workflow.transitionSeq,
+        definitionRevision: current.workflow.definitionRevision,
         activeExecutionId: current.workflow.activeExecution?.id,
       } : undefined;
       const result = store.transitionWorkflow(params.id, { outcome: params.outcome, evidence: params.evidence, actor }, expected);

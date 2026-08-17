@@ -68,8 +68,6 @@ const REVISED_REQUIREMENTS_WORKFLOW = {
   },
 };
 
-const workflowRevisionIt = process.env.PI_LOOP_WORKFLOW_REVISION_RED === "1" ? it : it.skip;
-
 const WORKFLOW_REVISION_CHANGES = [
   {
     op: "add_state",
@@ -138,7 +136,7 @@ describe("embedded workflow execution integration", () => {
     });
   });
 
-  workflowRevisionIt("durably inserts discovered work and revises future requirements without external tasks", async () => {
+  it("durably inserts discovered work and revises future requirements without external tasks", async () => {
     const h = await setup();
     await h.toolMap.get("WorkflowCreate")!.execute!("create", {
       goal: "Implement a collaborative workflow",
@@ -159,7 +157,7 @@ describe("embedded workflow execution integration", () => {
       reason,
       changes: WORKFLOW_REVISION_CHANGES,
     });
-    expect(revised.content[0].text).toContain("revision 2");
+    expect(revised.content[0].text).toContain("revision 1 → 2");
 
     const afterRevision = new LoopStore(h.loopPath).get("1")!;
     expect(afterRevision.workflow).toMatchObject({

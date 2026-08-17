@@ -57,9 +57,9 @@ function isProcessRunning(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-export interface ReducerResult<TState> {
+export interface ReducerResult<TState, TEffect extends AnyReducerEffect = AnyReducerEffect> {
   state: TState;
-  effects: AnyReducerEffect[];
+  effects: TEffect[];
 }
 
 /**
@@ -67,10 +67,10 @@ export interface ReducerResult<TState> {
  * `{ nextId, entries }` representation, the pure reducer's state shape, and the
  * on-disk JSON shape. Each is a small, allocation-only function.
  */
-export interface ReducerBackedStoreConfig<TEntry, TState, TEvent, TData> {
+export interface ReducerBackedStoreConfig<TEntry, TState, TEvent, TData, TEffect extends AnyReducerEffect = AnyReducerEffect> {
   /** Directory for `<listId>.json` when constructed with a bare list id. */
   baseDir: string;
-  reduce: (state: TState, event: TEvent) => ReducerResult<TState>;
+  reduce: (state: TState, event: TEvent) => ReducerResult<TState, TEffect>;
   toReducerState: (nextId: number, entries: Map<string, TEntry>) => TState;
   fromReducerState: (state: TState) => { nextId: number; entries: Map<string, TEntry> };
   serialize: (nextId: number, entries: Map<string, TEntry>) => TData;
@@ -84,13 +84,21 @@ export interface ReducerBackedStoreConfig<TEntry, TState, TEvent, TData> {
  * command methods.
  *
  * Durability boundary: every mutation runs inside {@link withLock}, which saves
- * the whole file unconditionally after the callback. Reducer effects are
+ * the whole file after successful mutations. Rejected commands can explicitly
+ * skip persistence so normalization during load does not rewrite the snapshot.
+ * Reducer effects are
  * therefore *not* the persistence mechanism — they are surfaced to
  * {@link onEffects} (default: no-op) so cross-entity effects (e.g.
  * `DISPATCH_EVENT`, `REQUEST_GOAL_VERIFICATION`) can be forwarded by the runtime
  * without being silently dropped at the reducer call site.
  */
-export abstract class ReducerBackedStore<TEntry extends { id: string }, TState, TEvent, TData> {
+export abstract class ReducerBackedStore<
+  TEntry extends { id: string },
+  TState,
+  TEvent,
+  TData,
+  TEffect extends AnyReducerEffect = AnyReducerEffect,
+> {
   protected filePath: string | undefined;
   protected lockPath: string | undefined;
   private lastLoadedSignature: string | undefined;
@@ -98,9 +106,9 @@ export abstract class ReducerBackedStore<TEntry extends { id: string }, TState, 
   protected nextId = 1;
   protected entries = new Map<string, TEntry>();
 
-  private readonly config: ReducerBackedStoreConfig<TEntry, TState, TEvent, TData>;
+  private readonly config: ReducerBackedStoreConfig<TEntry, TState, TEvent, TData, TEffect>;
 
-  constructor(config: ReducerBackedStoreConfig<TEntry, TState, TEvent, TData>, listIdOrPath?: string) {
+  constructor(config: ReducerBackedStoreConfig<TEntry, TState, TEvent, TData, TEffect>, listIdOrPath?: string) {
     this.config = config;
     if (!listIdOrPath) return;
     const filePath = isAbsolute(listIdOrPath) ? listIdOrPath : join(config.baseDir, `${listIdOrPath}.json`);
@@ -225,25 +233,26 @@ export abstract class ReducerBackedStore<TEntry extends { id: string }, TState, 
     this.lastLoadedSignature = this.getFileSignature();
   }
 
-  protected withLock<T>(fn: () => T): T {
+  protected withLock<T>(fn: () => T, shouldSave: (result: T) => boolean = () => true): T {
     if (!this.lockPath) return fn();
     acquireLock(this.lockPath);
     try {
       this.load(true, true);
       const result = fn();
-      this.save();
+      if (shouldSave(result)) this.save();
       return result;
     } finally {
       releaseLock(this.lockPath);
     }
   }
 
-  protected applyReducerEvent(event: TEvent): void {
+  protected applyReducerEvent(event: TEvent): ReducerResult<TState, TEffect> {
     const result = this.config.reduce(this.config.toReducerState(this.nextId, this.entries), event);
     const { nextId, entries } = this.config.fromReducerState(result.state);
     this.nextId = nextId;
     this.entries = entries;
     if (result.effects.length > 0) this.onEffects(result.effects);
+    return result;
   }
 
   /**

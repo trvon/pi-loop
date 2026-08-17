@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-  createWorkflowRun,
-  transitionWorkflowRun,
-  validateWorkflowDefinition,
-  type WorkflowDefinition,
-} from "../src/workflow-reducer.js";
+import type { WorkflowDefinition } from "../src/types.js";
+import { validateWorkflowDefinition } from "../src/workflow-definition.js";
+import { createWorkflowRun, transitionWorkflowRun } from "../src/workflow-reducer.js";
+import { MAX_WORKFLOW_REVISIONS, reviseWorkflowRun } from "../src/workflow-revision.js";
 
 const definition: WorkflowDefinition = {
   version: 1,
@@ -28,11 +26,14 @@ describe("workflow reducer", () => {
   it("creates a run at its named initial state", () => {
     expect(createWorkflowRun(definition, 100)).toEqual({
       definition,
+      definitionRevision: 1,
+      revisionHistory: [],
       currentState: "investigate",
       transitionSeq: 0,
       stateEnteredAt: 100,
       attemptsByState: { investigate: 1 },
       stateFireCounts: {},
+      activeExecution: undefined,
     });
   });
 
@@ -269,6 +270,193 @@ describe("workflow reducer", () => {
         investigate: { ...definition.states.investigate, on: { continue: "missing" } },
       },
     })).toBe('Transition "investigate.continue" targets unknown state "missing"');
+  });
+
+  it("atomically revises future work and preserves the active execution", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "investigate",
+      states: {
+        investigate: {
+          prompt: "Investigate.",
+          task: { subject: "Investigate", description: "Find requirements." },
+          on: { ready: "implement" },
+        },
+        implement: {
+          prompt: "Implement.",
+          task: { subject: "Implement", description: "Apply old requirements." },
+          on: { done: "complete" },
+        },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, actor);
+    run.stateFireCounts.investigate = 2;
+    const activeExecution = structuredClone(run.activeExecution);
+    const changes = [
+      {
+        op: "add_state" as const,
+        stateId: "validate",
+        state: {
+          prompt: "Validate.",
+          task: { subject: "Validate", description: "Check the discovered requirement." },
+          on: { validated: "implement" },
+        },
+      },
+      {
+        op: "redirect_transition" as const,
+        from: "investigate",
+        outcome: "ready",
+        expectedTo: "implement",
+        to: "validate",
+      },
+      {
+        op: "revise_state" as const,
+        stateId: "implement",
+        prompt: "Implement revised requirements.",
+        task: { subject: "Implement", description: "Apply discovered requirements." },
+      },
+    ];
+
+    const result = reviseWorkflowRun(run, {
+      expectedRevision: 1,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
+      reason: "Investigation discovered validation work.",
+      changes,
+      actor,
+    }, 200);
+    if (!result.applied) throw new Error(result.error);
+
+    expect(result.run).toMatchObject({
+      definitionRevision: 2,
+      currentState: "investigate",
+      transitionSeq: 0,
+      stateEnteredAt: 100,
+      stateFireCounts: { investigate: 2 },
+      revisionHistory: [{
+        revision: 1,
+        definition: taskDefinition,
+        reason: "Investigation discovered validation work.",
+        supersededAt: 200,
+        supersededBy: actor,
+        changes,
+      }],
+    });
+    expect(result.run.activeExecution).toEqual(activeExecution);
+    expect(result.run.definition.states.investigate.on?.ready).toBe("validate");
+    expect(result.run.definition.states.validate.on?.validated).toBe("implement");
+    expect(result.run.definition.states.implement.task?.description).toBe("Apply discovered requirements.");
+
+    const addedState = changes[0];
+    if (addedState?.op !== "add_state") throw new Error("expected add_state change");
+    addedState.state.prompt = "Mutated input";
+    taskDefinition.states.implement.prompt = "Mutated original";
+    expect(result.run.revisionHistory[0].changes[0]).toMatchObject({ state: { prompt: "Validate." } });
+    expect(result.run.revisionHistory[0].definition.states.implement.prompt).toBe("Implement.");
+  });
+
+  it("rejects stale, unauthorized, destructive, and disconnected revisions without mutation", () => {
+    const owner = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: {
+          prompt: "Work.",
+          task: { subject: "Work", description: "Do it." },
+          on: { done: "complete" },
+        },
+        future: { prompt: "Future.", on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, owner);
+    const before = structuredClone(run);
+    const base = {
+      expectedRevision: 1,
+      expectedState: "work",
+      expectedTransitionSeq: 0,
+      reason: "New information.",
+      actor: owner,
+    };
+
+    expect(reviseWorkflowRun(run, { ...base, expectedRevision: 2, changes: [{ op: "revise_state", stateId: "future", prompt: "Changed." }] }, 200))
+      .toMatchObject({ applied: false, failure: { code: "revision_conflict" } });
+    expect(reviseWorkflowRun(run, { ...base, expectedState: "future", changes: [{ op: "revise_state", stateId: "future", prompt: "Changed." }] }, 200))
+      .toMatchObject({ applied: false, failure: { code: "run_conflict" } });
+    expect(reviseWorkflowRun(run, { ...base, actor: foreign, changes: [{ op: "revise_state", stateId: "future", prompt: "Changed." }] }, 200))
+      .toMatchObject({ applied: false, failure: { code: "lease_owned_elsewhere" } });
+    expect(reviseWorkflowRun(run, { ...base, changes: [{ op: "revise_state", stateId: "work", prompt: "Changed." }] }, 200))
+      .toMatchObject({ applied: false, failure: { code: "current_state_immutable" } });
+    expect(reviseWorkflowRun(run, {
+      ...base,
+      changes: [
+        { op: "add_state", stateId: "detour", state: { prompt: "Detour.", on: { loop: "detour" } } },
+        { op: "redirect_transition", from: "work", outcome: "done", expectedTo: "complete", to: "detour" },
+      ],
+    }, 200)).toMatchObject({ applied: false, failure: { code: "graph_invalid" } });
+    expect(run).toEqual(before);
+  });
+
+  it("rejects exhausted future limits, duplicate changes, and revision overflow", () => {
+    const run = createWorkflowRun(definition, 100);
+    run.attemptsByState.fix = 2;
+    const base = {
+      expectedRevision: 1,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
+      reason: "Revise future work.",
+      actor: { sessionId: "session-a", runtimeId: "runtime-a" },
+    };
+    expect(reviseWorkflowRun(run, {
+      ...base,
+      changes: [{ op: "revise_state", stateId: "fix", maxAttempts: 2 }],
+    }, 200)).toMatchObject({ applied: false, failure: { code: "invalid_patch" } });
+    expect(reviseWorkflowRun(run, {
+      ...base,
+      changes: [
+        { op: "revise_state", stateId: "fix", prompt: "One." },
+        { op: "revise_state", stateId: "fix", prompt: "Two." },
+      ],
+    }, 200)).toMatchObject({ applied: false, failure: { code: "invalid_patch" } });
+
+    run.definitionRevision = MAX_WORKFLOW_REVISIONS;
+    run.revisionHistory = Array.from({ length: MAX_WORKFLOW_REVISIONS - 1 }, (_, index) => ({
+      revision: index + 1,
+      definition,
+      reason: `revision ${index + 1}`,
+      supersededAt: index + 1,
+      supersededBy: base.actor,
+      changes: [],
+    }));
+    expect(reviseWorkflowRun(run, {
+      ...base,
+      expectedRevision: MAX_WORKFLOW_REVISIONS,
+      changes: [{ op: "revise_state", stateId: "fix", prompt: "Too late." }],
+    }, 200)).toMatchObject({ applied: false, failure: { code: "revision_limit_reached" } });
+  });
+
+  it("rejects unsafe keys, malformed task work, and oversized definitions", () => {
+    expect(validateWorkflowDefinition({
+      version: 1,
+      initialState: "constructor",
+      states: { constructor: { prompt: "Unsafe." } },
+    })).toContain("cannot be reserved");
+    expect(validateWorkflowDefinition({
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", task: { subject: "", description: "Do it." } },
+      },
+    })).toBe('State "work" task requires a subject');
+    expect(validateWorkflowDefinition({
+      version: 1,
+      initialState: "work",
+      states: { work: { prompt: "x".repeat(66_000) } },
+    })).toContain("exceeds 65536 UTF-8 bytes");
   });
 
   it("validates optional cron loop policies only on nonterminal states", () => {

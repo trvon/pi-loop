@@ -6,8 +6,7 @@ import {
   MAX_LOOP_EXPIRY_MS,
   reduceLoopState,
 } from "../src/loop-reducer.js";
-import type { LoopEntry, Trigger } from "../src/types.js";
-import type { WorkflowDefinition } from "../src/workflow-reducer.js";
+import type { LoopEntry, Trigger, WorkflowDefinition } from "../src/types.js";
 
 const cronTrigger: Trigger = { type: "cron", schedule: "*/5 * * * *" };
 const eventTrigger: Trigger = { type: "event", source: "tasks:created" };
@@ -71,6 +70,65 @@ describe("loop reducer", () => {
     });
   });
 
+  it("persists one workflow revision event without changing execution state", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const taskWorkflow: WorkflowDefinition = {
+      version: 1,
+      initialState: "investigate",
+      states: {
+        investigate: {
+          prompt: "Investigate.",
+          task: { subject: "Investigate", description: "Find requirements." },
+          on: { ready: "implement" },
+        },
+        implement: { prompt: "Implement.", on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const created = apply(makeState(), {
+      type: "LOOP_CREATED",
+      at: 100,
+      source: "tool",
+      payload: {
+        prompt: "Adaptive workflow",
+        trigger: { type: "dynamic" },
+        recurring: true,
+        workflow: taskWorkflow,
+        actor,
+      },
+    }).state;
+    const activeExecution = structuredClone(created.loopsById["1"].workflow?.activeExecution);
+
+    const result = apply(created, {
+      type: "LOOP_WORKFLOW_REVISED",
+      at: 200,
+      source: "tool",
+      entityId: "1",
+      payload: {
+        id: "1",
+        expectedRevision: 1,
+        expectedState: "investigate",
+        expectedTransitionSeq: 0,
+        reason: "Add validation.",
+        actor,
+        changes: [
+          { op: "add_state", stateId: "validate", state: { prompt: "Validate.", on: { valid: "implement" } } },
+          { op: "redirect_transition", from: "investigate", outcome: "ready", expectedTo: "implement", to: "validate" },
+        ],
+      },
+    });
+
+    expect(result.state.loopsById["1"].workflow).toMatchObject({
+      definitionRevision: 2,
+      currentState: "investigate",
+      transitionSeq: 0,
+      revisionHistory: [{ revision: 1, reason: "Add validation." }],
+      definition: { states: { investigate: { on: { ready: "validate" } } } },
+    });
+    expect(result.state.loopsById["1"].workflow?.activeExecution).toEqual(activeExecution);
+    expect(result.state.loopsById["1"].dynamic).toEqual(created.loopsById["1"].dynamic);
+  });
+
   it("persists a validated workflow transition with the current dynamic state", () => {
     const initial = makeState([
       {
@@ -86,6 +144,8 @@ describe("loop reducer", () => {
         dynamic: { goal: "Fix the regression", iteration: 0 },
         workflow: {
           definition: workflow,
+          definitionRevision: 1,
+          revisionHistory: [],
           currentState: "investigate",
           transitionSeq: 0,
           stateEnteredAt: 10,
@@ -135,6 +195,8 @@ describe("loop reducer", () => {
       fireCount: 0,
       workflow: {
         definition: terminalWorkflow,
+        definitionRevision: 1,
+        revisionHistory: [],
         currentState: "fix",
         transitionSeq: 0,
         stateEnteredAt: 10,

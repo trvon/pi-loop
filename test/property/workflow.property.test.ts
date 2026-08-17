@@ -2,6 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { WorkflowDefinition } from "../../src/types.js";
 import { createWorkflowRun, transitionWorkflowRun } from "../../src/workflow-reducer.js";
+import { reviseWorkflowRun } from "../../src/workflow-revision.js";
 import { propertyOptions } from "./config.js";
 
 const definition: WorkflowDefinition = {
@@ -52,6 +53,55 @@ describe("workflow properties", () => {
           expect(Object.values(run.attemptsByState).reduce((sum, count) => sum + count, 0)).toBe(
             appliedCount + 1,
           );
+        },
+      ),
+      propertyOptions(),
+    );
+  });
+
+  it("revision success changes only definition audit fields and rejection is immutable", () => {
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^[A-Za-z][A-Za-z0-9 ._-]{0,40}$/).filter((prompt) => prompt.trim() !== "" && prompt !== "right"),
+        fc.string({ minLength: 1, maxLength: 80 }).filter((reason) => reason.trim() !== ""),
+        (prompt, reason) => {
+          const actor = { sessionId: "property-session", runtimeId: "property-runtime" };
+          const run = createWorkflowRun(definition, 0);
+          const before = structuredClone(run);
+          const result = reviseWorkflowRun(run, {
+            expectedRevision: 1,
+            expectedState: "left",
+            expectedTransitionSeq: 0,
+            reason,
+            changes: [{ op: "revise_state", stateId: "right", prompt }],
+            actor,
+          }, 1);
+
+          expect(result.applied).toBe(true);
+          if (!result.applied) return;
+          expect(result.run).toMatchObject({
+            currentState: before.currentState,
+            transitionSeq: before.transitionSeq,
+            stateEnteredAt: before.stateEnteredAt,
+            attemptsByState: before.attemptsByState,
+            stateFireCounts: before.stateFireCounts,
+            activeExecution: before.activeExecution,
+            definitionRevision: 2,
+            revisionHistory: [{ revision: 1, definition: before.definition }],
+          });
+          expect(result.run.definition.states.right?.prompt).toBe(prompt);
+          expect(run).toEqual(before);
+
+          const stale = reviseWorkflowRun(run, {
+            expectedRevision: 2,
+            expectedState: "left",
+            expectedTransitionSeq: 0,
+            reason,
+            changes: [{ op: "revise_state", stateId: "right", prompt }],
+            actor,
+          }, 2);
+          expect(stale).toMatchObject({ applied: false, failure: { code: "revision_conflict" } });
+          expect(run).toEqual(before);
         },
       ),
       propertyOptions(),

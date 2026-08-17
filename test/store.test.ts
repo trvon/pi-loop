@@ -1,4 +1,4 @@
-import { rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -546,6 +546,84 @@ describe("LoopStore (file-backed)", () => {
     });
   });
 
+  it("serializes revisions, fences transition races, and preserves history after restart", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const workflowDefinition = {
+      version: 1 as const,
+      initialState: "investigate",
+      states: {
+        investigate: {
+          prompt: "Investigate.",
+          task: { subject: "Investigate", description: "Find requirements." },
+          on: { ready: "implement" },
+        },
+        implement: {
+          prompt: "Implement.",
+          task: { subject: "Implement", description: "Apply requirements." },
+          on: { done: "complete" },
+        },
+        complete: { prompt: "Report.", terminal: "completed" as const },
+      },
+    };
+    const store1 = new LoopStore(filePath);
+    const workflow = store1.create({ type: "dynamic" }, "Adaptive workflow", {
+      recurring: true,
+      workflow: workflowDefinition,
+      actor,
+    });
+    const store2 = new LoopStore(filePath);
+    const input = {
+      expectedRevision: 1,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
+      reason: "Add validation before implementation.",
+      changes: [
+        {
+          op: "add_state" as const,
+          stateId: "validate",
+          state: { prompt: "Validate.", on: { validated: "implement" } },
+        },
+        {
+          op: "redirect_transition" as const,
+          from: "investigate",
+          outcome: "ready",
+          expectedTo: "implement",
+          to: "validate",
+        },
+      ],
+    };
+
+    expect(store1.reviseWorkflow(workflow.id, input, actor).applied).toBe(true);
+    expect(store2.reviseWorkflow(workflow.id, input, actor)).toMatchObject({
+      applied: false,
+      failure: { code: "revision_conflict", expectedRevision: 1, currentRevision: 2 },
+    });
+    expect(store2.transitionWorkflow(workflow.id, { outcome: "ready", actor }, {
+      currentState: "investigate",
+      transitionSeq: 0,
+      definitionRevision: 1,
+      activeExecutionId: "investigate:0",
+    })).toMatchObject({ applied: false, error: expect.stringContaining("changed") });
+
+    const restarted = new LoopStore(filePath);
+    expect(restarted.get(workflow.id)?.workflow).toMatchObject({
+      definitionRevision: 2,
+      revisionHistory: [{ revision: 1, reason: input.reason }],
+      definition: { states: { investigate: { on: { ready: "validate" } } } },
+    });
+
+    const second = restarted.create({ type: "dynamic" }, "Transition wins", {
+      recurring: true,
+      workflow: workflowDefinition,
+      actor,
+    });
+    expect(restarted.transitionWorkflow(second.id, { outcome: "ready", actor }).applied).toBe(true);
+    expect(store2.reviseWorkflow(second.id, { ...input, reason: "Stale after transition." }, actor)).toMatchObject({
+      applied: false,
+      failure: { code: "run_conflict", currentState: "implement", currentTransitionSeq: 1 },
+    });
+  });
+
   it("does not arm a persisted legacy active terminal workflow after restart", () => {
     const store1 = new LoopStore(filePath);
     const workflow = store1.create({ type: "dynamic" }, "Finish", {
@@ -751,6 +829,7 @@ describe("LoopStore workflow execution leases", () => {
       const store = new LoopStore(lPath);
       const workflow = store.get("1")?.workflow as (WorkflowRunState & { activeTaskId?: string }) | undefined;
       expect(workflow?.activeTaskId).toBeUndefined();
+      expect(workflow).toMatchObject({ definitionRevision: 1, revisionHistory: [] });
       expect(workflow?.activeExecution).toMatchObject({
         id: "work:2",
         stateId: "work",
@@ -761,6 +840,134 @@ describe("LoopStore workflow execution leases", () => {
       expect(workflow?.activeExecution?.lease).toBeUndefined();
       const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
       expect(store.claimWorkflowExecution("1", foreign, 60).claimed).toBe(true);
+    } finally {
+      rmSync(lPath, { force: true });
+      rmSync(lPath + ".lock", { force: true });
+      rmSync(lPath + ".tmp", { force: true });
+    }
+  });
+
+  it("does not rewrite a legacy snapshot when a workflow revision is rejected", () => {
+    const lPath = join(tmpdir(), `pi-loop-rejected-legacy-revision-${Date.now()}.json`);
+    const raw = JSON.stringify({
+      nextId: 2,
+      loops: [{
+        id: "1",
+        prompt: "legacy",
+        trigger: { type: "dynamic" },
+        status: "active",
+        recurring: true,
+        createdAt: 1,
+        updatedAt: 1,
+        expiresAt: Date.now() + 60_000,
+        workflow: {
+          definition: workflow,
+          currentState: "work",
+          transitionSeq: 0,
+          stateEnteredAt: 1,
+          attemptsByState: { work: 1 },
+          stateFireCounts: {},
+        },
+      }],
+    });
+    writeFileSync(lPath, raw);
+    try {
+      const store = new LoopStore(lPath);
+      expect(store.reviseWorkflow("1", {
+        expectedRevision: 2,
+        expectedState: "work",
+        expectedTransitionSeq: 0,
+        reason: "Stale revision.",
+        changes: [{ op: "revise_state", stateId: "complete", prompt: "Changed." }],
+      }, { sessionId: "session-a", runtimeId: "runtime-a" })).toMatchObject({
+        applied: false,
+        failure: { code: "revision_conflict" },
+      });
+      expect(readFileSync(lPath, "utf8")).toBe(raw);
+    } finally {
+      rmSync(lPath, { force: true });
+      rmSync(lPath + ".prev", { force: true });
+      rmSync(lPath + ".lock", { force: true });
+      rmSync(lPath + ".tmp", { force: true });
+    }
+  });
+
+  it.each([
+    ["reason", { reason: 7 }],
+    ["timestamp", { supersededAt: "later" }],
+    ["actor", { supersededBy: null }],
+    ["change", { changes: [{ op: "unknown" }] }],
+    ["definition", { definition: { version: 1, initialState: "missing", states: {} } }],
+  ])("fails closed when persisted workflow revision history has a malformed %s", (_label, malformed) => {
+    const lPath = join(tmpdir(), `pi-loop-malformed-history-${String(_label)}-${Date.now()}.json`);
+    const revision = {
+      revision: 1,
+      definition: workflow,
+      reason: "Original definition superseded.",
+      supersededAt: 2,
+      supersededBy: { sessionId: "session-a", runtimeId: "runtime-a" },
+      changes: [{ op: "revise_state", stateId: "complete", prompt: "Revised report." }],
+      ...malformed,
+    };
+    writeFileSync(lPath, JSON.stringify({
+      nextId: 2,
+      loops: [{
+        id: "1",
+        prompt: "malformed",
+        trigger: { type: "dynamic" },
+        status: "active",
+        recurring: true,
+        createdAt: 1,
+        updatedAt: 1,
+        expiresAt: Date.now() + 60_000,
+        workflow: {
+          definition: workflow,
+          definitionRevision: 2,
+          revisionHistory: [revision],
+          currentState: "work",
+          transitionSeq: 0,
+          stateEnteredAt: 1,
+          attemptsByState: { work: 1 },
+          stateFireCounts: {},
+        },
+      }],
+    }));
+    try {
+      expect(() => new LoopStore(lPath)).toThrow("Corrupt store");
+    } finally {
+      rmSync(lPath, { force: true });
+      rmSync(lPath + ".prev", { force: true });
+      rmSync(lPath + ".lock", { force: true });
+      rmSync(lPath + ".tmp", { force: true });
+    }
+  });
+
+  it("fails closed when persisted workflow revision metadata is partial", () => {
+    const lPath = join(tmpdir(), `pi-loop-malformed-revision-${Date.now()}.json`);
+    writeFileSync(lPath, JSON.stringify({
+      nextId: 2,
+      loops: [{
+        id: "1",
+        prompt: "malformed",
+        trigger: { type: "dynamic" },
+        status: "active",
+        recurring: true,
+        createdAt: 1,
+        updatedAt: 1,
+        expiresAt: Date.now() + 60_000,
+        workflow: {
+          definition: workflow,
+          definitionRevision: 2,
+          currentState: "work",
+          transitionSeq: 0,
+          stateEnteredAt: 1,
+          attemptsByState: { work: 1 },
+          stateFireCounts: {},
+        },
+      }],
+    }));
+    try {
+      expect(() => new LoopStore(lPath)).toThrow("Corrupt store");
     } finally {
       rmSync(lPath, { force: true });
       rmSync(lPath + ".lock", { force: true });
