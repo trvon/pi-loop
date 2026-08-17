@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displayRows } from "../src/tools/tool-result.js";
+import { displayRows, textResult } from "../src/tools/tool-result.js";
 import { hideToolTranscript, renderToolCall, renderToolResult, toolArg } from "../src/ui/tool-renderer.js";
 
 const theme = {
@@ -23,12 +23,39 @@ describe("Pi tool renderer", () => {
     const collapsed = renderToolResult(result, { expanded: false, isPartial: false }, theme);
     const expanded = renderToolResult(result, { expanded: true, isPartial: false }, theme);
 
-    expect(collapsed.render(120).map((line) => line.trimEnd())).toEqual(["✓ Workflow #1 active · investigate · task #1"]);
+    expect(collapsed.render(120).map((line) => line.trimEnd())).toEqual([
+      expect.stringMatching(/^✓ Workflow #1 active · investigate · task #1.*expand/),
+    ]);
     expect(expanded.render(120).map((line) => line.trimEnd())).toEqual([
       "✓ Workflow #1 active · investigate · task #1",
       "Goal: workflow smoke test",
       "Outcome: evidence_found",
     ]);
+  });
+
+  it("keeps meaningful progress identity while a result is partial", () => {
+    const component = renderToolResult({
+      content: [{ type: "text", text: "starting monitor" }],
+      details: {
+        kind: "monitor",
+        action: "create",
+        tone: "info",
+        summary: "Monitor #4 starting · npm test",
+      },
+    }, { expanded: false, isPartial: true }, theme);
+
+    expect(component.render(40).join("\n")).toContain("Monitor #4 starting");
+  });
+
+  it("shows unexpected tool errors even without display metadata", () => {
+    const component = (renderToolResult as any)(
+      { content: [{ type: "text", text: "process spawn failed" }] },
+      { expanded: false, isPartial: false },
+      theme,
+      { isError: true } as any,
+    );
+
+    expect(component.render(80).join("\n")).toContain("✕ process spawn failed");
   });
 
   it("renders a concise call label", () => {
@@ -64,6 +91,18 @@ describe("Pi tool renderer", () => {
     );
 
     expect(component.render(120).map((line) => line.trimEnd())).toEqual(["• 200 tasks · 200 pending · 0 active"]);
+  });
+
+  it("bounds display metadata by physical lines", () => {
+    expect(displayRows(["first\nsecond", "third"], 2)).toEqual([
+      "first", "second", "… 1 more",
+    ]);
+  });
+
+  it("truncates oversized model-facing tool content", () => {
+    const result = textResult(Array.from({ length: 2100 }, (_value, index) => `line ${index + 1}`).join("\n"));
+    expect(result.content[0].text.split("\n").length).toBeLessThanOrEqual(2002);
+    expect(result.content[0].text).toContain("Output truncated");
   });
 
   it("bounds display metadata for large lists", () => {

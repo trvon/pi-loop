@@ -412,6 +412,63 @@ describe("Workflow tools", () => {
     expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(h.store.get("1"));
   });
 
+  it("renders workflow lifecycle results as compact expandable rows", async () => {
+    const createResult = await h.result("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    expect(createResult.details).toMatchObject({
+      kind: "workflow",
+      action: "create",
+      tone: "success",
+      summary: expect.stringMatching(/Workflow #1 active · investigate · attempt 1\/2/),
+    });
+    expect(createResult.details.expanded).toEqual(expect.arrayContaining([
+      "Goal: Fix the regression",
+      "State: investigate · revision 1 · transition 0",
+      expect.stringContaining("Outcomes: found"),
+    ]));
+
+    const transitionResult = await h.result("WorkflowTransition", { id: "1", outcome: "found", evidence: "Reproduced." });
+    expect(transitionResult.details).toMatchObject({
+      kind: "workflow",
+      action: "transition",
+      tone: "success",
+      summary: "Workflow #1 advanced · investigate → fix",
+    });
+
+    const claimResult = await h.result("WorkflowClaim", { id: "1" });
+    expect(claimResult.details).toMatchObject({
+      kind: "workflow",
+      action: "claim",
+      tone: "success",
+      summary: "Workflow #1 lease active · fix",
+    });
+
+    const reviseResult = await h.result("WorkflowRevise", {
+      id: "1",
+      expectedRevision: 1,
+      expectedState: "fix",
+      expectedTransitionSeq: 1,
+      reason: "Clarify retry work.",
+      changes: [{ op: "revise_state", stateId: "investigate", prompt: "Investigate revised requirements." }],
+    });
+    expect(reviseResult.details).toMatchObject({
+      kind: "workflow",
+      action: "revise",
+      tone: "success",
+      summary: "Workflow #1 revised · r1 → r2",
+    });
+  });
+
+  it("renders workflow rejections with compact recovery details", async () => {
+    const result = await h.result("WorkflowClaim", { id: "99" });
+    expect(result.details).toMatchObject({
+      kind: "workflow",
+      action: "claim",
+      tone: "error",
+      summary: "Workflow #99 claim rejected",
+      expanded: [expect.stringContaining("Loop #99 not found")],
+    });
+  });
+
   it("embeds initial task work without creating an external task", async () => {
     const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     expect(out).toContain("Active workflow work: Investigate regression (investigate:0)");

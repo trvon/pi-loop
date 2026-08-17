@@ -47,9 +47,9 @@ function setup(managerOverrides: Partial<{
     handleWorkflowMonitorWait,
   });
 
-  const text = async (name: string, args: any) =>
-    (await toolMap.get(name)!.execute!("t", args)).content[0].text as string;
-  return { store, manager, triggerSystem, handleMonitorDoneLoop, handleWorkflowMonitorWait, text, toolMap };
+  const result = async (name: string, args: any) => await toolMap.get(name)!.execute!("t", args);
+  const text = async (name: string, args: any) => (await result(name, args)).content[0].text as string;
+  return { store, manager, triggerSystem, handleMonitorDoneLoop, handleWorkflowMonitorWait, text, result, toolMap };
 }
 
 describe("MonitorCreate", () => {
@@ -63,8 +63,42 @@ describe("MonitorCreate", () => {
       prompt: expect.stringContaining("Monitor #1 timed out"),
       trigger: expect.objectContaining({ type: "event", source: "monitor:timeout" }),
     }), "1");
-    expect(h.toolMap.get("MonitorCreate")?.renderShell).toBe("self");
+    expect(h.toolMap.get("MonitorCreate")?.renderShell).not.toBe("self");
+    expect(h.toolMap.get("MonitorCreate")?.renderCall).toBeTypeOf("function");
     expect(h.toolMap.get("MonitorCreate")?.renderResult).toBeTypeOf("function");
+  });
+
+  it("renders monitor lifecycle results as visible compact rows", async () => {
+    const h = setup();
+    const createResult = await h.result("MonitorCreate", { command: "npm test", description: "Run tests" });
+    expect(createResult.details).toMatchObject({
+      kind: "monitor",
+      action: "create",
+      tone: "success",
+      summary: "Monitor #1 running · Run tests",
+    });
+
+    const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as any;
+    const call = (h.toolMap.get("MonitorCreate") as any).renderCall({ command: "npm test", description: "Run tests" }, theme);
+    expect(call.render(80).join("\n")).toContain("Monitor start · Run tests");
+    const rendered = (h.toolMap.get("MonitorCreate") as any).renderResult(
+      createResult,
+      { expanded: false, isPartial: false },
+      theme,
+    );
+    expect(rendered.render(80).join("\n")).toContain("Monitor #1 running");
+  });
+
+  it("keeps monitor failures visible in the transcript", async () => {
+    const h = setup();
+    const result = await h.result("MonitorCreate", { command: "npm test", workflowId: "1", onDone: "report" });
+    expect(result.details).toMatchObject({
+      kind: "monitor",
+      action: "create",
+      tone: "error",
+      summary: "Choose workflowId or onDone",
+    });
+    expect(h.toolMap.get("MonitorCreate")?.renderShell).not.toBe("self");
   });
 
   it("creates a one-shot completion loop and registers it when onDone is set", async () => {
