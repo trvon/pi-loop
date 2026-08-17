@@ -1244,6 +1244,39 @@ describe("native task fallback", () => {
     const result = await loopList!.execute?.("2", {});
     expect(result.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
   });
+
+  it("does not consume a final fire when a stale runtime cannot dispatch its wake", async () => {
+    const { pi, toolMap, sentMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const loopCreate = toolMap.get("LoopCreate");
+    const loopList = toolMap.get("LoopList");
+    await loopCreate!.execute?.("1", {
+      trigger: "stale-runtime:test:event",
+      prompt: "Preserve this fire for the current runtime",
+      triggerType: "event",
+      recurring: true,
+      maxFires: 1,
+    });
+
+    const dispatch = pi.events.emit.getMockImplementation();
+    pi.events.emit.mockImplementation((name: string, payload: unknown) => {
+      if (name !== "stale-runtime:test:event") {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      }
+      return dispatch?.(name, payload);
+    });
+
+    expect(() => pi.events.emit("stale-runtime:test:event", {})).not.toThrow();
+    await Promise.resolve();
+
+    const result = await loopList!.execute?.("2", {});
+    expect(result.content[0].text).toContain("* #1 [active] Preserve this fire for the current runtime");
+    expect(sentMessages).toHaveLength(0);
+  });
 });
 
 describe("dynamic loop pump", () => {
