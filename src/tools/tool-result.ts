@@ -1,5 +1,7 @@
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
+
 /** Plain-text tool result in the shape pi's registerTool expects. */
-export type ToolDisplayKind = "loop" | "workflow" | "task" | "monitor";
+type ToolDisplayKind = "loop" | "workflow" | "task" | "monitor";
 export type ToolDisplayTone = "success" | "warning" | "error" | "info";
 
 export interface ToolDisplayDetails {
@@ -8,13 +10,24 @@ export interface ToolDisplayDetails {
   tone: ToolDisplayTone;
   summary: string;
   expanded?: string[];
+  expandable?: boolean;
 }
 
 export function displayRows(rows: string[], limit = 8): string[] {
-  if (rows.length <= limit) return rows;
-  return [...rows.slice(0, limit), `… ${rows.length - limit} more`];
+  const lines = rows.flatMap((row) => row.split("\n"));
+  if (lines.length <= limit) return lines;
+  return [...lines.slice(0, limit), `… ${lines.length - limit} more`];
+}
+
+function truncateToolContent(content: string): string {
+  const result = truncateHead(content, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+  if (!result.truncated) return content;
+  return `${result.content}\n\n[Output truncated: ${result.outputLines} of ${result.totalLines} lines (${formatSize(result.outputBytes)} of ${formatSize(result.totalBytes)}). Narrow the request to inspect the omitted content.]`;
 }
 
 export function textResult(msg: string, details?: ToolDisplayDetails) {
-  return { content: [{ type: "text" as const, text: msg }], details };
+  const display = details
+    ? { ...details, expandable: details.expandable ?? Boolean(details.expanded?.length) }
+    : undefined;
+  return { content: [{ type: "text" as const, text: truncateToolContent(msg) }], details: display };
 }

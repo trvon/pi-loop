@@ -418,7 +418,7 @@ describe("Workflow tools", () => {
       kind: "workflow",
       action: "create",
       tone: "success",
-      summary: expect.stringMatching(/Workflow #1 active · investigate · attempt 1\/2/),
+      summary: "Workflow #1 active · investigate · attempt 1",
     });
     expect(createResult.details.expanded).toEqual(expect.arrayContaining([
       "Goal: Fix the regression",

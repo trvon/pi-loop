@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { LoopEntry, MonitorEntry, MonitorProgress, Trigger, WorkflowMonitorWait } from "../types.js";
-import { hideToolTranscript } from "../ui/tool-renderer.js";
+import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { displayRows, textResult } from "./tool-result.js";
 
 interface MonitorManagerLike {
@@ -67,9 +67,8 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
   } = options;
 
   pi.registerTool({ name: "MonitorCreate", label: "MonitorCreate",
-  renderShell: "self",
-  renderCall: hideToolTranscript,
-  renderResult: hideToolTranscript, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nTimed monitors always wake the agent if they time out. Pass onDone to create a completion wake for success, failure, or timeout. Pass workflowId to pause its workflow until a terminal result. Commands may emit JSONL progress as {"progress":{...}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone when the agent must resume automatically after success or failure; timed monitors already alert on timeout.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
+  renderCall: renderToolCall("Monitor", (args) => `start · ${String(toolArg(args, "description") ?? toolArg(args, "command") ?? "background command").slice(0, 56)}`),
+  renderResult: renderToolResult, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nTimed monitors always wake the agent if they time out. Pass onDone to create a completion wake for success, failure, or timeout. Pass workflowId to pause its workflow until a terminal result. Commands may emit JSONL progress as {"progress":{...}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone when the agent must resume automatically after success or failure; timed monitors already alert on timeout.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
     command: Type.String({ description: "Shell command to run in background" }),
     description: Type.Optional(Type.String({ description: "Human-readable description" })),
     timeout: Type.Optional(Type.Number({ description: "Auto-stop after N ms (default: 300000, 0 = no timeout)", default: 300000 })),
@@ -163,9 +162,8 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
   pi.registerTool({
     name: "MonitorList",
     label: "MonitorList",
-    renderShell: "self",
-    renderCall: hideToolTranscript,
-    renderResult: hideToolTranscript,
+    renderCall: renderToolCall("Monitor", () => "status"),
+    renderResult: renderToolResult,
     description: "List all monitors with their status, command, exit code, output line count, and last 5 lines of buffered output.",
     parameters: Type.Object({}),
     execute() {
@@ -211,9 +209,8 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
   pi.registerTool({
     name: "MonitorUpdate",
     label: "MonitorUpdate",
-    renderShell: "self",
-    renderCall: hideToolTranscript,
-    renderResult: hideToolTranscript,
+    renderCall: renderToolCall("Monitor", (args) => `update · #${String(toolArg(args, "monitorId") ?? "?")}`),
+    renderResult: renderToolResult,
     description: "Set trustworthy structured progress for a running monitor that cannot emit JSONL. Pass monitorId and current/total or message. Do not use it for raw output or polling; use MonitorList.",
     parameters: Type.Object({
       monitorId: Type.String({ description: "Monitor ID to update" }),
@@ -242,9 +239,8 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
   pi.registerTool({
     name: "MonitorStop",
     label: "MonitorStop",
-    renderShell: "self",
-    renderCall: hideToolTranscript,
-    renderResult: hideToolTranscript,
+    renderCall: renderToolCall("Monitor", (args) => `stop · #${String(toolArg(args, "monitorId") ?? "?")}`),
+    renderResult: renderToolResult,
     description: `Stop a running monitor. Sends SIGTERM, waits 5s, then SIGKILL.
 
 Use MonitorList to find the monitor ID, then stop it with this tool.`,

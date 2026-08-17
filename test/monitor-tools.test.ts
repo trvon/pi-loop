@@ -1,5 +1,6 @@
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { LoopStore } from "../src/store.js";
 import { registerMonitorTools } from "../src/tools/monitor-tools.js";
 import type { MonitorEntry } from "../src/types.js";
@@ -53,6 +54,7 @@ function setup(managerOverrides: Partial<{
 }
 
 describe("MonitorCreate", () => {
+  beforeAll(() => initTheme("dark"));
   it("starts a monitor and reports the stream", async () => {
     const h = setup();
     const out = await h.text("MonitorCreate", { command: "npm test" });

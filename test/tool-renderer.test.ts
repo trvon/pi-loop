@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { beforeAll, describe, expect, it } from "vitest";
 import { displayRows, textResult } from "../src/tools/tool-result.js";
 import { hideToolTranscript, renderToolCall, renderToolResult, toolArg } from "../src/ui/tool-renderer.js";
 
@@ -8,6 +9,7 @@ const theme = {
 } as any;
 
 describe("Pi tool renderer", () => {
+  beforeAll(() => initTheme("dark"));
   it("renders a compact result until the user expands it", () => {
     const result = {
       content: [{ type: "text" as const, text: "full model-facing result" }],
@@ -17,15 +19,17 @@ describe("Pi tool renderer", () => {
         tone: "success" as const,
         summary: "Workflow #1 active · investigate · task #1",
         expanded: ["Goal: workflow smoke test", "Outcome: evidence_found"],
+        expandable: true,
       },
     };
 
     const collapsed = renderToolResult(result, { expanded: false, isPartial: false }, theme);
     const expanded = renderToolResult(result, { expanded: true, isPartial: false }, theme);
 
-    expect(collapsed.render(120).map((line) => line.trimEnd())).toEqual([
-      expect.stringMatching(/^✓ Workflow #1 active · investigate · task #1.*expand/),
-    ]);
+    const collapsedLines = collapsed.render(120).map((line) => line.trimEnd());
+    expect(collapsedLines).toHaveLength(1);
+    expect(collapsedLines[0]).toContain("✓ Workflow #1 active · investigate · task #1");
+    expect(collapsedLines[0]).toContain("expand");
     expect(expanded.render(120).map((line) => line.trimEnd())).toEqual([
       "✓ Workflow #1 active · investigate · task #1",
       "Goal: workflow smoke test",

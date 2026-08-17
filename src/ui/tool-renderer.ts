@@ -1,4 +1,4 @@
-import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { type AgentToolResult, keyHint, type Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import type { ToolDisplayDetails } from "../tools/tool-result.js";
 
@@ -20,28 +20,39 @@ export function hideToolTranscript() {
   return new Container();
 }
 
+function toneAppearance(tone: ToolDisplayDetails["tone"]): { color: "success" | "warning" | "error" | "muted"; icon: string } {
+  switch (tone) {
+    case "success": return { color: "success", icon: "✓" };
+    case "warning": return { color: "warning", icon: "!" };
+    case "error": return { color: "error", icon: "✕" };
+    default: return { color: "muted", icon: "•" };
+  }
+}
+
 export function renderToolResult(
   result: AgentToolResult<unknown>,
   { expanded, isPartial }: ToolRenderResultOptions,
   theme: Theme,
+  context?: { isError?: boolean },
 ) {
-  if (isPartial) return new Text(theme.fg("warning", "Working…"), 0, 0);
-
   const details = result.details as ToolDisplayDetails | undefined;
-  if (!details) {
-    const content = result.content[0];
-    return new Text(content?.type === "text" ? content.text : "No result", 0, 0);
+  if (isPartial) {
+    const progress = details?.summary ? `… ${details.summary}` : "Working…";
+    return new Text(theme.fg("warning", progress), 0, 0);
   }
 
-  const color = details.tone === "success"
-    ? "success"
-    : details.tone === "warning"
-      ? "warning"
-      : details.tone === "error"
-        ? "error"
-        : "muted";
-  const icon = details.tone === "success" ? "✓" : details.tone === "error" ? "✕" : details.tone === "warning" ? "!" : "•";
+  if (!details) {
+    const content = result.content[0];
+    const output = content?.type === "text" ? content.text : "No result";
+    return new Text(context?.isError ? theme.fg("error", `✕ ${output}`) : output, 0, 0);
+  }
+
+  const tone = context?.isError ? "error" : details.tone;
+  const { color, icon } = toneAppearance(tone);
   let text = theme.fg(color, `${icon} ${details.summary}`);
+  if (!expanded && details.expandable) {
+    text += theme.fg("dim", ` · ${keyHint("app.tools.expand", "to expand")}`);
+  }
   if (expanded && details.expanded?.length) {
     for (const line of details.expanded) text += `\n${theme.fg("dim", line)}`;
   }
