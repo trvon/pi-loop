@@ -68,6 +68,29 @@ const REVISED_REQUIREMENTS_WORKFLOW = {
   },
 };
 
+const workflowRevisionIt = process.env.PI_LOOP_WORKFLOW_REVISION_RED === "1" ? it : it.skip;
+
+const WORKFLOW_REVISION_CHANGES = [
+  {
+    op: "add_state",
+    stateId: "validate_handoff",
+    state: REVISED_REQUIREMENTS_WORKFLOW.states.validate_handoff,
+  },
+  {
+    op: "redirect_transition",
+    from: "investigate",
+    outcome: "requirements_known",
+    expectedTo: "implement",
+    to: "validate_handoff",
+  },
+  {
+    op: "revise_state",
+    stateId: "implement",
+    prompt: REVISED_REQUIREMENTS_WORKFLOW.states.implement.prompt,
+    task: REVISED_REQUIREMENTS_WORKFLOW.states.implement.task,
+  },
+];
+
 describe("embedded workflow execution integration", () => {
   let cwd: string;
   let originalCwd: string;
@@ -115,7 +138,7 @@ describe("embedded workflow execution integration", () => {
     });
   });
 
-  it("durably inserts discovered work and revises future requirements without external tasks", async () => {
+  workflowRevisionIt("durably inserts discovered work and revises future requirements without external tasks", async () => {
     const h = await setup();
     await h.toolMap.get("WorkflowCreate")!.execute!("create", {
       goal: "Implement a collaborative workflow",
@@ -131,8 +154,10 @@ describe("embedded workflow execution integration", () => {
     const revised = await revise!.execute!("revise", {
       id: "1",
       expectedRevision: 1,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
       reason,
-      definition: JSON.stringify(REVISED_REQUIREMENTS_WORKFLOW),
+      changes: WORKFLOW_REVISION_CHANGES,
     });
     expect(revised.content[0].text).toContain("revision 2");
 
@@ -147,8 +172,12 @@ describe("embedded workflow execution integration", () => {
         revision: 1,
         definition: ORIGINAL_REQUIREMENTS_WORKFLOW,
         reason,
+        supersededAt: expect.any(Number),
+        supersededBy: { sessionId: "workflow-integration", runtimeId: expect.any(String) },
+        changes: WORKFLOW_REVISION_CHANGES,
       }],
     });
+    expect(afterRevision.workflow?.activeExecution).toEqual(initialExecution);
     expect(new TaskStore(h.taskPath).list()).toEqual([]);
 
     await h.toolMap.get("WorkflowTransition")!.execute!("discovered", {
@@ -167,8 +196,14 @@ describe("embedded workflow execution integration", () => {
     const staleRevision = await revise!.execute!("stale-revise", {
       id: "1",
       expectedRevision: 1,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
       reason: "Overwrite revision 2 from stale state.",
-      definition: JSON.stringify(ORIGINAL_REQUIREMENTS_WORKFLOW),
+      changes: [{
+        op: "revise_state",
+        stateId: "implement",
+        prompt: "Apply stale requirements.",
+      }],
     });
     expect(staleRevision.content[0].text).toContain("expected revision 1");
     expect(new LoopStore(h.loopPath).get("1")?.workflow).toMatchObject({

@@ -43,6 +43,12 @@ An invalid `nextInterval`, a wake beyond `expiresAt`, or a stale iteration snaps
 
 `WorkflowTransition` validates the declared outcome, the active execution, and the calling runtime's lease before mutating anything. When accepted, the same locked write settles the source execution, records evidence, advances state, and activates the destination execution without assigning its lease. This unowned phase boundary permits another project runtime to claim the next phase immediately; the prior owner must also call `WorkflowClaim` before continuing. A live lease owned by another runtime, or an unowned source execution, fails closed with claim-first guidance. There is no cross-store ordering: workflow work never touches the task stores, so no crash window exists between task settlement and state advance.
 
+## Workflow revision ordering
+
+`WorkflowRevise` applies one typed definition patch under the same `LoopStore` lock used by transitions. It compares definition revision, current state, and transition sequence before checking the server-resolved active execution lease. Acceptance appends an immutable prior-definition snapshot and rationale, increments the definition revision once, and preserves the active execution and all run counters. It has no TaskStore or scheduler effect.
+
+`WorkflowTransition` also compares the definition revision. If revision wins the lock, a transition prepared against the old edge rejects; if transition wins, the revision's expected state or sequence rejects. Rejected revisions are byte-preserving. The complete contract is in [Adaptive workflow revision contract](workflow-revision-contract.md).
+
 ## Historical rejection patterns
 
 Observed failures mapped to two distinct causes that previously shared the same message:

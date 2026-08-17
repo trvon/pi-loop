@@ -90,7 +90,7 @@ const SCENARIOS = {
       "During investigation, discover this new requirement: each newly entered task phase must remain unowned until another runtime explicitly claims it.",
       "Persist that discovery by revising the running workflow: insert dependent validation work before implementation and revise the future implementation instructions, while preserving the original definition and the revision rationale as history.",
       "Continue through the revised dependency path and finish the workflow. Do not create standalone tasks, loops, or monitors.",
-      "Use whichever workflow revision capability the installed tools provide; do not merely describe the changed plan in transition evidence.",
+      "Use WorkflowRevise to persist the discovery; do not merely describe the changed plan in transition evidence.",
       "When a workflow tool reports terminal completion, reply exactly LIVE_WORKFLOW_DONE and nothing else.",
     ].join("\n"),
     validateDefinition(args) {
@@ -143,7 +143,7 @@ function validate() {
   const taskClaims = toolCalls.filter((call) => call.name === "TaskClaim");
   const workflowClaims = toolCalls.filter((call) => call.name === "WorkflowClaim");
   const transitions = toolCalls.filter((call) => call.name === "WorkflowTransition");
-  const revisions = toolCalls.filter((call) => ["WorkflowRevise", "WorkflowAddRequirement"].includes(call.name));
+  const revisions = toolCalls.filter((call) => call.name === "WorkflowRevise");
   const forbidden = toolCalls.filter((call) =>
     ["TaskUpdate", "TaskCreate", "LoopCreate", "LoopDelete", "LoopUpdate"].includes(call.name));
 
@@ -156,7 +156,13 @@ function validate() {
     throw new Error(`expected at least ${expectedTransitions} WorkflowTransition calls, got ${transitions.length}`);
   }
   if (scenarioName === "evolution" && revisions.length !== 1) {
-    throw new Error(`expected exactly one durable workflow revision call, got ${revisions.length}`);
+    throw new Error(`expected exactly one WorkflowRevise call, got ${revisions.length}`);
+  }
+  if (scenarioName === "evolution") {
+    const operations = new Set(revisions[0].args?.changes?.map((change) => change.op));
+    for (const required of ["add_state", "redirect_transition", "revise_state"]) {
+      if (!operations.has(required)) throw new Error(`WorkflowRevise did not include required ${required} operation`);
+    }
   }
   if (transitions.some((call) => call.args?.claimId !== undefined)) throw new Error("workflow transitions must not carry claimId");
   if (scenarioName === "phases" && transitions.some((call) => !call.args?.evidence)) {

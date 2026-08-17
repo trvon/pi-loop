@@ -26,6 +26,12 @@ Every declared outcome must target a named state. Terminal states may not declar
 - A task-bearing active state has an `activeExecution` matching `currentState`/`transitionSeq`; transition without a live own lease fails closed.
 - Settled executions accumulate in `executionHistory` with evidence and timestamps.
 
+## Adaptive definition revisions
+
+A running workflow may add newly discovered states, redirect dependency edges, and revise future state work through a typed `WorkflowRevise` patch. Definition revisions, immutable prior-definition snapshots, rationale, and runtime actor evidence remain in `LoopStore`; revisions never create or update standalone tasks. Current materialized work is immutable, while outgoing edges from the current state and definitions of future states may change under revision/state/transition CAS and the current execution lease.
+
+The implementation-ready operation schema, graph rules, concurrency matrix, failures, migration, and test plan are specified in [Adaptive workflow revision contract](workflow-revision-contract.md).
+
 ## Compatibility
 
-Existing cron, event, hybrid, dynamic, and backlog loops have no `workflow` property and keep their current behavior. `LoopUpdate` remains the continuation API for legacy dynamic loops. Workflows persisted by v0.7.3 with `activeTaskId` normalize on load: the external link is dropped and a task-bearing state gains an unleased execution that must be claimed before transition. Workflow tools do not require task-provider detection; external task providers serve standalone and auto tasks only.
+Existing cron, event, hybrid, dynamic, and backlog loops have no `workflow` property and keep their current behavior. `LoopUpdate` remains the continuation API for legacy dynamic loops. Workflows persisted by v0.7.3 with `activeTaskId` normalize on load: the external link is dropped and a task-bearing state gains an unleased execution that must be claimed before transition. Pre-revision workflow runs normalize to definition revision 1 with empty revision history. Workflow tools do not require task-provider detection; external task providers serve standalone and auto tasks only.
