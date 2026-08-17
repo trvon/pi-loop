@@ -95,6 +95,18 @@ WorkflowTransition id="1" outcome="tests_pass" evidence="Targeted and full test 
 
 `WorkflowTransition` validates the branch, settles the current execution, records evidence, and activates the next state's execution in the same locked write. Newly entered task phases start unowned so another agent sharing project scope can claim the next phase immediately; whichever agent continues must call `WorkflowClaim id="1"` first. Workflow work is embedded in the loop controller — never call `TaskClaim` or `TaskUpdate` for it. `WorkflowClaim` also renews the current runtime's lease or takes over an expired lease after a restart. A self-loop creates a fresh unowned attempt execution and increments the displayed attempt count. When a target reaches `maxAttempts`, only outcomes leading to that target become unavailable; other declared outcomes remain selectable. Reaching a `completed` terminal state deletes the workflow loop; reaching a `paused` terminal state preserves it in paused state for inspection or deletion. Terminal workflow states cannot be resumed. Task status does not guess an outcome—the model selects one explicitly. LoopList and workflow wakes omit outcomes whose target state has exhausted `maxAttempts`.
 
+When active work discovers a missing prerequisite or supersedes future instructions, inspect `LoopList` and submit one typed revision against its exact definition revision, state, and transition sequence:
+
+```text
+WorkflowRevise id="1" expectedRevision=1 expectedState="investigate" expectedTransitionSeq=0 reason="A compatibility check is required before implementation" changes='[
+  {"op":"add_state","stateId":"validate_compatibility","state":{"prompt":"Validate compatibility.","task":{"subject":"Validate compatibility","description":"Run compatibility checks."},"on":{"validated":"fix"}}},
+  {"op":"redirect_transition","from":"investigate","outcome":"root_cause_found","expectedTo":"fix","to":"validate_compatibility"},
+  {"op":"revise_state","stateId":"fix","prompt":"Implement the compatible fix."}
+]'
+```
+
+`WorkflowRevise` stores the prior definition, reason, accepted changes, timestamp, and runtime actor as immutable history. It preserves current execution and lease state, changes only future work or current outgoing edges, and rejects stale revisions or transitions. It never creates standalone tasks. See the [reference](./REFERENCE.md#adaptive-revision) for operation and graph rules.
+
 To repeat a state until evidence supports an outcome, add a cron-only state policy: `"loop":{"schedule":"0 7 * * *","maxFires":10,"startImmediately":false}`. Only the active state's policy is armed. Scheduled wakes retain the active execution; `WorkflowTransition` remains the only operation that settles it and unlocks the destination execution and cadence. `maxFires` is local to that state and pauses the workflow when exhausted. State policies do not wake immediately unless `startImmediately` is `true`.
 
 `LoopList` includes workflow state, active execution, transition evidence, and valid outcomes alongside ordinary loops.
@@ -166,11 +178,15 @@ TaskDelete id="1"
 
 The native provider is selected for the session and exposes `/tasks`, compact status-line tracking, persisted task state, lifecycle events, and task RPC replies. `TaskClaim` provides one live owner per task, renewable heartbeats, and takeover only after lease expiry. It also moves the task to `in_progress`; a following `TaskUpdate status="in_progress"` is harmless but redundant. Claimed terminal updates require the exact live claim token; an expired token must be replaced by reclaiming the task. `closed` is terminal like `completed`, is excluded from pending backlog work, and deliberately does not emit `tasks:completed`; use it when work is intentionally abandoned.
 
-See the [mutation contract](./architecture/mutation-contract.md) for the complete transition matrix, rejection reasons, and recovery actions.
+See the [reference](./REFERENCE.md#mutation-guarantees) for ownership and mutation boundaries.
 
-TaskList shows each task with a short description excerpt and its workflow link (loop/state) when one exists. TaskGet reads the full untruncated description, timestamps, metadata, and workflow link — use it before starting a chained task whose goal-state and next-step text exceeds the excerpt.
+TaskList shows each standalone task with a short description excerpt. TaskGet reads its full untruncated description, timestamps, claim state, and metadata. Workflow state work is stored only in `LoopStore` and appears through `LoopList`, never through TaskList or TaskGet.
 
-Set `taskBacklog=true` on a loop that processes unfinished tasks. The `/loop event tasks:created ...` command infers this explicit worker mode. Creating tasks never starts autonomous work by itself. Every backlog wake is action-first: the agent must call `TaskList` before progress prose, claim or resume eligible work, and perform concrete task work plus validation in that same turn. Reporting state, selecting a task, describing intended tool calls, or promising to start on the next wake is not progress; a later wake is recovery only. Validation must run the command or tool required by `TaskGet` and inspect its observable result—reads, edits, or reasoning alone are not proof. Empty backlogs and evidence-backed live-owner/dependency blockers are the only no-implementation exits. Backlog workers bootstrap when tasks already exist or after provider/session recovery, coalesce repeated task-created events into one wake, re-wake after each agent turn while unfinished work remains, and delete themselves when the queue drains. They default to a 25-fire safety budget and pause visibly, rather than disappearing, if that budget is exhausted first. TaskList exposes bounded description and workflow context in model-visible output; workers use TaskGet when an excerpt is truncated. Workers inspect and resume eligible `in_progress` work before claiming a pending task, following dependency chains to the earliest unfinished prerequisite. They must not report an empty or ineligible backlog while `in_progress` work exists; they either resume it, verify and complete it, or report the ownership/blocker that requires recovery. `autoTask` serves a different purpose: it creates a new task on each loop fire.
+Set `taskBacklog=true` on a recurring `tasks:created` event loop to process unfinished standalone tasks. Creating tasks alone does not start autonomous work.
+
+Each wake is action-first: call `TaskList`, inspect `TaskGet`, claim or resume one task, perform concrete work, run observable validation, and settle it in the same turn. Status prose and future-tense promises are not progress. Empty backlogs and verified live-owner blockers are the only no-work exits.
+
+Workers bootstrap existing work, coalesce repeated create events, resume eligible `in_progress` tasks before unrelated pending work, and delete themselves when the queue drains. They pause visibly at the default 25-fire cap. Prerequisites are a description convention (for example, “depends on #2”), not first-class TaskStore edges; use `TaskGet` to follow them. `autoTask` is separate and creates a new task on each ordinary loop fire.
 
 ## Events
 

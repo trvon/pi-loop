@@ -24,9 +24,8 @@
   "files": [
     "dist/",
     "docs/USAGE_GUIDE.md",
-    "docs/WORKFLOW_HARNESS_TESTING.md",
-    "docs/BACKLOG_PROMPT_TESTING.md",
-    "docs/PROFILING_AND_FUZZING.md",
+    "docs/REFERENCE.md",
+    "docs/TESTING.md",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

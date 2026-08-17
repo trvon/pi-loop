@@ -1,0 +1,149 @@
+# Testing pi-loop
+
+## Setup
+
+```bash
+git clone https://github.com/trvon/pi-loop.git
+cd pi-loop
+npm install
+npm run hooks:install
+```
+
+Contributions use focused branches and signed, thematic commits. Open pull requests against `master` after the local gate passes. Contributions are MIT licensed.
+
+## Local gate
+
+Run before opening or merging a code change:
+
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:package
+npm audit --audit-level=moderate
+git diff --check
+```
+
+Lint currently reports four established optional-chain warnings; new warnings are not accepted.
+
+## Test layers
+
+| Layer | Command | Purpose |
+| --- | --- | --- |
+| Unit/integration | `npm test` | Reducers, stores, runtimes, tools, session wiring |
+| Coverage | `npm run test:coverage` | Enforced statement/branch/function/line thresholds |
+| Property | `npm run test:property` | Generated state-machine invariants |
+| Fuzz campaign | `npm run test:fuzz` | 10,000 generated cases |
+| Package smoke | `npm run test:package` | Tarball contents and public imports |
+| Live E2E | `npm run test:e2e` | Pi RPC/model conformance |
+| Benchmarks | `npm run bench` | Fixed core workloads |
+| CPU profile | `npm run profile:core` | V8 profile plus checksummed metadata |
+
+Unit tests use Vitest, fake timers for schedules, in-memory stores for pure behavior, temporary files for persistence/restart, and one shared Pi event-bus mock.
+
+## Workflow coverage
+
+The workflow suites prove:
+
+- creation and embedded initial execution;
+- lease claim, renewal, expiry, and foreign-owner rejection;
+- atomic settlement and unowned destination activation;
+- retry attempts, evidence, terminal behavior, and cadence limits;
+- typed add/revise/redirect definition patches;
+- immutable revision history and current-execution preservation;
+- revision/revision and revision/transition CAS races;
+- legacy normalization and malformed-history rejection;
+- revision-aware LoopList and wake guidance;
+- no workflow-owned TaskStore records.
+
+Primary files:
+
+```text
+test/workflow-reducer.test.ts
+test/loop-reducer.test.ts
+test/store.test.ts
+test/loop-tools.test.ts
+test/workflow-task-integration.test.ts
+test/injection.test.ts
+test/property/workflow.property.test.ts
+```
+
+## Task-backlog coverage
+
+A backlog wake must call `TaskList`, inspect `TaskGet`, claim or resume one task, perform work, run observable validation, and settle the task in the same turn. Tests reject status-only progress, missing claims, reasoning-only validation, and deferral to a later wake.
+
+Description-declared prerequisites are followed through `TaskGet`; TaskStore has no dependency-edge field.
+
+## Live E2E
+
+Live tests are opt-in and run in isolated temporary project scope.
+
+```bash
+PI_LOOP_LIVE_MODEL="openai-codex/gpt-5.6-sol:minimal" npm run test:e2e
+```
+
+Workflow scenarios:
+
+```bash
+PI_LOOP_LIVE_SCENARIO=retry npm run test:e2e:workflow
+PI_LOOP_LIVE_SCENARIO=phases npm run test:e2e:workflow
+PI_LOOP_LIVE_SCENARIO=evolution npm run test:e2e:workflow
+```
+
+- `retry`: one embedded phase repeats once and completes.
+- `phases`: at least three embedded phases advance with evidence.
+- `evolution`: investigation calls `WorkflowRevise` with `add_state`, `redirect_transition`, and `revise_state`, then follows the revised path.
+
+Every workflow scenario requires explicit phase claims, terminal completion, no standalone task/loop/monitor mutations, and an empty TaskStore.
+
+Backlog scenario:
+
+```bash
+PI_LOOP_LIVE_MODEL="openai-codex/gpt-5.6-sol:minimal" npm run test:e2e:backlog
+```
+
+It requires this first-run sequence:
+
+```text
+TaskList → TaskGet → TaskClaim → write/edit → shell validation → TaskUpdate completed
+```
+
+Without `PI_LOOP_LIVE_MODEL`, live scripts exit with `SKIP`. Reports are bounded JSON under `.artifacts/` and do not record credentials; claim IDs are redacted where applicable.
+
+## Property and fuzz replay
+
+The fixed-seed property suite covers cron boundaries, reducer determinism, workflow transition/revision immutability, attempt limits, and file-backed task replay.
+
+Override campaign size:
+
+```bash
+FC_NUM_RUNS=50000 npm run test:property
+```
+
+Replay a minimized failure with both values printed by fast-check:
+
+```bash
+FC_SEED=24301 FC_PATH='0:0' npm run test:property
+```
+
+Keep the generalized property and add the minimized example to the nearest ordinary test before fixing production code.
+
+## Benchmarks and profiles
+
+```bash
+npm run bench:baseline
+npm run bench:compare
+npm run profile:core
+```
+
+Compare benchmarks only on the same machine, Node version, architecture, timezone, and power state. Profiles are written to `.artifacts/profiles/`; load the `.cpuprofile` in a V8-compatible viewer. Shared benchmark workloads live in `benchmarks/workloads.ts`.
+
+## Change-specific minimums
+
+- Reducer/store mutation: focused reducer + persistence/restart + property tests.
+- Tool schema/copy: tool tests + `test/tool-copy-budget.test.ts`.
+- Session/wake lifecycle: session, notification, scheduler, and index integration tests.
+- Monitor behavior: manager, tool, onDone runtime, and package smoke tests.
+- RPC contract: copy vendored files to pi-orca, bump `VENDOR_REV`, and run both repositories' RPC suites.
+- Published surface: build, package smoke, and isolated tarball import.
