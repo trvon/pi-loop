@@ -22,6 +22,52 @@ const RETRY_WORKFLOW = JSON.stringify({
   },
 });
 
+const ORIGINAL_REQUIREMENTS_WORKFLOW = {
+  version: 1,
+  initialState: "investigate",
+  states: {
+    investigate: {
+      prompt: "Determine the implementation constraints.",
+      task: { subject: "Investigate requirements", description: "Identify the required implementation behavior." },
+      on: { requirements_known: "implement" },
+    },
+    implement: {
+      prompt: "Implement the original requirement.",
+      task: { subject: "Implement workflow", description: "Automatically lease each destination phase." },
+      on: { passing: "done" },
+    },
+    done: { prompt: "Report completion.", terminal: "completed" },
+  },
+};
+
+const REVISED_REQUIREMENTS_WORKFLOW = {
+  version: 1,
+  initialState: "investigate",
+  states: {
+    investigate: {
+      ...ORIGINAL_REQUIREMENTS_WORKFLOW.states.investigate,
+      on: { requirements_known: "validate_handoff" },
+    },
+    validate_handoff: {
+      prompt: "Validate the newly discovered cross-agent handoff requirement.",
+      task: {
+        subject: "Validate cross-agent handoff",
+        description: "Prove a newly entered phase remains unowned and claimable by another runtime.",
+      },
+      on: { validated: "implement" },
+    },
+    implement: {
+      prompt: "Implement the revised requirement.",
+      task: {
+        subject: "Implement workflow",
+        description: "Leave each newly entered destination phase unowned until explicitly claimed.",
+      },
+      on: { passing: "done" },
+    },
+    done: ORIGINAL_REQUIREMENTS_WORKFLOW.states.done,
+  },
+};
+
 describe("embedded workflow execution integration", () => {
   let cwd: string;
   let originalCwd: string;
@@ -67,6 +113,70 @@ describe("embedded workflow execution integration", () => {
       currentState: "work",
       activeExecution: { id: "work:0", status: "active", lease: { ownerSessionId: "workflow-integration" } },
     });
+  });
+
+  it("durably inserts discovered work and revises future requirements without external tasks", async () => {
+    const h = await setup();
+    await h.toolMap.get("WorkflowCreate")!.execute!("create", {
+      goal: "Implement a collaborative workflow",
+      definition: JSON.stringify(ORIGINAL_REQUIREMENTS_WORKFLOW),
+    });
+
+    const before = new LoopStore(h.loopPath).get("1")!;
+    const initialExecution = before.workflow?.activeExecution;
+    const revise = h.toolMap.get("WorkflowRevise");
+    expect(revise, "running workflows need a durable revision surface").toBeDefined();
+
+    const reason = "Investigation found that destination work must remain claimable by another runtime.";
+    const revised = await revise!.execute!("revise", {
+      id: "1",
+      expectedRevision: 1,
+      reason,
+      definition: JSON.stringify(REVISED_REQUIREMENTS_WORKFLOW),
+    });
+    expect(revised.content[0].text).toContain("revision 2");
+
+    const afterRevision = new LoopStore(h.loopPath).get("1")!;
+    expect(afterRevision.workflow).toMatchObject({
+      definitionRevision: 2,
+      definition: REVISED_REQUIREMENTS_WORKFLOW,
+      currentState: "investigate",
+      transitionSeq: 0,
+      activeExecution: initialExecution,
+      revisionHistory: [{
+        revision: 1,
+        definition: ORIGINAL_REQUIREMENTS_WORKFLOW,
+        reason,
+      }],
+    });
+    expect(new TaskStore(h.taskPath).list()).toEqual([]);
+
+    await h.toolMap.get("WorkflowTransition")!.execute!("discovered", {
+      id: "1",
+      outcome: "requirements_known",
+      evidence: "The handoff requirement is now part of revision 2.",
+    });
+    expect(new LoopStore(h.loopPath).get("1")?.workflow).toMatchObject({
+      currentState: "validate_handoff",
+      activeExecution: {
+        subject: "Validate cross-agent handoff",
+        description: "Prove a newly entered phase remains unowned and claimable by another runtime.",
+      },
+    });
+
+    const staleRevision = await revise!.execute!("stale-revise", {
+      id: "1",
+      expectedRevision: 1,
+      reason: "Overwrite revision 2 from stale state.",
+      definition: JSON.stringify(ORIGINAL_REQUIREMENTS_WORKFLOW),
+    });
+    expect(staleRevision.content[0].text).toContain("expected revision 1");
+    expect(new LoopStore(h.loopPath).get("1")?.workflow).toMatchObject({
+      definitionRevision: 2,
+      currentState: "validate_handoff",
+      definition: REVISED_REQUIREMENTS_WORKFLOW,
+    });
+    expect(new TaskStore(h.taskPath).list()).toEqual([]);
   });
 
   it("self-loops through durable embedded attempts and completes without task records", async () => {

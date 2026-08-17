@@ -82,6 +82,37 @@ const SCENARIOS = {
       return definition;
     },
   },
+  evolution: {
+    prompt: [
+      "Run a live conformance exercise for the durable workflow tools installed in this session.",
+      "Goal: create a task-bearing workflow that investigates a collaboration change, implements it, and reports completion.",
+      "Do not anticipate the result in the initial definition: model only investigate, implement, and report work.",
+      "During investigation, discover this new requirement: each newly entered task phase must remain unowned until another runtime explicitly claims it.",
+      "Persist that discovery by revising the running workflow: insert dependent validation work before implementation and revise the future implementation instructions, while preserving the original definition and the revision rationale as history.",
+      "Continue through the revised dependency path and finish the workflow. Do not create standalone tasks, loops, or monitors.",
+      "Use whichever workflow revision capability the installed tools provide; do not merely describe the changed plan in transition evidence.",
+      "When a workflow tool reports terminal completion, reply exactly LIVE_WORKFLOW_DONE and nothing else.",
+    ].join("\n"),
+    validateDefinition(args) {
+      const definition = parseDefinition(args);
+      const states = Object.values(definition.states ?? {});
+      const taskPhases = states.filter((state) => state?.task?.subject);
+      const terminalStates = states.filter((state) => state?.terminal);
+      if (taskPhases.length !== 3) {
+        throw new Error(`initial definition must contain exactly three task phases, got ${taskPhases.length}`);
+      }
+      if (terminalStates.length !== 1 || terminalStates[0]?.terminal !== "completed") {
+        throw new Error("workflow must declare exactly one completed terminal state");
+      }
+      const initial = definition.states?.[definition.initialState];
+      if (!initial?.task?.subject) throw new Error("initial phase must embed investigation work");
+      const initialText = JSON.stringify(definition).toLowerCase();
+      if (["unowned", "claimable", "handoff"].some((term) => initialText.includes(term))) {
+        throw new Error("initial definition anticipated the requirement that should be discovered at runtime");
+      }
+      return definition;
+    },
+  },
 };
 
 const scenarioName = process.env.PI_LOOP_LIVE_SCENARIO ?? "retry";
@@ -112,6 +143,7 @@ function validate() {
   const taskClaims = toolCalls.filter((call) => call.name === "TaskClaim");
   const workflowClaims = toolCalls.filter((call) => call.name === "WorkflowClaim");
   const transitions = toolCalls.filter((call) => call.name === "WorkflowTransition");
+  const revisions = toolCalls.filter((call) => ["WorkflowRevise", "WorkflowAddRequirement"].includes(call.name));
   const forbidden = toolCalls.filter((call) =>
     ["TaskUpdate", "TaskCreate", "LoopCreate", "LoopDelete", "LoopUpdate"].includes(call.name));
 
@@ -119,7 +151,13 @@ function validate() {
   validateDefinition(successfulCreates[0].args);
   if (taskClaims.length !== 0) throw new Error(`expected zero TaskClaim calls, got ${taskClaims.length}`);
   if (workflowClaims.length === 0) throw new Error("expected WorkflowClaim after entering unowned task work");
-  if (transitions.length < 2) throw new Error(`expected at least two WorkflowTransition calls, got ${transitions.length}`);
+  const expectedTransitions = scenarioName === "evolution" ? 3 : 2;
+  if (transitions.length < expectedTransitions) {
+    throw new Error(`expected at least ${expectedTransitions} WorkflowTransition calls, got ${transitions.length}`);
+  }
+  if (scenarioName === "evolution" && revisions.length !== 1) {
+    throw new Error(`expected exactly one durable workflow revision call, got ${revisions.length}`);
+  }
   if (transitions.some((call) => call.args?.claimId !== undefined)) throw new Error("workflow transitions must not carry claimId");
   if (scenarioName === "phases" && transitions.some((call) => !call.args?.evidence)) {
     throw new Error("every phase transition must carry evidence");
