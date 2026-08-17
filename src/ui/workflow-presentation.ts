@@ -11,7 +11,7 @@ export function workflowAttemptLabel(entry: LoopEntry): string {
   return state?.maxAttempts ? `${attempt}/${state.maxAttempts}` : String(attempt);
 }
 
-function workflowLease(entry: LoopEntry): string {
+export function workflowLeaseLabel(entry: LoopEntry): string {
   const workflow = entry.workflow;
   if (!workflow) return "unavailable";
   const execution = workflow.activeExecution;
@@ -46,7 +46,7 @@ export function workflowDisplayDetails({
     `Attempt: ${workflowAttemptLabel(entry)}`,
     state?.prompt ? `Instruction: ${state.prompt}` : undefined,
     workflow.activeExecution ? `Work: ${workflow.activeExecution.subject} (${workflow.activeExecution.id})` : undefined,
-    `Lease: ${workflowLease(entry)}`,
+    `Lease: ${workflowLeaseLabel(entry)}`,
     availability.available.length > 0 ? `Outcomes: ${availability.available.join(", ")}` : undefined,
     availability.unavailable.length > 0 ? `Unavailable: ${availability.unavailable.map((item) => item.outcome).join(", ")}` : undefined,
     workflow.waitingMonitor ? `Waiting: monitor #${workflow.waitingMonitor.monitorId}` : undefined,
@@ -65,7 +65,7 @@ export function formatWorkflowInspection(entry: LoopEntry): string {
     `#${entry.id}: ${entry.prompt}`,
     `State: ${workflow.currentState} · attempt ${workflowAttemptLabel(entry)}`,
     `Revision: ${workflow.definitionRevision} · transition: ${workflow.transitionSeq}`,
-    `Lease: ${workflowLease(entry)}`,
+    `Lease: ${workflowLeaseLabel(entry)}`,
     availability.available.length > 0 ? `Outcomes: ${availability.available.join(", ")}` : "Outcomes: none",
     state?.prompt ? `Instruction: ${state.prompt}` : undefined,
     workflow.waitingMonitor ? `Waiting on monitor #${workflow.waitingMonitor.monitorId}` : undefined,

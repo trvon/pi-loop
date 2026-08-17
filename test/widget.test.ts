@@ -141,6 +141,35 @@ describe("LoopWidget status rendering", () => {
     expect(latestStatusCall()).toEqual(["loops", "↻ 1 loop · ▶ 1 monitor"]);
   });
 
+  it("shows workflow count and active phase separately from ordinary loops", () => {
+    store.create(
+      { type: "dynamic" },
+      "Ship migration",
+      {
+        recurring: true,
+        workflow: {
+          version: 1,
+          initialState: "investigate",
+          states: {
+            investigate: {
+              prompt: "Investigate.",
+              task: { subject: "Investigate", description: "Collect evidence." },
+              maxAttempts: 2,
+              on: { ready: "done" },
+            },
+            done: { prompt: "Report.", terminal: "completed" },
+          },
+        },
+      },
+    );
+
+    widget.update();
+    expect(latestStatusCall()).toEqual([
+      "loops",
+      "◆ 1 workflow | #1 investigate · attempt 1/2 · unowned",
+    ]);
+  });
+
   it("does not count one-shot monitor completion loops as visible loops in status", () => {
     store.create(
       { type: "event", source: "monitor:done", filter: '{"monitorId":"5"}' },

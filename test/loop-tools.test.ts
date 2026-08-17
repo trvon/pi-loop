@@ -469,6 +469,17 @@ describe("Workflow tools", () => {
     });
   });
 
+  it("distinguishes workflows from ordinary loops in LoopList presentation", async () => {
+    await h.result("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    const list = await h.result("LoopList", {});
+    expect(list.details).toMatchObject({
+      kind: "loop",
+      action: "list",
+      tone: "info",
+      summary: "1 workflow · 1 active",
+    });
+  });
+
   it("embeds initial task work without creating an external task", async () => {
     const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     expect(out).toContain("Active workflow work: Investigate regression (investigate:0)");
