@@ -67,6 +67,9 @@ export function formatWorkflowInspection(entry: LoopEntry): string {
     `Revision: ${workflow.definitionRevision} · transition: ${workflow.transitionSeq}`,
     `Lease: ${workflowLeaseLabel(entry)}`,
     availability.available.length > 0 ? `Outcomes: ${availability.available.join(", ")}` : "Outcomes: none",
+    availability.unavailable.length > 0
+      ? `Unavailable: ${availability.unavailable.map((item) => `${item.outcome} (${item.targetState} exhausted ${item.maxAttempts})`).join(", ")}`
+      : undefined,
     state?.prompt ? `Instruction: ${state.prompt}` : undefined,
     workflow.waitingMonitor ? `Waiting on monitor #${workflow.waitingMonitor.monitorId}` : undefined,
   ].filter((line): line is string => line !== undefined);

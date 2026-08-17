@@ -91,6 +91,21 @@ describe("MonitorCreate", () => {
     expect(rendered.render(80).join("\n")).toContain("Monitor #1 running");
   });
 
+  it("renders concise calls for list, progress, and stop actions", () => {
+    const h = setup();
+    const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as any;
+    const cases = [
+      ["MonitorList", {}, "Monitor status"],
+      ["MonitorUpdate", { monitorId: "4" }, "Monitor update · #4"],
+      ["MonitorStop", { monitorId: "4" }, "Monitor stop · #4"],
+    ] as const;
+
+    for (const [name, args, expected] of cases) {
+      const call = (h.toolMap.get(name) as any).renderCall(args, theme);
+      expect(call.render(80).join("\n")).toContain(expected);
+    }
+  });
+
   it("keeps monitor failures visible in the transcript", async () => {
     const h = setup();
     const result = await h.result("MonitorCreate", { command: "npm test", workflowId: "1", onDone: "report" });

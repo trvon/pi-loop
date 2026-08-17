@@ -1,4 +1,6 @@
+import { readFileSync, rmSync } from "node:fs";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { displayRows, textResult } from "../src/tools/tool-result.js";
 import { hideToolTranscript, renderToolCall, renderToolResult, toolArg } from "../src/ui/tool-renderer.js";
@@ -62,6 +64,32 @@ describe("Pi tool renderer", () => {
     expect(component.render(80).join("\n")).toContain("✕ process spawn failed");
   });
 
+  it("bounds expanded details by rendered terminal lines", () => {
+    const component = renderToolResult({
+      content: [{ type: "text", text: "model content" }],
+      details: {
+        kind: "workflow",
+        action: "create",
+        tone: "success",
+        summary: "Workflow #1 active",
+        expanded: ["A very long workflow instruction ".repeat(30)],
+        expandable: true,
+      },
+    }, { expanded: true, isPartial: false }, theme);
+
+    const lines = component.render(24);
+    expect(lines.length).toBeLessThanOrEqual(14);
+    expect(lines.at(-1)).toContain("more visual lines");
+  });
+
+  it("normalizes and width-bounds call summaries onto one row", () => {
+    const render = renderToolCall("Monitor", () => `start · first line\n${"second line ".repeat(20)}`);
+    const lines = render({}, theme).render(32);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("Monitor start · first line");
+    expect(visibleWidth(lines[0])).toBeLessThanOrEqual(32);
+  });
+
   it("renders a concise call label", () => {
     const render = renderToolCall("Monitor", () => "start · npm test");
     expect(render({}, theme).render(120).map((line) => line.trimEnd())).toEqual(["Monitor start · npm test"]);
@@ -103,10 +131,18 @@ describe("Pi tool renderer", () => {
     ]);
   });
 
-  it("truncates oversized model-facing tool content", () => {
-    const result = textResult(Array.from({ length: 2100 }, (_value, index) => `line ${index + 1}`).join("\n"));
+  it("truncates oversized model content while preserving retrievable full output", () => {
+    const fullContent = Array.from({ length: 2100 }, (_value, index) => `line ${index + 1}`).join("\n");
+    const result = textResult(fullContent);
     expect(result.content[0].text.split("\n").length).toBeLessThanOrEqual(2002);
     expect(result.content[0].text).toContain("Output truncated");
+    const fullOutputPath = result.content[0].text.match(/Full output: (.+)]$/)?.[1];
+    expect(fullOutputPath).toBeDefined();
+    try {
+      expect(readFileSync(fullOutputPath!, "utf8")).toBe(fullContent);
+    } finally {
+      if (fullOutputPath) rmSync(fullOutputPath, { force: true });
+    }
   });
 
   it("bounds display metadata for large lists", () => {

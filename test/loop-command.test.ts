@@ -125,13 +125,15 @@ describe("registerLoopCommand", () => {
           investigate: {
             prompt: "Investigate evidence.",
             task: { subject: "Investigate", description: "Collect evidence." },
-            on: { ready: "done" },
+            on: { ready: "done", retry: "blocked" },
             maxAttempts: 2,
           },
+          blocked: { prompt: "Retry later.", maxAttempts: 1, on: { resume: "investigate" } },
           done: { prompt: "Report.", terminal: "completed" },
         },
       },
     });
+    h.store.get("1")!.workflow!.attemptsByState.blocked = 1;
     let loopListVisits = 0;
     let detailTitle = "";
     const ui = {
@@ -151,6 +153,7 @@ describe("registerLoopCommand", () => {
     expect(detailTitle).toContain("Revision: 1 · transition: 0");
     expect(detailTitle).toContain("Lease: unowned");
     expect(detailTitle).toContain("Outcomes: ready");
+    expect(detailTitle).toContain("Unavailable: retry (blocked exhausted 1)");
   });
 
   it("no-args invocation with 'Create scheduled loop' prompts for prompt + interval and creates a loop", async () => {
