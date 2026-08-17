@@ -1,139 +1,134 @@
-# pi-loop Development Guidelines
+# pi-loop development guide
 
-## Overview
+## Purpose
 
-`pi-loop` is a pi extension providing cron/event-based agent re-wake loops and background process monitoring. Modeled after Claude Code's `/loop`, `CronCreate`, and `MonitorCreate` tools.
+pi-loop is a Pi extension for scheduled/event-driven re-wakes, self-paced goals, task-driven workflows, native fallback tasks, and background process monitoring.
 
-## Stack
+Stack: strict TypeScript 7, ES2022, TypeBox, Vitest, and Biome.
 
-- TypeScript 6.x (strict, ES2022 target, bundler module resolution)
-- `typebox` for tool parameter validation
-- `vitest` for tests
-- `biome` for linting (linter: on, formatter: off)
-- npm packaging as `@trevonistrevon/pi-loop`
+## Authority boundaries
 
-## Architecture
+Do not blur these domains:
 
-```
-src/
-├── index.ts                          # Extension entry: tool/command registration, session wiring, native task fallback timer
-├── api.ts                            # Public subpath (@trevonistrevon/pi-loop/api): RPC channels/DTOs, TaskStore, scope resolvers
-├── types.ts                          # LoopKind, Trigger spec, LoopEntry, MonitorEntry, LoopConfig
-├── task-types.ts                     # TaskEntry, TaskStatus, TaskStoreData
-├── store.ts                          # File-backed CRUD (.pi/loops/loops.json) with file locking
-├── task-store.ts                     # File-backed CRUD for native fallback tasks (.pi/tasks/tasks.json)
-├── reducer-backed-store.ts           # Shared atomic-write + pid-lock persistence layer for reducer-driven stores
-├── coordinator.ts                    # ReducerSource/ReducerEvent/ReducerEffect plumbing shared by *-reducer/*-coordinator modules
-├── loop-reducer.ts                   # Pure loop state transitions, incl. maxFires/expiry checks
-├── monitor-reducer.ts                # Pure monitor state transitions
-├── notification-reducer.ts           # Pure pending-notification state transitions
-├── task-reducer.ts                   # Pure native task state transitions
-├── monitor-completion-coordinator.ts # Reduces monitor "onDone" completion into a fire effect
-├── task-backlog-coordinator.ts       # Reduces pending-task counts into auto-create/auto-clean effects
-├── scheduler.ts                      # Timer-based cron scheduler with jitter + 7-day expiry
-├── trigger-system.ts                 # Unified trigger engine: cron timers + pi event subscriptions + hybrid
-├── monitor-manager.ts                # ChildProcess tracking, output buffering, event emission, stop
-├── loop-parse.ts                     # Human interval → cron expression, next-fire computation, jitter
-├── rpc/                               # VENDORED — canonical copy shared verbatim with pi-orca; see "Cross-extension RPC" below
-│   ├── channels.ts                   # TASKS_RPC/SUBAGENTS_RPC/TASK_EVENTS channel constants + wire DTOs
-│   └── cross-extension-rpc.ts        # rpcCall (client), rpcProbe (detection), handleRpc (server), PROTOCOL_VERSION, RpcError
-├── runtime/                          # Extension-init-time wiring, one module per concern
-│   ├── loop-events.ts                # Auto-delete payload types for backlog-drained loops
-│   ├── monitor-ondone-runtime.ts     # Coordinator wiring for MonitorCreate's onDone → loop fire
-│   ├── native-task-rpc.ts            # tasks:rpc:* server: ping/pending/create/clean/update over the native TaskStore
-│   ├── notification-runtime.ts       # Pending-notification buffering + idle-driven delivery
-│   ├── scope.ts                      # PI_LOOP_SCOPE → loop/task store path resolution
-│   ├── session-runtime.ts            # Session-switch hooks, store (re)binding
-│   ├── task-backlog-runtime.ts       # Auto-create/auto-clean backlog worker evaluation
-│   ├── task-events.ts                # emitNativeTaskEvent: tasks:created/started/completed/reopened/updated/deleted
-│   ├── task-mutations.ts             # Shared mutation service: mutate → emit event → widget → backlog, used by RPC server and tools
-│   └── task-rpc.ts                   # Client bridge: probes pi-tasks, falls back to native TaskStore for autoTask/pending/clean
-├── tools/                            # Tool implementations
-│   ├── loop-tools.ts                 # LoopCreate/LoopList/LoopDelete
-│   ├── monitor-tools.ts              # MonitorCreate/MonitorList/MonitorStop
-│   ├── native-task-tools.ts          # TaskCreate/TaskList/TaskGet/TaskUpdate/TaskDelete (fallback only)
-│   └── tool-result.ts                # textResult() helper
-├── commands/
-│   ├── loop-command.ts               # /loop interactive loop creation
-│   └── tasks-command.ts              # /tasks native task viewer/manager
-└── ui/
-    └── widget.ts                     # Persistent widget: active loops + monitors + task summary
+- `LoopStore` exclusively owns loops, workflow definitions, revisions, embedded executions, workflow history, and server-held workflow leases.
+- `TaskStore` or external `pi-tasks` owns standalone tasks only.
+- `/tasks`, task RPC, `TaskClaim`, and `TaskUpdate` never control workflow work.
+- `MonitorManager` owns process-local monitor state; monitor recovery across Pi death is not implemented.
+- Pending notifications are memory-only; persisted controllers recover on resume, not while Pi is absent.
+
+A feature that requires a cross-store workflow/task transaction violates the architecture.
+
+## Source map
+
+```text
+src/index.ts                 extension registration and runtime wiring
+src/api.ts                   supported @trevonistrevon/pi-loop/api surface
+src/types.ts                 loop, workflow, revision, monitor contracts
+src/store.ts                 LoopStore and workflow atomic mutations
+src/task-store.ts            standalone native task persistence
+src/*-reducer.ts             pure state transitions
+src/coordinator.ts           reducer/effect coordination
+src/scheduler.ts             cron scheduling and fire times
+src/trigger-system.ts        cron/event/hybrid activation
+src/monitor-manager.ts       child processes and bounded output
+src/runtime/                 session, notification, backlog, task-provider, monitor wiring
+src/tools/                   model-facing tool definitions
+src/commands/                /loop and /tasks
+src/rpc/                     vendored cross-extension RPC
+src/ui/                      status and tool rendering
+test/                        unit, integration, property, and live harnesses
 ```
 
-## Cross-extension RPC
+## Workflow contract
 
-`src/rpc/` is a **vendored** module: the canonical copy is maintained here and copied verbatim into the sibling `pi-orca` repo. If you edit `channels.ts` or `cross-extension-rpc.ts`, copy the change to `pi-orca` and bump the `VENDOR_REV` comment at the top of both files in both repos — the two copies must never drift.
+A workflow is one dynamic `LoopEntry` with a version-1 named-state definition.
 
-The wire contract is request/reply over `pi.events`: a caller emits `{ requestId, ...params }` on a channel (e.g. `tasks:rpc:create`), the server replies on `<channel>:reply:<requestId>` with an envelope, `{success:true,data}` or `{success:false,error}`. `rpcCall` resolves/rejects that promise, `rpcProbe` swallows the rejection into `undefined` for presence detection, `handleRpc` is the server-side helper that turns a handler function into a channel subscription with automatic envelope wrapping. `PROTOCOL_VERSION` (currently `2`) is returned in ping replies so callers can gate on server capability.
+- State `task` data materializes as `WorkflowExecutionRecord` in LoopStore.
+- The creator owns the initial execution lease.
+- Every destination/retry execution starts unowned and requires `WorkflowClaim`.
+- `WorkflowTransition` validates the live owner, settles source work, records evidence, advances state, and creates destination work in one locked write.
+- `WorkflowRevise` applies typed additive changes with definition/state/sequence CAS, immutable prior-definition history, and no scheduler or TaskStore effect.
+- Current materialized state content is immutable. Current outgoing edges and future state content may be revised.
+- Transition CAS includes definition revision so transition/revision races fail closed in either order.
+- Terminal completed workflows are deleted; terminal paused workflows remain inspectable.
 
-`pi-loop`'s native tasks RPC server (`src/runtime/native-task-rpc.ts`) registers at extension init — not behind the native-tool-registration fallback timer — so early cross-extension calls never race it. It stands down (silent no-op via `isEnabled`) once an external `pi-tasks` is detected.
+See `docs/REFERENCE.md` for the public contract.
 
-## Public API surface
+## Persistence and lifecycle
 
-External consumers must import `@trevonistrevon/pi-loop/api` (`src/api.ts`), never a deep `src/...` path. The package `exports` map in `package.json` enforces this — deep imports fail to resolve. `src/api.ts` re-exports the RPC channel constants/DTOs, `rpcCall`/`rpcProbe`/`handleRpc`/`RpcError`/`PROTOCOL_VERSION`, `TaskStore`, `TaskEntry`/`TaskStatus`, `resolveLoopStorePath`/`resolveTaskStorePath`, and `NATIVE_TASKS_PROVIDER`. Anything not re-exported there is internal and may change without notice.
+Reducer-backed stores use:
 
-## Conventions (mirror pi-tasks)
+- `O_EXCL` PID locks with stale-owner detection;
+- unique temporary snapshots;
+- file fsync, atomic rename, and directory fsync;
+- previous-snapshot recovery;
+- visible corruption failure when recovery is impossible.
 
-- No comments unless answering "why", never "what"
-- `debug(...)` helper gated on `PI_LOOP_DEBUG` env var, logs to stderr
-- `textResult(msg)` helper for uniform tool output
-- All tool params use `Type.Object()` with description strings
-- Tool descriptions follow Claude Code format: `## When to Use`, `## When NOT to Use`
-- Cross-extension communication via `pi.events` with `requestId` + reply channels
-- File-backed stores use atomic write (write tmp → rename) + pid-based file locking
-- Runtime tracker UI uses `UICtx.setStatus()` for compact single-line state
-- Tests co-located in `test/`, named `<module>.test.ts`
+`PI_LOOP_SCOPE` is `memory`, `session` (default), or `project`. Session shutdown/switch increments generation, stops triggers, clears pending wakes, and reaps monitors before rebinding. Delayed callbacks must fail closed after generation/context changes.
 
-## Tool Schema Discipline
+Project scope does not yet elect one scheduler owner. Do not confuse planned scheduler fencing with workflow execution leases.
 
-- Tool calls must use the exact schema field names from the tool definition. Do not invent aliases.
-- Example: `TaskUpdate` uses `id`, not `taskId`.
-- When a tool validation error clearly indicates an immediately recoverable schema mismatch, correct it silently and retry. Do not emit user-facing chatter like "retrying with the correct shape" unless the recovery itself changes the user's understanding.
-- When adding or revising tool prompt guidance, include concrete parameter-name reminders for commonly miscalled tools.
+## Wake and monitor rules
 
-## File Locking Pattern
+All wakes deliver when the agent is idle. Do not enqueue uncancelable follow-up user messages early; buffer an in-memory notification, recheck generation/relevance, then call `pi.sendMessage`.
 
-Copy TaskStore from pi-tasks: `O_EXCL` lockfile, stale PID detection, `LOCK_RETRY_MS`/`LOCK_MAX_RETRIES`
+A stale extension context must be detected before loop mutation. Never swallow a stale emit after consuming fire state.
 
-## Trigger Types
+Monitor output is untrusted and exposed through bounded/rate-limited events. `onDone` and workflow monitor waits use direct completion callbacks plus generation/context checks. Session teardown must drain monitor shutdown before store rebinding.
 
-Three trigger types, all stored as `LoopEntry.trigger`:
+## Standalone tasks and providers
 
-- `{ type: "cron", schedule: "*/5 * * * *" }` — timer-based
-- `{ type: "event", source: "tool_execution_start", filter?: "regex:..." | '{"key":"value"}' }` — eventbus-based
-- `{ type: "hybrid", cron: "...", event: { source, filter? }, debounceMs: 30000 }` — both with debounce
+pi-loop probes protocol-v2 `pi-tasks` and otherwise enables its native provider. Native task RPC registers at extension initialization so early peers cannot race fallback setup.
 
-All cron/hybrid loops are dynamic: they track their next fire time but only deliver on agent idle (`agent_end`/`turn_start`) rather than wall-clock timers.
+Task claims use bearer IDs because they cross extension boundaries. Workflow leases do not expose tokens. Task prerequisites are description conventions, not TaskStore graph fields.
 
-## Re-wake via In-Memory Pending Notifications
+`taskBacklog` adopts existing tasks and requires a recurring `tasks:created` event trigger. `autoTask` creates one task per ordinary loop fire; do not combine it with backlog mode.
 
-When a loop fires, the scheduler calls `onLoopFire()` which emits `pi.events("loop:fire", ...)`. The extension buffers a pending notification in memory, re-checks whether the wake is still relevant, and only then injects a `pi.sendMessage()` custom message to wake the agent. Do not rely on early queued follow-up user messages for loop delivery; those are not extension-cancelable once handed to pi's queue.
+## Vendored RPC
 
-All loops are idle-driven. Cron and hybrid loops track their next fire time but only deliver when the agent becomes idle (via `agent_end`/`turn_start`), resetting their timer from the actual delivery point.
+`src/rpc/channels.ts` and `src/rpc/cross-extension-rpc.ts` are canonical here and copied verbatim into pi-orca. Any change requires:
 
-## Monitor Streaming via PI Events
+1. update both repositories;
+2. bump `VENDOR_REV` in both copies;
+3. run both RPC suites;
+4. verify the files are byte-identical.
 
-Monitor stdout/stderr lines are emitted as `pi.events("monitor:output", { monitorId, line, timestamp })`. Tool consumers subscribe to these events. Completion emits `"monitor:done"` / `"monitor:error"`.
+RPC uses request IDs and `<channel>:reply:<requestId>` success/error envelopes. External consumers import only `@trevonistrevon/pi-loop/api`; deep `src/` imports are unsupported.
 
-## pi-tasks Integration
+## Coding conventions
 
-`pi-loop` probes for `@tintinweb/pi-tasks` at init via `tasks:rpc:ping` (see "Cross-extension RPC" above) and again on a `tasks:ready` listener for late binding. When an external provider answers, `LoopCreate` with `autoTask: true` calls `tasks:rpc:create` to create a tracked task on fire. When no external provider answers, `pi-loop`'s own native RPC server (`src/runtime/native-task-rpc.ts`) serves all five verbs — `ping`/`pending`/`create`/`clean`/`update` — against the native `TaskStore`, and `autoTask: true` creates a native task directly instead of over RPC.
+- Comments explain why, never restate what.
+- Use `debug(...)` behind `PI_LOOP_DEBUG`.
+- Use `textResult(...)` for tool output.
+- Tool parameters use exact TypeBox field names; do not add aliases.
+- Recover obvious schema-call mistakes silently.
+- Tool descriptions must state ownership and recovery boundaries without exceeding `test/tool-copy-budget.test.ts`.
+- Mutations go through reducers/stores; do not directly edit persisted maps from tools/runtimes.
+- Rejections are state-preserving and include a specific next action.
+- Use red → green regressions for bugs and state-machine changes.
+- Keep tests deterministic and file-backed tests isolated under `tmpdir`.
 
-## /loop Self-Paced Mode
+## Validation
 
-When no interval is specified in `/loop prompt`, the loop runs in self-paced mode. The agent receives the prompt, acts on it, and uses `LoopCreate`/`LoopUpdate` to schedule the next iteration. The loop fires once, then the agent decides the next interval dynamically (matching Claude Code's dynamic interval behavior).
+Follow `docs/TESTING.md`. Minimum merge gate:
 
-## Testing
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:package
+npm audit --audit-level=moderate
+git diff --check
+```
 
-- `vitest` with `describe`/`it` blocks
-- In-memory stores for unit tests, `tmpdir` for file-backed tests
-- Fake timers (`vi.useFakeTimers`) for scheduler tests
-- Mock pi eventbus for monitor-manager tests
-- `vitest run` in CI, `vitest` for watch mode
+Lint has four established optional-chain warnings; do not add new warnings. Workflow/reducer changes also require property tests and the relevant live scenario.
 
 ## Limits
 
-- Maximum 25 active loops
-- Maximum 25 running monitors
-- 7-day expiry on recurring loops
-- 5-minute default cron interval for self-paced mode
+- 25 active loops
+- 25 running monitors
+- seven-day recurring-loop lifetime
+- five-minute self-paced default interval
+- 32 workflow definition revisions
+- 65,536 bytes per workflow definition

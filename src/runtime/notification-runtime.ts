@@ -134,9 +134,13 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       const lines = [
         `[pi-loop] Loop #${loopId} fired (workflow).${constraint}`,
         `Goal: ${data.prompt || data.workflow.definition.initialState}`,
+        `Definition revision: ${data.workflow.definitionRevision ?? 1}`,
         `State: ${data.workflow.currentState}`,
+        `Transition sequence: ${data.workflow.transitionSeq}`,
         `Attempt: ${attemptLabel}`,
       ];
+      const latestRevision = data.workflow.revisionHistory?.at(-1);
+      if (latestRevision) lines.push(`Latest revision reason: ${latestRevision.reason.replace(/\s+/g, " ")}`);
       if (data.workflow.lastTransition) {
         lines.push(...formatLastTransitionLines(data.workflow.lastTransition));
       }

@@ -121,6 +121,22 @@ describe("loop:fire custom message delivery", () => {
             blocked: { prompt: "Report the blocker.", terminal: "paused" },
           },
         },
+        definitionRevision: 2,
+        revisionHistory: [{
+          revision: 1,
+          definition: {
+            version: 1,
+            initialState: "investigate",
+            states: {
+              investigate: { prompt: "Find the cause.", on: { found: "fix" } },
+              fix: { prompt: "Implement the fix." },
+            },
+          },
+          reason: "Added dependent validation after investigation.",
+          supersededAt: Date.now(),
+          supersededBy: { sessionId: "session-a", runtimeId: "runtime-a" },
+          changes: [{ op: "add_transition", from: "investigate", outcome: "blocked", to: "blocked" }],
+        }],
         currentState: "investigate",
         transitionSeq: 0,
         stateEnteredAt: Date.now(),
@@ -149,7 +165,10 @@ describe("loop:fire custom message delivery", () => {
 
     const content = sentMessages[0].message.content;
     expect(content).toContain("fired (workflow)");
+    expect(content).toContain("Definition revision: 2");
     expect(content).toContain("State: investigate");
+    expect(content).toContain("Transition sequence: 0");
+    expect(content).toContain("Latest revision reason: Added dependent validation after investigation.");
     expect(content).toContain("Find the cause.");
     expect(content).toContain("Attempt: 1/3");
     expect(content).toContain("Active workflow work: Investigate regression (investigate:0)");

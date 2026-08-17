@@ -439,6 +439,47 @@ describe("Workflow tools", () => {
     expect(h.store.get("1")?.workflow?.activeExecution?.lease).toBeUndefined();
   });
 
+  it("exposes typed workflow revision changes without replacement or ownership fields", () => {
+    const revise = h.toolMap.get("WorkflowRevise") as any;
+
+    expect(revise).toBeDefined();
+    expect(revise.parameters.properties).toMatchObject({
+      expectedRevision: expect.any(Object),
+      expectedState: expect.any(Object),
+      expectedTransitionSeq: expect.any(Object),
+      reason: expect.any(Object),
+      changes: expect.any(Object),
+    });
+    expect(revise.parameters.properties.definition).toBeUndefined();
+    expect(revise.parameters.properties.actor).toBeUndefined();
+    expect(revise.parameters.properties.claimId).toBeUndefined();
+    expect(revise.description).toContain("typed additive changes");
+    expect(revise.promptGuidelines.join("\n")).toContain("Never create standalone tasks");
+  });
+
+  it("requires the current execution lease before revising and preserves it after claim", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    await h.text("WorkflowTransition", { id: "1", outcome: "found", evidence: "Investigation complete." });
+    const revision = {
+      id: "1",
+      expectedRevision: 1,
+      expectedState: "fix",
+      expectedTransitionSeq: 1,
+      reason: "Clarify future retry work.",
+      changes: [{ op: "revise_state", stateId: "investigate", prompt: "Investigate revised requirements." }],
+    };
+
+    expect(await h.text("WorkflowRevise", revision)).toContain("Code: execution_unowned");
+    await h.text("WorkflowClaim", { id: "1" });
+    const lease = structuredClone(h.store.get("1")?.workflow?.activeExecution?.lease);
+    expect(await h.text("WorkflowRevise", revision)).toContain("revision 1 → 2");
+    expect(h.store.get("1")?.workflow?.activeExecution?.lease).toEqual(lease);
+    expect(h.store.get("1")?.workflow).toMatchObject({
+      definitionRevision: 2,
+      definition: { states: { investigate: { prompt: "Investigate revised requirements." } } },
+    });
+  });
+
   it("does not expose claim tokens in transition schema or guidance", () => {
     const transition = h.toolMap.get("WorkflowTransition") as any;
     expect(transition.description).toContain("never accepts a claim token");
@@ -531,11 +572,13 @@ describe("Workflow tools", () => {
     expect(h.store.get("1")).toBeUndefined();
   });
 
-  it("documents embedded task definitions and outcome evidence", () => {
+  it("documents embedded task definitions and outcome evidence", async () => {
     const create = h.toolMap.get("WorkflowCreate") as any;
     expect(create.description).toContain("embedded atomically");
     expect(create.promptGuidelines.join("\n")).toContain("maxAttempts");
     expect((h.toolMap.get("WorkflowTransition") as any).parameters.properties.evidence).toBeDefined();
+    expect(await h.text("WorkflowCreate", { goal: "Fix the regression", definition })).toContain("Definition revision: 1");
+    expect(await h.text("LoopList", {})).toContain("Transition sequence: 0");
   });
 });
 

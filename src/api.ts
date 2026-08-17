@@ -43,7 +43,11 @@ export type { TaskClaim, TaskEntry, TaskStatus, TaskStoreData } from "./task-typ
 export type {
   MonitorOutcome,
   WorkflowDefinition,
+  WorkflowDefinitionRevision,
   WorkflowMonitorWait,
+  WorkflowRevisionChange,
+  WorkflowRevisionFailure,
+  WorkflowRevisionFailureCode,
   WorkflowRunState,
   WorkflowStateDefinition,
   WorkflowStateLoopDefinition,
@@ -51,3 +55,4 @@ export type {
   WorkflowTerminalStatus,
   WorkflowTransitionRecord,
 } from "./types.js";
+export type { WorkflowRevisionInput, WorkflowRevisionResult, WorkflowRevisionSummary } from "./workflow-revision.js";

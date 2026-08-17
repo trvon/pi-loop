@@ -1,9 +1,11 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
+import { type LoopReducerEffect, type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
-import { isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowDefinition, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
+import { validateWorkflowDefinition } from "./workflow-definition.js";
+import { isTerminalWorkflowRun, transitionWorkflowRun, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
+import { validatePersistedWorkflowRevision, type WorkflowRevisionInput, type WorkflowRevisionSummary } from "./workflow-revision.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
 
@@ -16,9 +18,25 @@ const LOOPS_DIR = join(homedir(), ".pi", "loops");
  */
 function normalizeWorkflowRunState(workflow: WorkflowRunState): WorkflowRunState {
   const legacy = workflow as WorkflowRunState & { activeTaskId?: string };
+  const hasRevision = Object.hasOwn(workflow, "definitionRevision");
+  const hasHistory = Object.hasOwn(workflow, "revisionHistory");
+  if (hasRevision !== hasHistory) throw new Error("Malformed workflow revision metadata: revision and history must appear together");
+
+  const definitionRevision = hasRevision ? workflow.definitionRevision : 1;
+  const revisionHistory = hasHistory ? workflow.revisionHistory : [];
+  if (!Number.isInteger(definitionRevision) || definitionRevision < 1 || !Array.isArray(revisionHistory)) {
+    throw new Error("Malformed workflow revision metadata: invalid revision or history");
+  }
+  if (definitionRevision !== revisionHistory.length + 1) {
+    throw new Error("Malformed workflow revision metadata: revision does not match history length");
+  }
+  for (const [index, revision] of revisionHistory.entries()) {
+    const revisionError = validatePersistedWorkflowRevision(revision, index + 1);
+    if (revisionError) throw new Error(`Malformed workflow revision metadata: ${revisionError}`);
+  }
+
   const active = workflow.activeExecution;
   const state = workflow.definition.states[workflow.currentState];
-  if (!legacy.activeTaskId && active) return workflow;
   const { activeTaskId: _dropped, ...withoutLegacy } = legacy;
   const needsExecution = Boolean(
     state?.task
@@ -26,6 +44,8 @@ function normalizeWorkflowRunState(workflow: WorkflowRunState): WorkflowRunState
   );
   return {
     ...withoutLegacy,
+    definitionRevision,
+    revisionHistory,
     ...(needsExecution ? {
       activeExecution: {
         id: `${workflow.currentState}:${workflow.transitionSeq}`,
@@ -43,7 +63,7 @@ function normalizeWorkflowRunState(workflow: WorkflowRunState): WorkflowRunState
 const MAX_LOOPS = 25;
 const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
 
-export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, LoopReducerEvent, LoopStoreData> {
+export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, LoopReducerEvent, LoopStoreData, LoopReducerEffect> {
   private tombstones = new Map<string, LoopDeletionTombstone>();
 
   constructor(listIdOrPath?: string) {
@@ -263,10 +283,50 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     });
   }
 
+  reviseWorkflow(
+    id: string,
+    input: WorkflowRevisionInput,
+    actor?: WorkflowRuntimeActor,
+  ): { entry?: LoopEntry; applied: boolean; error?: string; failure?: WorkflowRevisionFailure; summary?: WorkflowRevisionSummary } {
+    return this.withLock(() => {
+      const entry = this.entries.get(id);
+      if (!entry) {
+        const error = `Loop #${id} not found.`;
+        return { applied: false, error, failure: { code: "loop_not_found", message: error } };
+      }
+      if (!entry.workflow) {
+        const error = `Loop #${id} is not a workflow loop.`;
+        return { applied: false, error, failure: { code: "not_workflow", message: error } };
+      }
+      if (!actor) {
+        const error = "Workflow revision requires an active session runtime.";
+        return { applied: false, error, failure: { code: "actor_required", message: error } };
+      }
+      const reduced = this.applyReducerEvent({
+        type: "LOOP_WORKFLOW_REVISED",
+        at: Date.now(),
+        source: "tool",
+        entityType: "loop",
+        entityId: id,
+        payload: { id, ...input, actor },
+      });
+      const rejection = reduced.effects.find((effect) => effect.type === "WORKFLOW_REVISION_REJECTED");
+      if (rejection?.type === "WORKFLOW_REVISION_REJECTED") {
+        return { applied: false, error: rejection.payload.error, failure: rejection.payload.failure };
+      }
+      const persisted = reduced.effects.find((effect) => effect.type === "PERSIST_LOOP");
+      if (persisted?.type !== "PERSIST_LOOP" || !persisted.payload.workflowRevision) {
+        const error = "Workflow revision produced no authoritative reducer outcome.";
+        return { applied: false, error, failure: { code: "graph_invalid", message: error } };
+      }
+      return { entry: this.entries.get(id), applied: true, summary: persisted.payload.workflowRevision };
+    }, (result) => result.applied);
+  }
+
   transitionWorkflow(
     id: string,
     input: WorkflowTransitionInput,
-    expected?: { currentState: string; transitionSeq: number; activeExecutionId?: string },
+    expected?: { currentState: string; transitionSeq: number; definitionRevision: number; activeExecutionId?: string },
   ): { entry?: LoopEntry; applied: boolean; error?: string; failure?: WorkflowTransitionFailure; terminal?: WorkflowTerminalStatus } {
     return this.withLock(() => {
       const entry = this.entries.get(id);
@@ -275,6 +335,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       if (expected && (
         entry.workflow.currentState !== expected.currentState
         || entry.workflow.transitionSeq !== expected.transitionSeq
+        || entry.workflow.definitionRevision !== expected.definitionRevision
         || entry.workflow.activeExecution?.id !== expected.activeExecutionId
       )) {
         return { applied: false, error: `Workflow #${id} changed; inspect LoopList and retry the transition.` };

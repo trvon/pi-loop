@@ -1,5 +1,6 @@
-import type { DynamicLoopState, LoopEntry, LoopFireOrigin, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRuntimeActor } from "./types.js";
+import type { DynamicLoopState, LoopEntry, LoopFireOrigin, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionChange, WorkflowRuntimeActor } from "./types.js";
 import { createWorkflowRun, transitionWorkflowRun } from "./workflow-reducer.js";
+import { reviseWorkflowRun, type WorkflowRevisionSummary } from "./workflow-revision.js";
 
 export const MAX_LOOP_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -78,6 +79,22 @@ export type LoopReducerEvent =
     };
   }
   | {
+    type: "LOOP_WORKFLOW_REVISED";
+    at: number;
+    source: ReducerSource;
+    entityType?: "loop";
+    entityId?: string;
+    payload: {
+      id: string;
+      expectedRevision: number;
+      expectedState: string;
+      expectedTransitionSeq: number;
+      reason: string;
+      changes: WorkflowRevisionChange[];
+      actor: WorkflowRuntimeActor;
+    };
+  }
+  | {
     type: "LOOP_WORKFLOW_TRANSITION";
     at: number;
     source: ReducerSource;
@@ -129,12 +146,23 @@ export type LoopReducerEvent =
     payload: { id: string; expected?: WorkflowMonitorWait };
   };
 
+interface PersistLoopPayload {
+  loop: LoopEntry;
+  workflowRevision?: WorkflowRevisionSummary;
+}
+
 export type LoopReducerEffect =
   | {
     type: "PERSIST_LOOP";
     entityType: "loop";
     entityId: string;
-    payload: { loop: LoopEntry };
+    payload: PersistLoopPayload;
+  }
+  | {
+    type: "WORKFLOW_REVISION_REJECTED";
+    entityType: "loop";
+    entityId: string;
+    payload: { error: string; failure: import("./types.js").WorkflowRevisionFailure };
   }
   | {
     type: "DELETE_LOOP";
@@ -214,6 +242,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
 
   const next = cloneState(state);
   const loop: LoopEntry = { ...current };
+  let workflowRevision: WorkflowRevisionSummary | undefined;
 
   if (event.type === "LOOP_PAUSED") {
     loop.status = "paused";
@@ -253,6 +282,32 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
       lastUpdatedAt: event.payload.dynamic.lastUpdatedAt ?? event.at,
     };
     loop.updatedAt = event.at;
+  }
+
+  if (event.type === "LOOP_WORKFLOW_REVISED") {
+    if (!loop.workflow) return { state, effects: [] };
+    const result = reviseWorkflowRun(loop.workflow, {
+      expectedRevision: event.payload.expectedRevision,
+      expectedState: event.payload.expectedState,
+      expectedTransitionSeq: event.payload.expectedTransitionSeq,
+      reason: event.payload.reason,
+      changes: event.payload.changes,
+      actor: event.payload.actor,
+    }, event.at);
+    if (!result.applied) {
+      return {
+        state,
+        effects: [{
+          type: "WORKFLOW_REVISION_REJECTED",
+          entityType: "loop",
+          entityId: id,
+          payload: { error: result.error, failure: result.failure },
+        }],
+      };
+    }
+    loop.workflow = result.run;
+    loop.updatedAt = event.at;
+    workflowRevision = result.summary;
   }
 
   if (event.type === "LOOP_WORKFLOW_TRANSITION") {
@@ -354,8 +409,10 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
   }
 
   next.loopsById[id] = loop;
+  const payload: PersistLoopPayload = { loop };
+  if (workflowRevision) payload.workflowRevision = workflowRevision;
   return {
     state: next,
-    effects: [{ type: "PERSIST_LOOP", entityType: "loop", entityId: id, payload: { loop } }],
+    effects: [{ type: "PERSIST_LOOP", entityType: "loop", entityId: id, payload }],
   };
 }

@@ -54,11 +54,11 @@ MonitorStop monitorId="1"
 | `/loop` | Create or manage scheduled, event, and dynamic goal loops |
 | `/tasks` | Manage native fallback tasks when `pi-tasks` is absent |
 | `LoopCreate`, `LoopList`, `LoopUpdate`, `LoopDelete` | Create and control ordinary loops |
-| `WorkflowCreate`, `WorkflowClaim`, `WorkflowTransition` | Create, claim, and advance opt-in task-driven workflows; inspect them with `LoopList` |
+| `WorkflowCreate`, `WorkflowClaim`, `WorkflowRevise`, `WorkflowTransition` | Create, claim, revise, and advance task-driven workflows; inspect them with `LoopList` |
 | `MonitorCreate`, `MonitorList`, `MonitorStop` | Run and inspect background commands |
 | `TaskCreate`, `TaskList`, `TaskClaim`, `TaskHeartbeat`, `TaskUpdate`, `TaskDelete` | Native fallback task management |
 
-See the [usage guide](./docs/USAGE_GUIDE.md) for trigger types, dynamic loop lifecycle, monitor behavior, task integration, configuration, events, and the public RPC API. The [mutation contract](./docs/architecture/mutation-contract.md) defines accepted, idempotent, and rejected task/loop/workflow writes.
+See the [usage guide](./docs/USAGE_GUIDE.md) for operator workflows and the [reference](./docs/REFERENCE.md) for authority, persistence, mutation, RPC, and recovery boundaries.
 
 ## Development
 
@@ -71,7 +71,7 @@ npm run build
 PI_LOOP_LIVE_MODEL="<provider/model[:thinking]>" npm run test:e2e:workflow
 ```
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md), the [security policy](./.github/SECURITY.md), the [workflow harness testing guide](./docs/WORKFLOW_HARNESS_TESTING.md), the [task-backlog prompt testing guide](./docs/BACKLOG_PROMPT_TESTING.md), and the [profiling and fuzzing guide](./docs/PROFILING_AND_FUZZING.md).
+See [testing](./docs/TESTING.md) for local, property, package, benchmark, and live E2E gates. Contributors and agents must also follow [AGENTS.md](./AGENTS.md).
 
 ## License
 
