@@ -30,7 +30,7 @@ function mockManager(config: { onCompleteReturns: boolean; onTerminalReturns?: b
   };
 }
 
-function setup(manager: ReturnType<typeof mockManager>) {
+function setup(manager: ReturnType<typeof mockManager>, isContextCurrent = () => true) {
   const onLoopFire = vi.fn();
   const deleteLoop = vi.fn();
   const runtime = createMonitorOnDoneRuntime({
@@ -38,6 +38,7 @@ function setup(manager: ReturnType<typeof mockManager>) {
     getLoop: (id: string) => (id === doneLoop.id ? doneLoop : undefined),
     deleteLoop,
     onLoopFire,
+    isContextCurrent,
     completeWorkflowMonitorWait: vi.fn(),
     rearmWorkflow: vi.fn(),
     wakeWorkflow: vi.fn(),
@@ -62,6 +63,7 @@ describe("monitor-ondone-runtime", () => {
       getLoop: (id) => (id === timeoutLoop.id ? timeoutLoop : undefined),
       deleteLoop,
       onLoopFire,
+      isContextCurrent: () => true,
       completeWorkflowMonitorWait: vi.fn(),
       rearmWorkflow: vi.fn(),
       wakeWorkflow: vi.fn(),
@@ -104,6 +106,20 @@ describe("monitor-ondone-runtime", () => {
     expect(onLoopFire).toHaveBeenCalledTimes(1);
     expect(onLoopFire).toHaveBeenCalledWith(doneLoop);
     expect(deleteLoop).toHaveBeenCalledWith("5");
+  });
+
+  it("does not mutate loop state when completion belongs to a stale context", async () => {
+    const manager = mockManager({ onCompleteReturns: true });
+    const isContextCurrent = vi.fn(() => false);
+    const { runtime, onLoopFire, deleteLoop } = setup(manager, isContextCurrent);
+
+    runtime.register(doneLoop, "3");
+    manager.fireCaptured();
+    await flush();
+
+    expect(isContextCurrent).toHaveBeenCalledTimes(1);
+    expect(onLoopFire).not.toHaveBeenCalled();
+    expect(deleteLoop).not.toHaveBeenCalled();
   });
 
   it("delivers immediately when the monitor is already completed", async () => {
@@ -198,6 +214,7 @@ describe("monitor-ondone-runtime", () => {
       getLoop: () => undefined,
       deleteLoop: vi.fn(),
       onLoopFire: vi.fn(),
+      isContextCurrent: () => true,
       completeWorkflowMonitorWait,
       rearmWorkflow,
       wakeWorkflow,

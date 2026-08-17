@@ -47,6 +47,7 @@ function debug(...args: unknown[]) {
 
 export default function (pi: ExtensionAPI) {
   const runtimeId = randomUUID();
+  const runtimeProbeEvent = `pi-loop:runtime-probe:${runtimeId}`;
   const piLoopEnv = process.env.PI_LOOP;
   const piLoopScope = process.env.PI_LOOP_SCOPE as "memory" | "session" | "project" | undefined;
   let loopScope: "memory" | "session" | "project" = piLoopScope ?? "session";
@@ -87,6 +88,7 @@ export default function (pi: ExtensionAPI) {
       store.delete(id);
     },
     onLoopFire,
+    isContextCurrent: isCurrentExtensionContext,
     completeWorkflowMonitorWait: (id, expected) => store.completeWorkflowMonitorWait(id, expected),
     rearmWorkflow: (entry) => {
       triggerSystem.add(entry);
@@ -178,35 +180,41 @@ export default function (pi: ExtensionAPI) {
 
   // ── Loop fire handler ──
 
-  function emitLoopFire(entry: LoopEntry, monitor?: MonitorEntry): void {
+  function isCurrentExtensionContext(): boolean {
     try {
-      pi.events.emit("loop:fire", {
-        loopId: entry.id,
-        prompt: entry.prompt,
-        trigger: entry.trigger,
-        timestamp: Date.now(),
-        readOnly: entry.readOnly,
-        recurring: entry.recurring,
-        persistent: entry.recurring,
-        autoTask: entry.autoTask,
-        taskBacklog: entry.taskBacklog,
-        dynamic: entry.dynamic,
-        workflow: entry.workflow,
-        sessionGeneration,
-        monitorOutcome: monitor
-          ? {
-              monitorId: monitor.id,
-              status: monitor.status,
-              exitCode: monitor.exitCode,
-              stopReason: monitor.stopReason,
-              outputLines: monitor.outputLines,
-            }
-          : undefined,
-      });
+      pi.events.emit(runtimeProbeEvent, { runtimeId, sessionGeneration });
+      return true;
     } catch (error) {
       if (!isStaleExtensionContextError(error)) throw error;
-      debug(`loop:fire #${entry.id} — extension context went stale, dropping wake`);
+      debug("extension context went stale, dropping runtime callback");
+      return false;
     }
+  }
+
+  function emitLoopFire(entry: LoopEntry, monitor?: MonitorEntry): void {
+    pi.events.emit("loop:fire", {
+      loopId: entry.id,
+      prompt: entry.prompt,
+      trigger: entry.trigger,
+      timestamp: Date.now(),
+      readOnly: entry.readOnly,
+      recurring: entry.recurring,
+      persistent: entry.recurring,
+      autoTask: entry.autoTask,
+      taskBacklog: entry.taskBacklog,
+      dynamic: entry.dynamic,
+      workflow: entry.workflow,
+      sessionGeneration,
+      monitorOutcome: monitor
+        ? {
+            monitorId: monitor.id,
+            status: monitor.status,
+            exitCode: monitor.exitCode,
+            stopReason: monitor.stopReason,
+            outputLines: monitor.outputLines,
+          }
+        : undefined,
+    });
   }
 
   function onLoopFire(
@@ -214,6 +222,7 @@ export default function (pi: ExtensionAPI) {
     monitor?: MonitorEntry,
     origin: LoopFireOrigin = monitor ? "monitor" : "dynamic",
   ): void {
+    if (!isCurrentExtensionContext()) return;
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     const current = store.get(entry.id);
     if (current?.status !== "active" || isTerminalWorkflowRun(current?.workflow)) {

@@ -16,6 +16,7 @@ export interface MonitorOnDoneRuntimeOptions {
   getLoop: (id: string) => LoopEntry | undefined;
   deleteLoop: (id: string) => void;
   onLoopFire: (entry: LoopEntry) => void;
+  isContextCurrent: () => boolean;
   completeWorkflowMonitorWait: (id: string, expected: WorkflowMonitorWait) => LoopEntry | undefined;
   rearmWorkflow: (entry: LoopEntry) => void;
   wakeWorkflow: (entry: LoopEntry, monitor: MonitorEntry | undefined) => void;
@@ -56,6 +57,7 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
     getLoop,
     deleteLoop,
     onLoopFire,
+    isContextCurrent,
     completeWorkflowMonitorWait,
     rearmWorkflow,
     wakeWorkflow,
@@ -71,6 +73,7 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
     reducers: [monitorCompletionReducerHandler],
     effectHandlers: {
       DELIVER_MONITOR_ONDONE_WAKE: (effect: ReducerEffect) => {
+        if (!isContextCurrent()) return;
         const { loopId, monitorId, monitor } = effect.payload as {
           loopId: string;
           monitorId: string;
@@ -91,6 +94,7 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
   function register(doneLoop: LoopEntry, monitorId: string): void {
     const timeoutAlert = isTimeoutAlertLoop(doneLoop);
     const deliver = (monitor?: MonitorEntry) => {
+      if (!isContextCurrent()) return;
       const outcome = monitor ?? monitorManager.get(monitorId);
       if (timeoutAlert && !timedOut(outcome)) {
         debug?.(`timeout alert loop #${doneLoop.id} — monitor #${monitorId} ended without timing out, expiring`);
@@ -128,6 +132,7 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
     if (!wait) return;
 
     const deliver = (monitor?: MonitorEntry) => {
+      if (!isContextCurrent()) return;
       const resumed = completeWorkflowMonitorWait(entry.id, wait);
       if (!resumed) return;
       if (resumed.status !== "active") return;

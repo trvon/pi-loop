@@ -2013,18 +2013,16 @@ describe("monitor tool wrappers", () => {
     });
     expect(result.content[0].text).toContain("Completion wake loop");
 
-    const dispatch = pi.events.emit.getMockImplementation();
-    pi.events.emit.mockImplementation((name: string, payload: unknown) => {
-      if (name === "loop:fire") {
-        throw new Error("This extension ctx is stale after session replacement or reload.");
-      }
-      return dispatch?.(name, payload);
+    pi.events.emit.mockImplementation(() => {
+      throw new Error("This extension ctx is stale after session replacement or reload.");
     });
 
     await new Promise(r => setTimeout(r, 500));
 
-    expect(pi.events.emit).toHaveBeenCalledWith("loop:fire", expect.objectContaining({ loopId: "1" }));
+    expect(pi.events.emit.mock.calls.some(([name]: [string]) => name === "loop:fire")).toBe(false);
     expect(sentCustomMessages).toHaveLength(0);
+    const loops = await toolMap.get("LoopList")!.execute!("list", {});
+    expect(loops.content[0].text).toContain("* #1 [active] This stale wake must be dropped");
   }, 10000);
 
   it("onDone monitor completion does not rely on monitor:done event dispatch", async () => {
