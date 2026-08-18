@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { formatLastTransitionLines } from "../loop-format.js";
 import type { LoopEntry, Trigger, WorkflowDefinition, WorkflowRevisionChange, WorkflowRevisionFailure, WorkflowRuntimeActor } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
+import { workflowAttemptLabel, workflowDisplayDetails } from "../ui/workflow-presentation.js";
 import { validateWorkflowDefinition } from "../workflow-definition.js";
 import { getActiveWorkflowStateLoop, getWorkflowOutcomeAvailability, type WorkflowTransitionFailure } from "../workflow-reducer.js";
 import type { WorkflowRevisionSummary } from "../workflow-revision.js";
@@ -175,10 +176,20 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     }),
     async execute(_toolCallId, params) {
       const parsed = parseWorkflowDefinition(params.definition);
-      if (!parsed.definition) return textResult(formatWorkflowDefinitionError(parsed.error));
+      if (!parsed.definition) {
+        const message = formatWorkflowDefinitionError(parsed.error);
+        return textResult(message, {
+          kind: "workflow", action: "create", tone: "error", summary: "Workflow was not created", expanded: [message],
+        });
+      }
       const actor = getActor();
       const initial = parsed.definition.states[parsed.definition.initialState];
-      if (initial?.task && !actor) return textResult("Workflow creation requires an active session runtime; retry after turn_start.");
+      if (initial?.task && !actor) {
+        const message = "Workflow creation requires an active session runtime; retry after turn_start.";
+        return textResult(message, {
+          kind: "workflow", action: "create", tone: "error", summary: "Workflow runtime unavailable", expanded: [message],
+        });
+      }
       const entry = getStore().create({ type: "dynamic" }, params.goal, {
         recurring: true,
         maxFires: params.maxFires ?? workflowDefaultMaxFires(parsed.definition),
@@ -189,7 +200,19 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       getTriggerSystem().add(entry);
       updateWidget();
       if (!entry.workflow || !getActiveWorkflowStateLoop(entry.workflow) || stateLoopStartsImmediately(entry)) onDynamicLoopActivated?.(entry);
-      return textResult(`${formatWorkflowSummary(entry, `Workflow #${entry.id} created — ${entry.status}`)}\nWake: ${entry.workflow && getActiveWorkflowStateLoop(entry.workflow) ? "scheduled from the active state cadence." : "the state instruction will be delivered when the agent becomes idle."}`);
+      const wake = entry.workflow && getActiveWorkflowStateLoop(entry.workflow)
+        ? "scheduled from the active state cadence."
+        : "the state instruction will be delivered when the agent becomes idle.";
+      return textResult(
+        `${formatWorkflowSummary(entry, `Workflow #${entry.id} created — ${entry.status}`)}\nWake: ${wake}`,
+        workflowDisplayDetails({
+          entry,
+          action: "create",
+          tone: "success",
+          summary: `Workflow #${entry.id} active · ${entry.workflow?.currentState ?? "unknown"} · attempt ${workflowAttemptLabel(entry)}`,
+          extra: [`Wake: ${wake}`],
+        }),
+      );
     },
   });
 
@@ -209,11 +232,29 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     }),
     async execute(_toolCallId, params) {
       const actor = getActor();
-      if (!actor) return textResult("Workflow claim requires an active session runtime; retry after turn_start.");
+      if (!actor) {
+        const message = "Workflow claim requires an active session runtime; retry after turn_start.";
+        return textResult(message, {
+          kind: "workflow", action: "claim", tone: "error", summary: `Workflow #${params.id} claim rejected`, expanded: [message],
+        });
+      }
       const result = getStore().claimWorkflowExecution(params.id, actor, params.leaseSeconds);
-      if (!result.claimed || !result.entry) return textResult(`Workflow #${params.id} was not claimed\nReason: ${result.error ?? "unknown error"}`);
+      if (!result.claimed || !result.entry) {
+        const reason = result.error ?? "unknown error";
+        return textResult(`Workflow #${params.id} was not claimed\nReason: ${reason}`, {
+          kind: "workflow", action: "claim", tone: "error", summary: `Workflow #${params.id} claim rejected`, expanded: [reason],
+        });
+      }
       const execution = result.entry.workflow?.activeExecution;
-      return textResult(`Workflow #${params.id} lease active until ${execution?.lease ? new Date(execution.lease.expiresAt).toISOString() : "unknown"}\n${formatWorkflowSummary(result.entry, `Workflow #${params.id} — ${result.entry.status}`)}`);
+      return textResult(
+        `Workflow #${params.id} lease active until ${execution?.lease ? new Date(execution.lease.expiresAt).toISOString() : "unknown"}\n${formatWorkflowSummary(result.entry, `Workflow #${params.id} — ${result.entry.status}`)}`,
+        workflowDisplayDetails({
+          entry: result.entry,
+          action: "claim",
+          tone: "success",
+          summary: `Workflow #${params.id} lease active · ${result.entry.workflow?.currentState ?? "unknown"}`,
+        }),
+      );
     },
   });
 
@@ -248,9 +289,19 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       }, getActor());
       if (!result.applied || !result.entry || !result.summary) {
         const failure = result.failure;
-        return textResult(
-          `Workflow #${params.id} was not revised\nCode: ${failure?.code ?? "unknown"}\nReason: ${result.error ?? "unknown revision error"}\nNext: ${revisionRecovery(failure?.code)}`,
-        );
+        const reason = result.error ?? "unknown revision error";
+        const next = revisionRecovery(failure?.code);
+        const message = `Workflow #${params.id} was not revised\nCode: ${failure?.code ?? "unknown"}\nReason: ${reason}\nNext: ${next}`;
+        const current = getStore().get(params.id);
+        return textResult(message, current?.workflow
+          ? workflowDisplayDetails({
+              entry: current,
+              action: "revise",
+              tone: "error",
+              summary: `Workflow #${params.id} revision rejected`,
+              extra: [`Reason: ${reason}`, `Next: ${next}`],
+            })
+          : { kind: "workflow", action: "revise", tone: "error", summary: `Workflow #${params.id} revision rejected`, expanded: [`Reason: ${reason}`, `Next: ${next}`] });
       }
       updateWidget();
       const summary = result.summary;
@@ -269,7 +320,16 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       const execution = result.entry.workflow?.activeExecution;
       lines.push(`Current execution preserved: ${result.entry.workflow?.currentState}${execution ? ` (${execution.id})` : ""}`);
       lines.push("Next: complete the active work and transition through the revised outcome.");
-      return textResult(lines.join("\n"));
+      return textResult(
+        lines.join("\n"),
+        workflowDisplayDetails({
+          entry: result.entry,
+          action: "revise",
+          tone: "success",
+          summary: `Workflow #${params.id} revised · r${params.expectedRevision} → r${result.entry.workflow?.definitionRevision ?? "?"}`,
+          extra: lines.slice(1),
+        }),
+      );
     },
   });
 
@@ -302,19 +362,58 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       if (!result.applied || !result.entry) {
         const entry = store.get(params.id);
         const error = result.error ?? "unknown transition error";
-        return textResult(entry?.workflow
+        const message = entry?.workflow
           ? `Workflow #${params.id} did not transition\nReason: ${error}\n${formatWorkflowSummary(entry, `Workflow #${params.id} remains — ${entry.status}`, result.failure)}`
-          : `Workflow #${params.id} did not transition\nReason: ${error}`);
+          : `Workflow #${params.id} did not transition\nReason: ${error}`;
+        return textResult(message, entry?.workflow
+          ? workflowDisplayDetails({
+              entry,
+              action: "transition",
+              tone: "error",
+              summary: `Workflow #${params.id} transition rejected`,
+              extra: [`Reason: ${error}`],
+            })
+          : { kind: "workflow", action: "transition", tone: "error", summary: `Workflow #${params.id} transition rejected`, expanded: [`Reason: ${error}`] });
       }
       const entry = result.entry;
       getTriggerSystem().remove(entry.id);
       updateWidget();
-      if (result.terminal === "completed") return textResult(`Workflow #${entry.id} completed and deleted\nFinal transition: ${entry.workflow?.lastTransition?.from ?? "?"} → ${entry.workflow?.currentState ?? "?"}`);
-      if (result.terminal === "paused") return textResult(`Workflow #${entry.id} paused\nFinal state: ${entry.workflow?.currentState ?? "?"}`);
+      if (result.terminal === "completed") {
+        const transition = `${entry.workflow?.lastTransition?.from ?? "?"} → ${entry.workflow?.currentState ?? "?"}`;
+        return textResult(
+          `Workflow #${entry.id} completed and deleted\nFinal transition: ${transition}`,
+          workflowDisplayDetails({
+            entry,
+            action: "transition",
+            tone: "success",
+            summary: `Workflow #${entry.id} completed · ${transition}`,
+          }),
+        );
+      }
+      if (result.terminal === "paused") {
+        return textResult(
+          `Workflow #${entry.id} paused\nFinal state: ${entry.workflow?.currentState ?? "?"}`,
+          workflowDisplayDetails({
+            entry,
+            action: "transition",
+            tone: "warning",
+            summary: `Workflow #${entry.id} paused · ${entry.workflow?.currentState ?? "unknown"}`,
+          }),
+        );
+      }
       const resumed = entry.status === "paused" ? store.resume(entry.id) ?? entry : entry;
       getTriggerSystem().add(resumed);
       if (stateLoopStartsImmediately(resumed)) onDynamicLoopActivated?.(resumed);
-      return textResult(`Workflow #${resumed.id} advanced: ${resumed.workflow?.lastTransition?.from ?? "?"} → ${resumed.workflow?.currentState ?? "?"}\n${formatWorkflowSummary(resumed, `Workflow #${resumed.id} — ${resumed.status}`)}`);
+      const transition = `${resumed.workflow?.lastTransition?.from ?? "?"} → ${resumed.workflow?.currentState ?? "?"}`;
+      return textResult(
+        `Workflow #${resumed.id} advanced: ${transition}\n${formatWorkflowSummary(resumed, `Workflow #${resumed.id} — ${resumed.status}`)}`,
+        workflowDisplayDetails({
+          entry: resumed,
+          action: "transition",
+          tone: "success",
+          summary: `Workflow #${resumed.id} advanced · ${transition}`,
+        }),
+      );
     },
   });
 }

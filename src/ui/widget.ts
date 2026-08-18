@@ -2,6 +2,7 @@ import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { MonitorManager } from "../monitor-manager.js";
 import type { LoopStore } from "../store.js";
 import type { LoopEntry } from "../types.js";
+import { workflowAttemptLabel, workflowLeaseLabel } from "./workflow-presentation.js";
 
 interface TaskSummary {
   count: number;
@@ -36,6 +37,8 @@ export class LoopWidget {
 
   private computeStatus(): string | undefined {
     const loops = this.store.list().filter(isStatusVisibleLoop);
+    const workflows = loops.filter((loop) => loop.workflow !== undefined);
+    const ordinaryLoops = loops.filter((loop) => loop.workflow === undefined);
     const monitors = this.monitorManager.list().filter((monitor) => monitor.status === "running");
     const taskSummary = this.taskSummaryProvider?.() ?? { count: 0 };
 
@@ -44,7 +47,8 @@ export class LoopWidget {
     }
 
     const parts: string[] = [];
-    if (loops.length > 0) parts.push(`↻ ${formatCount(loops.length, "loop")}`);
+    if (ordinaryLoops.length > 0) parts.push(`↻ ${formatCount(ordinaryLoops.length, "loop")}`);
+    if (workflows.length > 0) parts.push(`◆ ${formatCount(workflows.length, "workflow")}`);
     if (monitors.length > 0) parts.push(`▶ ${formatCount(monitors.length, "monitor")}`);
     if (taskSummary.count > 0) parts.push(`□ ${formatCount(taskSummary.count, "task")}`);
 
@@ -53,6 +57,10 @@ export class LoopWidget {
     if (monitors.length === 1 && monitor) {
       const activity = formatMonitorActivity(monitor);
       if (activity) line += ` | ${activity}`;
+    }
+    const workflow = workflows.length === 1 ? workflows[0] : undefined;
+    if (workflow?.workflow) {
+      line += ` | #${workflow.id} ${workflow.workflow.currentState} · attempt ${workflowAttemptLabel(workflow)} · ${workflowLeaseLabel(workflow)}`;
     }
     if (taskSummary.focusText) line += ` | ${taskSummary.focusText}`;
     return line;

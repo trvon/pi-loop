@@ -413,11 +413,17 @@ Use this before creating new loops to avoid duplicates, or to find IDs for LoopD
         }
       }
 
+      const workflowCount = loops.filter((entry) => entry.workflow !== undefined).length;
+      const ordinaryCount = loops.length - workflowCount;
+      const kinds = [
+        ordinaryCount > 0 ? `${ordinaryCount} loop${ordinaryCount === 1 ? "" : "s"}` : undefined,
+        workflowCount > 0 ? `${workflowCount} workflow${workflowCount === 1 ? "" : "s"}` : undefined,
+      ].filter((label): label is string => label !== undefined);
       return Promise.resolve(textResult(lines.join("\n"), {
         kind: "loop",
         action: "list",
         tone: "info",
-        summary: `${loops.length} loop${loops.length === 1 ? "" : "s"} · ${loops.filter((entry) => entry.status === "active").length} active`,
+        summary: `${kinds.join(" · ")} · ${loops.filter((entry) => entry.status === "active").length} active`,
         expanded: displayRows(lines),
       }));
     },

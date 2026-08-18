@@ -115,6 +115,47 @@ describe("registerLoopCommand", () => {
     expect(ui.select).toHaveBeenCalledWith("No loops configured", ["< Back"]);
   });
 
+  it("shows workflow state, ownership, and outcomes in the interactive detail view", async () => {
+    h.store.create({ type: "dynamic" }, "Ship the migration", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "investigate",
+        states: {
+          investigate: {
+            prompt: "Investigate evidence.",
+            task: { subject: "Investigate", description: "Collect evidence." },
+            on: { ready: "done", retry: "blocked" },
+            maxAttempts: 2,
+          },
+          blocked: { prompt: "Retry later.", maxAttempts: 1, on: { resume: "investigate" } },
+          done: { prompt: "Report.", terminal: "completed" },
+        },
+      },
+    });
+    h.store.get("1")!.workflow!.attemptsByState.blocked = 1;
+    let loopListVisits = 0;
+    let detailTitle = "";
+    const ui = {
+      select: vi.fn(async (title: string, options: string[]) => {
+        if (title === "Loop") return "View loops";
+        if (title === "Loops") return loopListVisits++ === 0 ? options[0] : undefined;
+        detailTitle = title;
+        return "< Back";
+      }),
+      input: vi.fn(async () => undefined),
+      notify: vi.fn(),
+    };
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(detailTitle).toContain("State: investigate · attempt 1/2");
+    expect(detailTitle).toContain("Revision: 1 · transition: 0");
+    expect(detailTitle).toContain("Lease: unowned");
+    expect(detailTitle).toContain("Outcomes: ready");
+    expect(detailTitle).toContain("Unavailable: retry (blocked exhausted 1)");
+  });
+
   it("no-args invocation with 'Create scheduled loop' prompts for prompt + interval and creates a loop", async () => {
     const ui = {
       select: vi.fn(async () => "Create scheduled loop"),

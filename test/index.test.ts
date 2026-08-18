@@ -26,8 +26,9 @@ function clearTestLoopStore(sessionId: string): void {
 }
 
 describe("workflow runtime wiring", () => {
-  beforeEach(() => clearTestLoopStore("workflow-session"));
-  afterEach(() => clearTestLoopStore("workflow-session"));
+  const sessionIds = ["workflow-cap-session", "workflow-task-session"];
+  beforeEach(() => sessionIds.forEach(clearTestLoopStore));
+  afterEach(() => sessionIds.forEach(clearTestLoopStore));
   it("pauses an immediately fired workflow state at its local fire cap", async () => {
     const { pi, toolMap, extensionHandlers } = createMockPi();
     extension(pi as any);
@@ -36,7 +37,7 @@ describe("workflow runtime wiring", () => {
     const ctx = {
       ui: { setStatus: vi.fn(), setWidget: vi.fn() },
       hasPendingMessages: () => false,
-      sessionManager: { getSessionId: () => "workflow-session" },
+      sessionManager: { getSessionId: () => "workflow-cap-session" },
     };
     for (const handler of extensionHandlers.get("turn_start") ?? []) {
       await handler(null, ctx);
@@ -61,7 +62,7 @@ describe("workflow runtime wiring", () => {
     expect(loops.content[0].text).toContain("[paused]");
   });
 
-  it("creates and completes external workflow tasks", async () => {
+  it("creates and completes task-bearing workflow work", async () => {
     const { pi, toolMap, extensionHandlers } = createMockPi({
       respondToTaskPing: true,
       respondToTaskCreate: () => "workflow-task",
@@ -73,7 +74,7 @@ describe("workflow runtime wiring", () => {
     const ctx = {
       ui: { setStatus: vi.fn(), setWidget: vi.fn() },
       hasPendingMessages: () => false,
-      sessionManager: { getSessionId: () => "workflow-session" },
+      sessionManager: { getSessionId: () => "workflow-task-session" },
     };
     for (const handler of extensionHandlers.get("turn_start") ?? []) {
       await handler(null, ctx);

@@ -6,6 +6,7 @@ import type {
 import { formatTrigger } from "../loop-format.js";
 import { isValidCronExpression, parseInterval } from "../loop-parse.js";
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
+import { formatWorkflowInspection } from "../ui/workflow-presentation.js";
 import { isTerminalWorkflowRun } from "../workflow-reducer.js";
 
 interface LoopStoreLike {
@@ -170,10 +171,10 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
         else if (entry.status === "paused" && !isTerminalWorkflowRun(entry.workflow)) actions.unshift("* Resume");
         actions.push("< Back");
 
-        const action = await ui.select(
-          `#${entry.id}: ${entry.prompt}\nTrigger: ${JSON.stringify(entry.trigger)}`,
-          actions,
-        );
+        const detail = entry.workflow
+          ? formatWorkflowInspection(entry)
+          : `#${entry.id}: ${entry.prompt}\nTrigger: ${JSON.stringify(entry.trigger)}`;
+        const action = await ui.select(detail, actions);
 
         if (action === "x Delete") {
           getTriggerSystem().remove(entry.id);
