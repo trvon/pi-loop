@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.6](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.5...pi-loop-v0.7.6) (2026-08-18)
+
+
+### Features
+
+* **ui:** unify Pi tool presentation ([#43](https://github.com/trvon/pi-loop/issues/43)) ([f61bcc8](https://github.com/trvon/pi-loop/commit/f61bcc8e57890c0581a5062f88938a9e792bcd99))
+
 ## [0.7.5](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.4...pi-loop-v0.7.5) (2026-08-17)
 
 
