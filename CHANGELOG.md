@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.7](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.6...pi-loop-v0.7.7) (2026-08-21)
+
+
+### Bug Fixes
+
+* **workflow:** continue across ordinary phase gaps ([#49](https://github.com/trvon/pi-loop/issues/49)) ([08203c4](https://github.com/trvon/pi-loop/commit/08203c446b112278146d901c5ae538bab79d6b99))
+
 ## [0.7.6](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.5...pi-loop-v0.7.6) (2026-08-18)
 
 
