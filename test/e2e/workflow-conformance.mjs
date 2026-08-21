@@ -113,6 +113,27 @@ const SCENARIOS = {
       return definition;
     },
   },
+  continuation: {
+    prompt: [
+      "Run a live continuation exercise for the durable workflow tools installed in this session.",
+      "Goal: model a three-phase task pipeline — gather, build, verify — and run it all the way to terminal completion in one continuous effort.",
+      "Embed each phase's work in that phase's state; do not create separate tasks.",
+      "After you transition out of a phase, the next phase's work is entered unowned. Claim it yourself, do the work, and transition again — do not stop or wait for another message between phases.",
+      "Use only the workflow tools this session provides; do not create standalone tasks, loops, or monitors.",
+      "When a workflow tool reports terminal completion, reply exactly LIVE_WORKFLOW_DONE and nothing else.",
+    ].join("\n"),
+    validateDefinition(args) {
+      const definition = parseDefinition(args);
+      const states = Object.values(definition.states ?? {});
+      if (states.filter((state) => state?.task?.subject).length !== 3) {
+        throw new Error("definition must embed exactly three task phases");
+      }
+      if (states.filter((state) => state?.terminal).length !== 1) {
+        throw new Error("definition must declare exactly one terminal state");
+      }
+      return definition;
+    },
+  },
 };
 
 const scenarioName = process.env.PI_LOOP_LIVE_SCENARIO ?? "retry";
@@ -151,9 +172,14 @@ function validate() {
   validateDefinition(successfulCreates[0].args);
   if (taskClaims.length !== 0) throw new Error(`expected zero TaskClaim calls, got ${taskClaims.length}`);
   if (workflowClaims.length === 0) throw new Error("expected WorkflowClaim after entering unowned task work");
-  const expectedTransitions = scenarioName === "evolution" ? 3 : 2;
+  const expectedTransitions = scenarioName === "evolution" ? 3 : scenarioName === "continuation" ? 3 : 2;
   if (transitions.length < expectedTransitions) {
     throw new Error(`expected at least ${expectedTransitions} WorkflowTransition calls, got ${transitions.length}`);
+  }
+  if (scenarioName === "continuation") {
+    if (workflowClaims.length < 2) {
+      throw new Error(`expected at least two self-claims across destination phases, got ${workflowClaims.length}`);
+    }
   }
   if (scenarioName === "evolution" && revisions.length !== 1) {
     throw new Error(`expected exactly one WorkflowRevise call, got ${revisions.length}`);
