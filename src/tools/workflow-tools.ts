@@ -122,6 +122,11 @@ function stateLoopStartsImmediately(entry: LoopEntry): boolean {
   return Boolean(entry.workflow && getActiveWorkflowStateLoop(entry.workflow)?.startImmediately);
 }
 
+/** Ordinary phases wake immediately; cadenced states only when startImmediately is set. */
+function stateShouldWakeImmediately(entry: LoopEntry): boolean {
+  return !entry.workflow || !getActiveWorkflowStateLoop(entry.workflow) || stateLoopStartsImmediately(entry);
+}
+
 function formatWorkflowDefinitionError(error: string | undefined): string {
   return `Workflow definition rejected: ${error ?? "unknown validation error"}\nRequired fields: version: 1, initialState, and states.\nExample definition:\n${WORKFLOW_DEFINITION_EXAMPLE}\nNext: correct the JSON and call WorkflowCreate again.`;
 }
@@ -153,7 +158,11 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
     return `${message}\nNeeds attention: this state declares no outcomes ("on"). Add on: {outcome: targetState} to advance it.`;
   }
   if (availability.available.length === 0) return `${message}\nBlocked: all declared outcomes are unavailable.`;
-  return `${message}\nChoose outcome: ${availability.available.join(", ")}\nNext: WorkflowTransition({ id: "${entry.id}", outcome: "${availability.available[0]}", evidence: "..." })`;
+  const outcomes = availability.available.join(", ");
+  if (execution && !execution.lease) {
+    return `${message}\nChoose outcome: ${outcomes}\nNext: WorkflowClaim({ id: "${entry.id}" }), then complete the work and call WorkflowTransition({ id: "${entry.id}", outcome: "${availability.available[0]}", evidence: "..." })`;
+  }
+  return `${message}\nChoose outcome: ${outcomes}\nNext: WorkflowTransition({ id: "${entry.id}", outcome: "${availability.available[0]}", evidence: "..." })`;
 }
 
 export function registerWorkflowTools(options: WorkflowToolsOptions): void {
@@ -199,7 +208,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       });
       getTriggerSystem().add(entry);
       updateWidget();
-      if (!entry.workflow || !getActiveWorkflowStateLoop(entry.workflow) || stateLoopStartsImmediately(entry)) onDynamicLoopActivated?.(entry);
+      if (stateShouldWakeImmediately(entry)) onDynamicLoopActivated?.(entry);
       const wake = entry.workflow && getActiveWorkflowStateLoop(entry.workflow)
         ? "scheduled from the active state cadence."
         : "the state instruction will be delivered when the agent becomes idle.";
@@ -403,7 +412,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       }
       const resumed = entry.status === "paused" ? store.resume(entry.id) ?? entry : entry;
       getTriggerSystem().add(resumed);
-      if (stateLoopStartsImmediately(resumed)) onDynamicLoopActivated?.(resumed);
+      if (stateShouldWakeImmediately(resumed)) onDynamicLoopActivated?.(resumed);
       const transition = `${resumed.workflow?.lastTransition?.from ?? "?"} → ${resumed.workflow?.currentState ?? "?"}`;
       return textResult(
         `Workflow #${resumed.id} advanced: ${transition}\n${formatWorkflowSummary(resumed, `Workflow #${resumed.id} — ${resumed.status}`)}`,
