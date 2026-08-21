@@ -624,6 +624,49 @@ describe("Workflow tools", () => {
     expect(message.indexOf("to_bb")).toBeLessThan(message.indexOf("to_aa"));
   });
 
+  it("queues the next wake after transitioning into an ordinary no-loop phase", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    h.onDynamicLoopActivated.mockClear();
+    await h.text("WorkflowTransition", { id: "1", outcome: "found", evidence: "Reproduced locally." });
+    expect(h.onDynamicLoopActivated).toHaveBeenCalledTimes(1);
+    expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(
+      expect.objectContaining({ workflow: expect.objectContaining({ currentState: "fix" }) }),
+    );
+  });
+
+  it("keeps scheduled non-immediate cadence destinations dormant until their schedule", async () => {
+    const cadencedDefinition = JSON.stringify({
+      version: 1,
+      initialState: "investigate",
+      states: {
+        investigate: {
+          prompt: "Find the cause.",
+          task: { subject: "Investigate regression", description: "Find the root cause." },
+          on: { found: "fix" },
+        },
+        fix: {
+          prompt: "Fix it.",
+          task: { subject: "Fix regression", description: "Apply the fix." },
+          loop: { schedule: "0 0 * * *", maxFires: 2, startImmediately: false },
+          on: { passing: "done" },
+        },
+        done: { prompt: "Report completion.", terminal: "completed" },
+      },
+    });
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: cadencedDefinition });
+    h.onDynamicLoopActivated.mockClear();
+    await h.text("WorkflowTransition", { id: "1", outcome: "found", evidence: "Reproduced locally." });
+    expect(h.onDynamicLoopActivated).not.toHaveBeenCalled();
+  });
+
+  it("directs WorkflowClaim before work and transition when the destination lease is unowned", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    const out = await h.text("WorkflowTransition", { id: "1", outcome: "found", evidence: "Reproduced locally." });
+    expect(out).toContain('Next: WorkflowClaim({ id: "1" })');
+    expect(out).toContain("then complete the work and call WorkflowTransition");
+    expect(out).not.toMatch(/^Next: WorkflowTransition\(/m);
+  });
+
   it("rejects an undeclared outcome without changing the workflow", async () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     const out = await h.text("WorkflowTransition", { id: "1", outcome: "ship_it" });
