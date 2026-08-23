@@ -48,10 +48,18 @@ function formatRemaining(ms: number): string {
 }
 
 function formatActivity(monitor: MonitorEntry): string | undefined {
-  const lastActivityAt = monitor.lastOutputAt ?? monitor.startedAt;
-  const silence = Date.now() - lastActivityAt;
+  const now = Date.now();
+  const lastActivityAt = Math.max(
+    monitor.startedAt,
+    monitor.lastActivityAt ?? 0,
+    monitor.lastOutputAt ?? 0,
+    monitor.progress?.updatedAt ?? 0,
+  );
+  const silence = now - lastActivityAt;
   if (silence >= 60000) return `quiet ${formatRemaining(silence)}`;
-  if (monitor.outputRatePerMinute !== undefined) return `${monitor.outputRatePerMinute} lines/min`;
+  if (monitor.lastOutputAt !== undefined && now - monitor.lastOutputAt < 60000 && monitor.outputRatePerMinute !== undefined) {
+    return `${monitor.outputRatePerMinute} lines/min`;
+  }
   return undefined;
 }
 
@@ -68,10 +76,10 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
 
   pi.registerTool({ name: "MonitorCreate", label: "MonitorCreate",
   renderCall: renderToolCall("Monitor", (args) => `start · ${String(toolArg(args, "description") ?? toolArg(args, "command") ?? "background command").slice(0, 56)}`),
-  renderResult: renderToolResult, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nTimed monitors always wake the agent if they time out. Pass onDone to create a completion wake for success, failure, or timeout. Pass workflowId to pause its workflow until a terminal result. Commands may emit JSONL progress as {"progress":{...}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone when the agent must resume automatically after success or failure; timed monitors already alert on timeout.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
+  renderResult: renderToolResult, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nThe timeout measures inactivity, not total runtime: output or structured progress renews it. Stale monitors always wake the agent. Pass onDone for a completion wake, or workflowId to pause a workflow until terminal. Commands may emit JSONL progress as {"progress":{...}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone when the agent must resume automatically after success or failure; stale monitors already alert on timeout.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
     command: Type.String({ description: "Shell command to run in background" }),
     description: Type.Optional(Type.String({ description: "Human-readable description" })),
-    timeout: Type.Optional(Type.Number({ description: "Auto-stop after N ms (default: 300000, 0 = no timeout)", default: 300000 })),
+    timeout: Type.Optional(Type.Number({ description: "Stop after N ms without output or progress (default: 300000, 0 = disabled)", default: 300000, minimum: 0 })),
     onDone: Type.Optional(Type.String({ description: "Prompt to run when the monitor completes. Auto-creates a one-shot completion wake — no need for a separate LoopCreate." })),
     workflowId: Type.Optional(Type.String({ description: "Active workflow loop to pause until this monitor reaches a terminal status" })),
   }),
@@ -134,7 +142,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
       const timeoutTrigger: Trigger = { type: "event", source: "monitor:timeout", filter: JSON.stringify({ monitorId: entry.id }) };
       const timeoutLoop = store.create(
         timeoutTrigger,
-        `Monitor #${entry.id} timed out. Inspect MonitorList, report the failure, and decide whether to retry with a smaller bounded command.`,
+        `Monitor #${entry.id} became stale after ${entry.timeout}ms without output or progress. Inspect MonitorList, report the failure, and decide whether to retry or recover the command.`,
         { recurring: false },
       );
       handleMonitorDoneLoop(timeoutLoop, entry.id);
@@ -144,7 +152,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     return Promise.resolve(textResult(
       `Monitor #${entry.id} started: ${entry.command.slice(0, 60)}\n` +
       `Progress: MonitorList shows the live output tail; monitor:output is rate-limited (monitorId: ${entry.id})\n` +
-      `Timeout: ${params.timeout ? `${params.timeout / 1000}s` : "none"}${workflowMsg}${onDoneMsg}`,
+      `Inactivity timeout: ${entry.timeout > 0 ? `${entry.timeout / 1000}s` : "none"}${workflowMsg}${onDoneMsg}`,
       {
         kind: "monitor",
         action: "create",
@@ -152,7 +160,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
         summary: `Monitor #${entry.id} running · ${params.description ?? entry.command.slice(0, 48)}`,
         expanded: [
           `Command: ${entry.command}`,
-          `Timeout: ${params.timeout ? `${params.timeout / 1000}s` : "none"}`,
+          `Inactivity timeout: ${entry.timeout > 0 ? `${entry.timeout / 1000}s` : "none"}`,
           workflow ? `Workflow #${workflow.id}: waiting for terminal monitor outcome` : params.onDone ? "Completion wake: enabled" : entry.timeout > 0 ? "Timeout alert: enabled" : "Completion wake: off",
         ],
       },
@@ -211,7 +219,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     label: "MonitorUpdate",
     renderCall: renderToolCall("Monitor", (args) => `update · #${String(toolArg(args, "monitorId") ?? "?")}`),
     renderResult: renderToolResult,
-    description: "Set trustworthy structured progress for a running monitor that cannot emit JSONL. Pass monitorId and current/total or message. Do not use it for raw output or polling; use MonitorList.",
+    description: "Set trustworthy structured progress for a running monitor that cannot emit JSONL. This renews its inactivity timeout. Pass monitorId and current/total or message. Do not use it for raw output or polling; use MonitorList.",
     parameters: Type.Object({
       monitorId: Type.String({ description: "Monitor ID to update" }),
       current: Type.Optional(Type.Number({ description: "Completed work units" })),

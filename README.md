@@ -31,7 +31,7 @@ LoopDelete id="1"
 
 `/loop event tasks:created ...` is treated as an explicit task-backlog worker: it adopts existing unfinished tasks, coalesces task-creation bursts, and re-wakes after each agent turn until the backlog drains. Tool callers opt into the same behavior with `taskBacklog=true`. Worker wakes are action-first: `TaskList`, claim/resume, concrete same-turn work, validation, then evidence—not a state report or promise to start on a later wake.
 
-Run work in the background and wake the agent when it succeeds, fails, or times out:
+Run work in the background and wake the agent when it succeeds, fails, or becomes inactive:
 
 ```text
 MonitorCreate command="python train.py" onDone="Analyze results and report best loss"
@@ -43,7 +43,7 @@ MonitorStop monitorId="1"
 
 - Cron, event, hybrid, dynamic goal, and opt-in workflow loops
 - Idle-safe agent re-wakes with dynamic-loop restart/session-switch recovery
-- Background command monitoring with buffered output, `onDone` wakes, and timeout alerts
+- Background command monitoring with buffered output, `onDone` wakes, and renewable inactivity alerts
 - Optional `pi-tasks` integration and a native task fallback
 - Session-isolated persistence and a compact TUI status line
 

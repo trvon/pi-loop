@@ -10,6 +10,7 @@ function createMockMonitorManager() {
     status: string;
     startedAt: number;
     outputLines: number;
+    lastActivityAt?: number;
     lastOutputAt?: number;
     outputRatePerMinute?: number;
     progress?: { current?: number; total?: number; message?: string; source?: string; updatedAt?: number };
@@ -106,6 +107,36 @@ describe("LoopWidget status rendering", () => {
 
     widget.update();
     expect(latestStatusCall()).toEqual(["loops", "▶ 1 monitor | 25% · quiet 2m"]);
+  });
+
+  it("treats recent structured progress as monitor activity", () => {
+    monitorManager._add({
+      id: "1",
+      command: "python train.py",
+      status: "running",
+      startedAt: Date.now() - 120000,
+      lastOutputAt: Date.now() - 120000,
+      outputLines: 42,
+      progress: { message: "still working", source: "agent", updatedAt: Date.now() },
+    });
+
+    widget.update();
+    expect(latestStatusCall()).toEqual(["loops", "▶ 1 monitor | still working"]);
+  });
+
+  it("uses authoritative activity for partial output", () => {
+    monitorManager._add({
+      id: "1",
+      command: "python train.py",
+      status: "running",
+      startedAt: Date.now() - 120000,
+      lastOutputAt: Date.now() - 120000,
+      lastActivityAt: Date.now(),
+      outputLines: 42,
+    });
+
+    widget.update();
+    expect(latestStatusCall()).toEqual(["loops", "▶ 1 monitor"]);
   });
 
   it("shows observed log velocity when a monitor has no structured progress", () => {

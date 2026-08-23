@@ -241,6 +241,7 @@ export interface MonitorEntry {
   stopReason?: "manual" | "timeout";
   outputLines: number;
   outputBuffer: string[];
+  lastActivityAt?: number;
   lastOutputAt?: number;
   outputRatePerMinute?: number;
   progress?: MonitorProgress;
@@ -272,6 +273,8 @@ export interface MonitorProcess {
   completionCallbacks: Array<(monitor: MonitorEntry) => void>;
   terminalCallbacks: Array<(monitor: MonitorEntry) => void>;
   terminalReady: boolean;
+  lastActivityAt: number;
+  lastActivityMonotonic: number;
   lastOutputEventAt: number;
   lastProgressChangeAt: number;
   progressChangeTimer?: ReturnType<typeof setTimeout>;

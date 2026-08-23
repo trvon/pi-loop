@@ -81,16 +81,24 @@ function formatMonitorProgress(monitor: { progress?: { current?: number; total?:
 }
 
 function formatMonitorActivity(monitor: {
-  progress?: { current?: number; total?: number; message?: string };
+  progress?: { current?: number; total?: number; message?: string; updatedAt?: number };
   startedAt: number;
+  lastActivityAt?: number;
   lastOutputAt?: number;
   outputRatePerMinute?: number;
 }): string | undefined {
   const progress = monitor.progress ? formatMonitorProgress(monitor) : undefined;
-  const silence = Date.now() - (monitor.lastOutputAt ?? monitor.startedAt);
+  const now = Date.now();
+  const lastActivityAt = Math.max(
+    monitor.startedAt,
+    monitor.lastActivityAt ?? 0,
+    monitor.lastOutputAt ?? 0,
+    monitor.progress?.updatedAt ?? 0,
+  );
+  const silence = now - lastActivityAt;
   const activity = silence >= 60000
     ? `quiet ${Math.round(silence / 60000)}m`
-    : monitor.outputRatePerMinute !== undefined
+    : monitor.lastOutputAt !== undefined && now - monitor.lastOutputAt < 60000 && monitor.outputRatePerMinute !== undefined
       ? `${monitor.outputRatePerMinute} lines/min`
       : undefined;
   return [progress, activity].filter(Boolean).join(" · ") || undefined;

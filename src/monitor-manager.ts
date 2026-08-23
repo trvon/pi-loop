@@ -21,6 +21,7 @@ const OUTPUT_EVENT_INTERVAL_MS = 1000;
 const MAX_OUTPUT_LINE_LENGTH = 4096;
 const OUTPUT_RATE_WINDOW_MS = 60000;
 export const MONITOR_RETENTION_MS = 15 * 60 * 1000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export class MonitorManager {
   private processes = new Map<string, MonitorProcess>();
@@ -115,6 +116,31 @@ export class MonitorManager {
     bp.deadlineTimer = undefined;
   }
 
+  private markActivity(bp: MonitorProcess): void {
+    if (this.shuttingDown || bp.entry.status !== "running") return;
+    bp.lastActivityAt = Date.now();
+    bp.lastActivityMonotonic = globalThis.performance.now();
+  }
+
+  private scheduleInactivityCheck(id: string, bp: MonitorProcess, delay = bp.entry.timeout): void {
+    if (bp.deadlineTimer || this.shuttingDown || bp.entry.status !== "running" || bp.entry.timeout <= 0) return;
+
+    const deadlineTimer = setTimeout(() => {
+      if (bp.deadlineTimer !== deadlineTimer) return;
+      bp.deadlineTimer = undefined;
+      if (this.shuttingDown || bp.entry.status !== "running") return;
+
+      const remaining = bp.entry.timeout - (globalThis.performance.now() - bp.lastActivityMonotonic);
+      if (remaining > 0) {
+        this.scheduleInactivityCheck(id, bp, remaining);
+        return;
+      }
+      void this.stop(id, "timeout");
+    }, Math.min(Math.max(1, delay), MAX_TIMER_DELAY_MS));
+    deadlineTimer.unref?.();
+    bp.deadlineTimer = deadlineTimer;
+  }
+
   private signalProcessTree(bp: MonitorProcess, signal: NodeJS.Signals): void {
     let fellBack = false;
     const fallback = () => {
@@ -167,6 +193,9 @@ export class MonitorManager {
   }
 
   create(command: string, description?: string, timeout = 300000): MonitorEntry {
+    if (!Number.isFinite(timeout) || timeout < 0) {
+      throw new Error("Monitor timeout must be a finite nonnegative number");
+    }
     const now = Date.now();
     const result = reduceMonitorState(this.toReducerState(), {
       type: "MONITOR_CREATED",
@@ -200,6 +229,8 @@ export class MonitorManager {
       completionCallbacks: [],
       terminalCallbacks: [],
       terminalReady: false,
+      lastActivityAt: now,
+      lastActivityMonotonic: globalThis.performance.now(),
       lastOutputEventAt: 0,
       lastProgressChangeAt: 0,
       pendingOutputLines: 0,
@@ -215,8 +246,8 @@ export class MonitorManager {
 
     const finish = (code: number | null, status: "completed" | "error") => {
       if (this.shuttingDown) return;
-      this.clearDeadline(bp);
       this.flushOutput(id, bp);
+      this.clearDeadline(bp);
       this.emitOutputProgress(id, bp);
       this.applyReducerEvent({
         type: status === "completed" ? "MONITOR_COMPLETED" : "MONITOR_ERRORED",
@@ -259,8 +290,8 @@ export class MonitorManager {
 
     child.on("error", (err) => {
       if (!this.shuttingDown && bp.entry.status === "running") {
-        this.clearDeadline(bp);
         this.flushOutput(id, bp);
+        this.clearDeadline(bp);
         this.emitOutputProgress(id, bp);
         this.applyReducerEvent({
           type: "MONITOR_ERRORED",
@@ -293,15 +324,7 @@ export class MonitorManager {
       }
     });
 
-    if (timeout > 0) {
-      const deadlineTimer = setTimeout(() => {
-        if (!this.shuttingDown && bp.entry.status === "running") {
-          void this.stop(id, "timeout");
-        }
-      }, timeout);
-      deadlineTimer.unref?.();
-      bp.deadlineTimer = deadlineTimer;
-    }
+    this.scheduleInactivityCheck(id, bp);
 
     this.processes.set(id, bp);
     this.emit("monitor:started", {
@@ -321,7 +344,7 @@ export class MonitorManager {
 
   list(): MonitorEntry[] {
     return Array.from(this.processes.values())
-      .map(bp => bp.entry)
+      .map(bp => ({ ...bp.entry, lastActivityAt: bp.lastActivityAt }))
       .sort((a, b) => Number(a.id) - Number(b.id));
   }
 
@@ -378,7 +401,7 @@ export class MonitorManager {
     if (reason === "timeout") {
       this.emit("monitor:error", {
         monitorId: id,
-        error: `Timed out after ${bp.entry.timeout}ms`,
+        error: `No monitor activity for ${bp.entry.timeout}ms`,
         outputLines: bp.entry.outputLines,
       });
       for (const callback of bp.completionCallbacks) callback(bp.entry);
@@ -451,6 +474,7 @@ export class MonitorManager {
 
   private handleOutput(id: string, bp: MonitorProcess, stream: "stdout" | "stderr", data: Buffer): void {
     if (this.shuttingDown) return;
+    if (data.length > 0) this.markActivity(bp);
     const decoder = stream === "stdout" ? bp.stdoutDecoder : bp.stderrDecoder;
     const remainderKey = stream === "stdout" ? "stdoutRemainder" : "stderrRemainder";
     const records = `${bp[remainderKey]}${decoder.write(data)}`.split("\n");
@@ -527,7 +551,10 @@ export class MonitorManager {
       payload: { id, progress },
     });
     const bp = this.processes.get(id);
-    if (bp) this.scheduleProgressChange(bp);
+    if (bp) {
+      this.markActivity(bp);
+      this.scheduleProgressChange(bp);
+    }
   }
 
   private scheduleProgressChange(bp: MonitorProcess): void {
