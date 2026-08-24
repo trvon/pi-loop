@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.8](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.7...pi-loop-v0.7.8) (2026-08-24)
+
+
+### Bug Fixes
+
+* **monitor:** renew timeout on activity ([#51](https://github.com/trvon/pi-loop/issues/51)) ([8e0c6c5](https://github.com/trvon/pi-loop/commit/8e0c6c598953416dd401f63c43c436e82675dc77))
+
 ## [0.7.7](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.6...pi-loop-v0.7.7) (2026-08-21)
 
 
