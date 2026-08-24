@@ -2226,7 +2226,7 @@ describe("monitor tool wrappers", () => {
 
     expect(sentCustomMessages).toHaveLength(1);
     expect((sentCustomMessages[0].message as { content: string }).content).toContain(
-      "Monitor #1 timed out",
+      "Monitor #1 became stale",
     );
   }, 10000);
 

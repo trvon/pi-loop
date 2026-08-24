@@ -637,13 +637,87 @@ describe("MonitorManager", () => {
     expect(await manager.stop(entry.id)).toBe(false);
   });
 
-  it("auto-stops monitors on timeout", async () => {
+  it("auto-stops monitors after the inactivity timeout", async () => {
     vi.useFakeTimers();
     manager.create("sleep 60", "timeout test", 500);
     expect(manager.get("1")!.status).toBe("running");
 
     vi.advanceTimersByTime(600);
     expect(manager.get("1")!).toMatchObject({ status: "stopped", stopReason: "timeout" });
+    vi.useRealTimers();
+  });
+
+  it("renews the inactivity timeout when the process emits partial output", async () => {
+    vi.useFakeTimers();
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("active command", "output heartbeat", 500);
+    const initialDeadline = manager.getProcess(entry.id)?.deadlineTimer;
+
+    await vi.advanceTimersByTimeAsync(400);
+    child.stderr?.emit("data", Buffer.from("still working"));
+    expect(manager.getProcess(entry.id)?.deadlineTimer).toBe(initialDeadline);
+    expect(manager.list()[0]?.lastActivityAt).toBe(Date.now());
+    await vi.advanceTimersByTimeAsync(400);
+    expect(manager.get(entry.id)?.status).toBe("running");
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(manager.get(entry.id)).toMatchObject({ status: "stopped", stopReason: "timeout" });
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ["forward", 24 * 60 * 60 * 1000],
+    ["backward", -24 * 60 * 60 * 1000],
+  ])("uses monotonic inactivity time across a %s wall-clock jump", async (_direction, jump) => {
+    vi.useFakeTimers();
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("active command", "clock-safe timeout", 500);
+
+    await vi.advanceTimersByTimeAsync(200);
+    vi.setSystemTime(Date.now() + jump);
+    await vi.advanceTimersByTimeAsync(299);
+    expect(manager.get(entry.id)?.status).toBe("running");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(manager.get(entry.id)).toMatchObject({ status: "stopped", stopReason: "timeout" });
+    vi.useRealTimers();
+  });
+
+  it("chunks inactivity checks above Node's maximum timer delay", () => {
+    const child = createMockChildProcess({ exitCode: null });
+    const timeoutSpy = vi.spyOn(global, "setTimeout");
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+
+    manager.create("very long command", "large inactivity timeout", 2_147_484_647);
+
+    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 2_147_483_647);
+    child.emit("close", 0);
+    timeoutSpy.mockRestore();
+  });
+
+  it("rejects invalid inactivity timeouts before spawning", () => {
+    const spawn = vi.fn(createSequentialSpawn(createMockChildProcess({ exitCode: null })));
+    manager = new MonitorManager(pi, spawn);
+
+    expect(() => manager.create("bad timeout", undefined, -1)).toThrow(/timeout/i);
+    expect(() => manager.create("bad timeout", undefined, Number.POSITIVE_INFINITY)).toThrow(/timeout/i);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("renews the inactivity timeout when structured progress is updated", async () => {
+    vi.useFakeTimers();
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("active command", "progress heartbeat", 500);
+
+    await vi.advanceTimersByTimeAsync(400);
+    manager.updateProgress(entry.id, { message: "still working" });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(manager.get(entry.id)?.status).toBe("running");
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(manager.get(entry.id)).toMatchObject({ status: "stopped", stopReason: "timeout" });
     vi.useRealTimers();
   });
 
@@ -665,7 +739,7 @@ describe("MonitorManager", () => {
     expect(callback).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([{
       monitorId: entry.id,
-      error: "Timed out after 500ms",
+      error: "No monitor activity for 500ms",
       outputLines: 0,
     }]);
     vi.useRealTimers();
@@ -695,7 +769,7 @@ describe("MonitorManager", () => {
       createSequentialSpawn(createMockChildProcess({ exitCode: 0 })),
     );
     const entry = manager.create("echo done", "retention test");
-    await vi.runAllTicks();
+    vi.runAllTicks();
 
     await vi.advanceTimersByTimeAsync(15 * 60 * 1000 - 1);
     expect(manager.get(entry.id)?.status).toBe("completed");

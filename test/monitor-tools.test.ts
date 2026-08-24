@@ -60,14 +60,23 @@ describe("MonitorCreate", () => {
     const out = await h.text("MonitorCreate", { command: "npm test" });
     expect(out).toContain("Monitor #1 started");
     expect(out).toContain("monitor:output is rate-limited");
+    expect(out).toContain("Inactivity timeout: 300s");
     expect(h.manager.create).toHaveBeenCalledWith("npm test", undefined, undefined);
     expect(h.handleMonitorDoneLoop).toHaveBeenCalledWith(expect.objectContaining({
-      prompt: expect.stringContaining("Monitor #1 timed out"),
+      prompt: expect.stringContaining("Monitor #1 became stale"),
       trigger: expect.objectContaining({ type: "event", source: "monitor:timeout" }),
     }), "1");
     expect(h.toolMap.get("MonitorCreate")?.renderShell).not.toBe("self");
     expect(h.toolMap.get("MonitorCreate")?.renderCall).toBeTypeOf("function");
     expect(h.toolMap.get("MonitorCreate")?.renderResult).toBeTypeOf("function");
+  });
+
+  it("rejects negative inactivity timeouts", () => {
+    const h = setup();
+    const schema = h.toolMap.get("MonitorCreate")?.parameters;
+
+    expect(Check(schema as any, { command: "npm test", timeout: -1 })).toBe(false);
+    expect(Check(schema as any, { command: "npm test", timeout: 0 })).toBe(true);
   });
 
   it("renders monitor lifecycle results as visible compact rows", async () => {
@@ -238,6 +247,7 @@ describe("MonitorList", () => {
 
   it("shows quiet time without claiming the monitor has failed", async () => {
     const h = setup({ list: () => [makeMonitor({
+      startedAt: Date.now() - 120000,
       lastOutputAt: Date.now() - 120000,
       outputRatePerMinute: 24,
     })] });
@@ -249,6 +259,24 @@ describe("MonitorList", () => {
       startedAt: Date.now() - 120000,
     })] });
     expect(await h.text("MonitorList", {})).toContain("quiet 2m");
+  });
+
+  it("treats recent structured progress as monitor activity", async () => {
+    const h = setup({ list: () => [makeMonitor({
+      startedAt: Date.now() - 120000,
+      lastOutputAt: Date.now() - 120000,
+      progress: { message: "still working", source: "agent", updatedAt: Date.now() },
+    })] });
+    expect(await h.text("MonitorList", {})).not.toContain("quiet");
+  });
+
+  it("uses authoritative activity for partial output", async () => {
+    const h = setup({ list: () => [makeMonitor({
+      startedAt: Date.now() - 120000,
+      lastOutputAt: Date.now() - 120000,
+      lastActivityAt: Date.now(),
+    })] });
+    expect(await h.text("MonitorList", {})).not.toContain("quiet");
   });
 });
 
