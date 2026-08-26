@@ -69,6 +69,22 @@ test/injection.test.ts
 test/property/workflow.property.test.ts
 ```
 
+## Subagent orchestration coverage
+
+The orchestration suites prove finite-batch bounds, capacity reservation before spawn, reducer/store CAS immutability, lifecycle identity, early-start replay, bounded settlement before consume, retry/uncertainty policy, durable wake acknowledgement, session teardown, cancellation, scheduler exclusion, tool scope gating, compact presentation, and extension wiring.
+
+Primary files:
+
+```text
+test/orchestration-reducer.test.ts
+test/orchestration-store.test.ts
+test/orchestration-runtime.test.ts
+test/orchestration-tools.test.ts
+test/property/orchestration.property.test.ts
+```
+
+Deterministic integration tests own timeout ambiguity and exact lifecycle ordering because upstream lacks status/list and idempotent dispatch keys. The opt-in live scenario additionally validates the supported protocol-v2 spawn, settlement, consume, and active-cancellation path against a real provider.
+
 ## Task-backlog coverage
 
 A backlog wake must call `TaskList`, inspect `TaskGet`, claim or resume one task, perform work, run observable validation, and settle the task in the same turn. Tests reject status-only progress, missing claims, reasoning-only validation, and deferral to a later wake.
@@ -103,6 +119,16 @@ Backlog scenario:
 PI_LOOP_LIVE_MODEL="openai-codex/gpt-5.6-sol:minimal" npm run test:e2e:backlog
 ```
 
+Subagent orchestration scenario:
+
+```bash
+PI_LOOP_LIVE_MODEL="openai-codex/gpt-5.6-sol:minimal" \
+PI_LOOP_LIVE_SUBAGENTS_EXTENSION="$HOME/.pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/index.ts" \
+npm run test:e2e:orchestration
+```
+
+It runs in a temporary session-scoped project, proves two isolated workers settle with durable consumed evidence, then creates and cancels an active worker. The extension path defaults to the standard user package location when `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` is omitted.
+
 It requires this first-run sequence:
 
 ```text
@@ -113,7 +139,7 @@ Without `PI_LOOP_LIVE_MODEL`, live scripts exit with `SKIP`. Reports are bounded
 
 ## Property and fuzz replay
 
-The fixed-seed property suite covers cron boundaries, reducer determinism, workflow transition/revision immutability, attempt limits, and file-backed task replay.
+The fixed-seed property suite covers cron boundaries, reducer determinism, workflow transition/revision immutability, orchestration CAS/bounds/uncertainty, attempt limits, and file-backed task replay.
 
 Override campaign size:
 

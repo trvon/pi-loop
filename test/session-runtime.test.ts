@@ -34,6 +34,9 @@ function setup(overrides: Partial<SessionRuntimeOptions> = {}) {
     adoptTaskBacklogLoops: vi.fn(async () => 0),
     releaseTaskBacklogWakes: vi.fn(),
     clearWorkflowMonitorWaits: vi.fn(),
+    recoverOrchestrations: vi.fn(async () => {}),
+    pumpOrchestrations: vi.fn(async () => {}),
+    shutdownOrchestrations: vi.fn(async () => {}),
     shutdownMonitors: vi.fn(async () => {}),
     hasPendingTasks: vi.fn(async () => 0),
     cleanDoneTasks: vi.fn(async () => {}),
@@ -77,10 +80,11 @@ describe("session-runtime heartbeat lifecycle", () => {
     const { drive } = setup({
       migrateTaskBacklogLoops,
       clearWorkflowMonitorWaits: vi.fn(() => calls.push("clear monitor waits")),
+      recoverOrchestrations: vi.fn(async () => { calls.push("recover orchestrations"); }),
       getStore: () => ({
         list: () => [{ id: "8", status: "active" }],
-        clearExpired: vi.fn(),
-        expireEventLoops: vi.fn(),
+        clearExpired: vi.fn(() => { calls.push("clear expired"); }),
+        expireEventLoops: vi.fn(() => { calls.push("expire events"); }),
       }) as any,
       getTriggerSystem: () => triggerSystem,
     });
@@ -88,7 +92,7 @@ describe("session-runtime heartbeat lifecycle", () => {
     await drive("session_start");
 
     expect(migrateTaskBacklogLoops).toHaveBeenCalledTimes(1);
-    expect(calls).toEqual(["migrate", "clear monitor waits", "start"]);
+    expect(calls).toEqual(["migrate", "clear monitor waits", "clear expired", "expire events", "recover orchestrations", "start"]);
   });
 
   it("repaints the widget on session_start after the harness resets extension UI", async () => {
@@ -112,15 +116,18 @@ describe("session-runtime heartbeat lifecycle", () => {
     expect(setSessionId.mock.calls).toEqual([[undefined], ["test-session"]]);
   });
 
-  it("repaints the widget on heartbeat to recover an externally cleared status", async () => {
+  it("repaints the widget and reconciles orchestration on the existing heartbeat", async () => {
     vi.useFakeTimers();
     const widget = { setUICtx: vi.fn(), update: vi.fn() };
-    const { drive } = setup({ widget });
+    const pumpOrchestrations = vi.fn(async () => {});
+    const { drive } = setup({ widget, pumpOrchestrations });
 
     await drive("turn_start");
     widget.update.mockClear();
+    pumpOrchestrations.mockClear();
     await vi.advanceTimersByTimeAsync(30000);
 
+    expect(pumpOrchestrations).toHaveBeenCalledOnce();
     expect(widget.update).toHaveBeenCalledTimes(1);
   });
 
@@ -178,12 +185,13 @@ describe("session-runtime heartbeat lifecycle", () => {
     const calls: string[] = [];
     const { drive } = setup({
       clearWorkflowMonitorWaits: vi.fn(() => calls.push("clear")),
-      shutdownMonitors: vi.fn(async () => { calls.push("shutdown"); }),
+      shutdownOrchestrations: vi.fn(async () => { calls.push("stop orchestration"); }),
+      shutdownMonitors: vi.fn(async () => { calls.push("shutdown monitors"); }),
     });
 
     await drive("session_shutdown");
 
-    expect(calls).toEqual(["clear", "shutdown"]);
+    expect(calls).toEqual(["clear", "stop orchestration", "shutdown monitors"]);
   });
 
   it("awaits monitor shutdown before completing session shutdown", async () => {

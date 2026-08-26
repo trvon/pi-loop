@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createOrchestrationState } from "../src/orchestration-reducer.js";
 import { createNotificationRuntime } from "../src/runtime/notification-runtime.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
@@ -38,6 +39,92 @@ describe("notification runtime session boundary", () => {
     await queued;
 
     expect(sentMessages).toEqual([]);
+  });
+
+  it("acknowledges durable orchestration wake state only after message delivery", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const delivered = vi.fn();
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: vi.fn(async () => 0),
+      cleanDoneTasks: vi.fn(async () => {}),
+      getHasPendingMessages: () => false,
+      onLoopNotificationDelivered: delivered,
+    });
+    const orchestration = createOrchestrationState(
+      { goal: "Parallel review", work: [{ prompt: "Inspect API", agentType: "Explore" }] },
+      { sessionId: "s", runtimeId: "r", generation: 0 },
+      100,
+    );
+    orchestration.status = "completed";
+    orchestration.work[0]!.status = "completed";
+    orchestration.pendingWake = { reason: "completed", sequence: 3, createdAt: 101 };
+
+    runtime.syncRuntimeState({ agentRunning: true });
+    await runtime.queueOrDeliverNotification({
+      loopId: "7",
+      prompt: "Parallel review",
+      trigger: { type: "dynamic" },
+      timestamp: 102,
+      recurring: true,
+      orchestration,
+      orchestrationWakeSequence: 3,
+    });
+    expect(sentMessages).toHaveLength(0);
+    expect(delivered).not.toHaveBeenCalled();
+
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages[0].message.content).toContain("Orchestration #7 requires parent attention");
+    expect(delivered).toHaveBeenCalledWith({ loopId: "7", orchestrationWakeSequence: 3 });
+  });
+
+  it("bounds aggregate orchestration wake evidence while preserving retrieval guidance", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: vi.fn(async () => 0),
+      cleanDoneTasks: vi.fn(async () => {}),
+      getHasPendingMessages: () => false,
+    });
+    const orchestration = createOrchestrationState({
+      goal: "Large review batch",
+      work: Array.from({ length: 32 }, (_, index) => ({ prompt: `Inspect ${index + 1}` })),
+    }, { sessionId: "s", runtimeId: "r", generation: 0 }, 100);
+    orchestration.status = "completed";
+    for (const [index, item] of orchestration.work.entries()) {
+      item.status = "completed";
+      item.attemptCount = 1;
+      item.dispatches.push({
+        dispatchId: `dispatch-${index}`,
+        agentId: `agent-${index}`,
+        attempt: 1,
+        ownerRuntimeId: "r",
+        ownerGeneration: 0,
+        status: "completed",
+        requestedAt: 100,
+        settledAt: 101,
+        result: "x".repeat(8_192),
+        consumeStatus: "consumed",
+        consumeAttempts: 1,
+      });
+    }
+
+    await runtime.queueOrDeliverNotification({
+      loopId: "9",
+      prompt: orchestration.goal,
+      trigger: { type: "dynamic" },
+      timestamp: 102,
+      recurring: true,
+      orchestration,
+      orchestrationWakeSequence: 1,
+    });
+
+    const content = sentMessages[0].message.content as string;
+    expect(content.length).toBeLessThanOrEqual(12_288);
+    expect(content).toContain("work item(s) omitted");
+    expect(content).toContain("Use OrchestrationGet");
   });
 
   it("drops an old-session monitor start while delivering the current-session start", async () => {

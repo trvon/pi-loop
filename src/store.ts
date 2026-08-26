@@ -1,8 +1,9 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type LoopReducerEffect, type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
+import { applyOrchestrationEvent, type OrchestrationEvent, validateOrchestrationDefinition, validatePersistedOrchestration } from "./orchestration-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
 import { validateWorkflowDefinition } from "./workflow-definition.js";
 import { isTerminalWorkflowRun, transitionWorkflowRun, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 import { validatePersistedWorkflowRevision, type WorkflowRevisionInput, type WorkflowRevisionSummary } from "./workflow-revision.js";
@@ -60,6 +61,14 @@ function normalizeWorkflowRunState(workflow: WorkflowRunState): WorkflowRunState
     } : {}),
   };
 }
+function normalizeLoopEntry(entry: LoopEntry): LoopEntry {
+  return {
+    ...entry,
+    ...(entry.workflow ? { workflow: normalizeWorkflowRunState(entry.workflow) } : {}),
+    ...(entry.orchestration ? { orchestration: validatePersistedOrchestration(entry.orchestration) } : {}),
+  };
+}
+
 const MAX_LOOPS = 25;
 const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
 
@@ -76,14 +85,14 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         serialize: (nextId, entries) => ({ nextId, loops: Array.from(entries.values()) }),
         deserialize: (data) => ({
           nextId: data.nextId,
-          entries: new Map(data.loops.map((l) => [l.id, l.workflow ? { ...l, workflow: normalizeWorkflowRunState(l.workflow) } : l])),
+          entries: new Map(data.loops.map((entry) => [entry.id, normalizeLoopEntry(entry)])),
         }),
       },
       listIdOrPath,
     );
   }
 
-  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition; actor?: WorkflowRuntimeActor }): LoopEntry {
+  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition; actor?: WorkflowRuntimeActor; orchestration?: { definition: OrchestrationDefinitionInput; owner: OrchestrationActor } }): LoopEntry {
     return this.withLock(() => {
       if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
@@ -92,6 +101,12 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         if (trigger.type !== "dynamic") throw new Error("Workflow loops require a dynamic trigger.");
         const validationError = validateWorkflowDefinition(opts.workflow);
         if (validationError) throw new Error(`Invalid workflow: ${validationError}`);
+      }
+      if (opts.orchestration) {
+        if (trigger.type !== "dynamic") throw new Error("Orchestration loops require a dynamic trigger.");
+        if (opts.workflow) throw new Error("A loop cannot own both workflow and orchestration state.");
+        const validationError = validateOrchestrationDefinition(opts.orchestration.definition);
+        if (validationError) throw new Error(`Invalid orchestration: ${validationError}`);
       }
       const now = Date.now();
       this.applyReducerEvent({
@@ -110,9 +125,29 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           dynamic: opts.dynamic,
           workflow: opts.workflow,
           actor: opts.actor,
+          orchestration: opts.orchestration,
         },
       });
       return this.entries.get(String(this.nextId - 1))!;
+    });
+  }
+
+  mutateOrchestration(id: string, event: OrchestrationEvent): { entry?: LoopEntry; applied: boolean; reason?: string } {
+    return this.withLock(() => {
+      const entry = this.entries.get(id);
+      if (!entry) return { applied: false, reason: "loop_not_found" };
+      if (!entry.orchestration) return { applied: false, reason: "not_orchestration" };
+      const result = applyOrchestrationEvent(entry.orchestration, event);
+      if (!result.applied) return { entry, applied: false, reason: result.reason };
+      this.applyReducerEvent({
+        type: "LOOP_ORCHESTRATION_MUTATED",
+        at: event.at,
+        source: "system",
+        entityType: "loop",
+        entityId: id,
+        payload: { id, event },
+      });
+      return { entry: this.entries.get(id), applied: true };
     });
   }
 
@@ -529,7 +564,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       let count = 0;
       for (const [id, entry] of [...this.entries.entries()]) {
         if (now < entry.expiresAt) continue;
-        this.applyReducerEvent(entry.workflow
+        this.applyReducerEvent(entry.workflow || entry.orchestration
           ? {
               type: "LOOP_PAUSED",
               at: now,

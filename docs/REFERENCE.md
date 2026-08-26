@@ -6,19 +6,19 @@ pi-loop has three independent authorities:
 
 | Domain | Authority | Storage |
 | --- | --- | --- |
-| Loops and workflows | `LoopStore` | `.pi/loops/*.json` |
+| Loops, workflows, and subagent orchestrations | `LoopStore` | `.pi/loops/*.json` |
 | Standalone native tasks | `TaskStore` or external `pi-tasks` | `.pi/tasks/*.json` or provider-owned |
 | Running monitors | `MonitorManager` | process memory |
 
-Workflow state work is embedded in `LoopStore` as `WorkflowExecutionRecord`. It never appears in TaskStore, `/tasks`, task RPC, `TaskClaim`, or `TaskUpdate`. Standalone tasks never control workflow transitions.
+Workflow state work is embedded in `LoopStore` as `WorkflowExecutionRecord`. It never appears in TaskStore, `/tasks`, task RPC, `TaskClaim`, or `TaskUpdate`. Standalone tasks never control workflow transitions. Finite orchestration work is also embedded in LoopStore; it never discovers or projects tasks or workflow executions.
 
-Pending wake notifications and monitor process handles are memory-only. Persisted controllers recover when Pi resumes; they do not execute while Pi is absent.
+Notification buffers and monitor process handles are memory-only. Orchestration wake intent is durable until delivery acknowledgement, but delivery remains at-least-once across a crash. Persisted controllers recover when Pi resumes; they do not execute while Pi is absent.
 
 ## Runtime map
 
 - `src/index.ts`: extension registration and top-level wiring
-- `src/types.ts`: loop, workflow, and monitor contracts
-- `src/store.ts`: loop/workflow persistence and atomic mutations
+- `src/types.ts`: loop, workflow, orchestration, and monitor contracts
+- `src/store.ts`: loop/workflow/orchestration persistence and atomic mutations
 - `src/task-store.ts`: standalone native task persistence
 - `src/*-reducer.ts`: pure state transitions
 - `src/runtime/`: session, notification, backlog, task-provider, and monitor completion wiring
@@ -36,7 +36,7 @@ File-backed stores use PID locks, unique temporary snapshots, fsync, atomic rena
 - `session` (default): isolated by Pi session ID;
 - `project`: shared in the working directory.
 
-Project scope shares durable state but does not yet elect one scheduler owner across concurrent Pi runtimes. Workflow execution leases prevent duplicate phase work; they are separate from the planned project scheduler fence.
+Project scope shares durable state but does not yet elect one scheduler owner across concurrent Pi runtimes. Workflow execution leases prevent duplicate phase work; they are separate from the planned project scheduler fence. Subagent orchestration rejects memory, project, disabled, and custom-path stores; its first protocol is default file-backed session scope only.
 
 ## Loop model
 
@@ -47,9 +47,21 @@ Project scope shares durable state but does not yet elect one scheduler owner ac
 - hybrid: `{type:"hybrid", cron, event, debounceMs}`
 - dynamic: `{type:"dynamic"}`
 
-`LoopCreate` creates ordinary controllers. `LoopUpdate` is only for dynamic non-workflow loops. `LoopDelete` pauses or removes controllers. Recurring loops expire after seven days unless recreated; fire limits bound repeated execution.
+`LoopCreate` creates ordinary controllers. `LoopUpdate` is only for dynamic controllers that are neither workflow nor orchestration owned. `LoopDelete` pauses or removes ordinary/workflow controllers and cancellation-fences orchestration before stopping its workers. Recurring loops expire after seven days unless recreated; fire limits bound repeated execution.
 
 Wake delivery is idle-driven. A due timer or event mutates loop state, emits `loop:fire`, buffers a generation-tagged notification, and sends a hidden Pi message when delivery is safe. Stale extension contexts are probed before fire mutation.
+
+## Subagent orchestration model
+
+`OrchestrationCreate` persists an explicit finite batch of independent work directly in one dynamic `LoopEntry`. It requires the default file-backed session scope and a protocol-v2 `pi-subagents` responder before writing state. It does not discover TaskStore records, execute workflow phases, or use the generic scheduler.
+
+The parent `agent_end`, existing 30-second heartbeat, session recovery, and direct `subagents:started|completed|failed` events drive reconciliation. Before each spawn, LoopStore records a generated dispatch ID and consumes local capacity. Spawn forces background execution, disables inherited extension tools, and leaves global queue/concurrency authority with `pi-subagents`. `spawning`, `queued`, and `running` all count against the local limit.
+
+Lifecycle callbacks CAS loop revision, owner runtime/generation, work ID, dispatch ID, attempt, and agent ID. Terminal evidence is bounded and persisted synchronously before `subagents:rpc:consume`. Proved failures retry only within `maxAttempts`; a spawn timeout is ambiguous without upstream status/list or idempotent dispatch keys, so it becomes `uncertain` and is never retried automatically.
+
+Completion bursts refill capacity without waking the parent. A hidden parent wake is emitted only when the batch completes or needs attention. Its sequence remains durable until `pi.sendMessage` succeeds; a crash before acknowledgement may duplicate delivery. Completed/attention controllers pause for `OrchestrationGet` inspection and explicit deletion.
+
+Session shutdown/switch invalidates lifecycle callbacks, best-effort stops known workers, and persists stopped work as retryable or unconfirmed work as uncertain before store rebinding. A new runtime cannot adopt an unexpired foreign owner lease; after expiry it marks active dispatches uncertain rather than risking duplicates. Project scope, dynamic work addition, dependency graphs, cross-session election, and exact-once dispatch are not implemented.
 
 ## Workflow model
 
@@ -110,11 +122,11 @@ Monitor recovery across Pi process death is not implemented.
 ## Mutation guarantees
 
 - Store mutations hold one file lock and persist one reducer snapshot.
-- Rejected dynamic, workflow transition, and workflow revision CAS operations are state-preserving.
+- Rejected dynamic, workflow, and orchestration CAS operations are state-preserving.
 - Workflow writes never span LoopStore and TaskStore.
 - Server-held workflow leases expose no bearer token.
 - Standalone task claims intentionally use bearer IDs because task RPC crosses extension boundaries.
-- Session generation and stale-context checks prevent delayed callbacks from mutating replacement state.
+- Session generation, owner leases, and stale-context checks prevent delayed callbacks from mutating replacement state.
 
 ## Cross-extension RPC
 
@@ -128,6 +140,8 @@ External consumers import only `@trevonistrevon/pi-loop/api`. Deep `src/` import
 
 - 25 active loops
 - 25 running monitors
+- 32 orchestration work items, 8 local workers, and 3 attempts per item
+- 8,192 result characters and 2,048 error characters per orchestration dispatch
 - seven-day recurring-loop lifetime
 - five-minute default interval for self-paced mode
 - 32 workflow definition revisions

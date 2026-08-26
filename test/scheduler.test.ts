@@ -24,6 +24,22 @@ describe("CronScheduler", () => {
     vi.restoreAllMocks();
   });
 
+  it("does not arm LoopStore-owned orchestration in the generic scheduler", () => {
+    const entry = store.create({ type: "dynamic" }, "Parallel review", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "s", runtimeId: "r", generation: 1 },
+        definition: { goal: "Parallel review", work: [{ prompt: "Inspect" }] },
+      },
+    });
+
+    scheduler.add(entry);
+    scheduler.pump(Date.now());
+
+    expect(scheduler.nextFire(entry.id)).toBeUndefined();
+    expect(fired).toEqual([]);
+  });
+
   it("fires a one-shot cron loop via pump", () => {
     const entry = store.create(cronTrigger, "test fire", { recurring: false });
     scheduler.add(entry);

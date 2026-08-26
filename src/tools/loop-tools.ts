@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { formatTrigger } from "../loop-format.js";
 import { parseInterval } from "../loop-parse.js";
+import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { LoopEntry, Trigger } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { getActiveWorkflowStateLoop } from "../workflow-reducer.js";
@@ -62,6 +63,7 @@ export interface LoopToolsOptions {
   maybeBootstrapTaskLoop: (entry: LoopEntry) => Promise<boolean>;
   isTaskSystemReady: () => boolean;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
+  cancelOrchestration?: (id: string, action: "pause" | "delete") => Promise<boolean>;
 }
 
 function validateTrigger(trigger: Trigger): string | null {
@@ -213,6 +215,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
     maybeBootstrapTaskLoop,
     isTaskSystemReady,
     onDynamicLoopActivated,
+    cancelOrchestration,
   } = options;
 
   pi.registerTool({
@@ -373,9 +376,7 @@ A completed iteration, unchanged result, or temporarily empty check is not a rea
     label: "LoopList",
     renderCall: renderToolCall("Loop", () => "status"),
     renderResult: renderToolResult,
-    description: `List all active scheduled loops with their IDs, triggers, and next-fire times.
-
-Use this before creating new loops to avoid duplicates, or to find IDs for LoopDelete.`,
+    description: "List controllers, IDs, triggers, and next-fire times; use before create/delete.",
     parameters: Type.Object({}),
     execute() {
       const loops = getStore().list();
@@ -405,7 +406,12 @@ Use this before creating new loops to avoid duplicates, or to find IDs for LoopD
         }
         if (entry.autoTask) line += " [auto-task]";
         if (entry.taskBacklog) line += " [backlog-worker]";
-        if (entry.workflow) {
+        if (entry.orchestration) {
+          const counts = getOrchestrationCounts(entry.orchestration);
+          line += ` [orchestration:${entry.orchestration.status}]`;
+          line += ` pending=${counts.pending} active=${counts.active} completed=${counts.completed} failed=${counts.failed} uncertain=${counts.uncertain}`;
+          lines.push(line);
+        } else if (entry.workflow) {
           line += ` [workflow:${entry.workflow.currentState}]`;
           lines.push(formatWorkflowSummary(entry, line));
         } else {
@@ -414,10 +420,12 @@ Use this before creating new loops to avoid duplicates, or to find IDs for LoopD
       }
 
       const workflowCount = loops.filter((entry) => entry.workflow !== undefined).length;
-      const ordinaryCount = loops.length - workflowCount;
+      const orchestrationCount = loops.filter((entry) => entry.orchestration !== undefined).length;
+      const ordinaryCount = loops.length - workflowCount - orchestrationCount;
       const kinds = [
         ordinaryCount > 0 ? `${ordinaryCount} loop${ordinaryCount === 1 ? "" : "s"}` : undefined,
         workflowCount > 0 ? `${workflowCount} workflow${workflowCount === 1 ? "" : "s"}` : undefined,
+        orchestrationCount > 0 ? `${orchestrationCount} orchestration${orchestrationCount === 1 ? "" : "s"}` : undefined,
       ].filter((label): label is string => label !== undefined);
       return Promise.resolve(textResult(lines.join("\n"), {
         kind: "loop",
@@ -453,6 +461,12 @@ Use this exactly once after each dynamic loop wake. Mark status as "continue" wi
       if (!entry) {
         return Promise.resolve(textResult(`Loop #${params.id} not found`, {
           kind: "loop", action: "update", tone: "error", summary: `Loop #${params.id} not found`, expanded: ["Use LoopList to find valid loop IDs."],
+        }));
+      }
+      if (entry.orchestration) {
+        const message = `Loop #${params.id} is orchestration-owned. Use OrchestrationGet to inspect it or LoopDelete to cancel it.`;
+        return Promise.resolve(textResult(message, {
+          kind: "loop", action: "update", tone: "error", summary: `Loop #${params.id} update rejected`, expanded: [message],
         }));
       }
       if (entry.workflow) {
@@ -512,6 +526,21 @@ Do not use this after a normal loop fire, an unchanged check, an empty iteration
     }),
     async execute(_toolCallId, params) {
       const { id, action } = params;
+      const existing = getStore().get(id);
+      if (existing?.orchestration) {
+        const orchestrationAction: "pause" | "delete" = action === "pause" ? "pause" : "delete";
+        const cancelled = await cancelOrchestration?.(id, orchestrationAction);
+        if (!cancelled) {
+          const message = `Orchestration #${id} cancellation failed`;
+          return textResult(message, {
+            kind: "loop", action: orchestrationAction, tone: "error", summary: message, expanded: ["Inspect OrchestrationGet and retry."],
+          });
+        }
+        const message = orchestrationAction === "pause" ? `Orchestration #${id} cancelled and paused` : `Orchestration #${id} cancelled and deleted`;
+        return textResult(message, {
+          kind: "loop", action: orchestrationAction, tone: orchestrationAction === "pause" ? "warning" : "success", summary: message, expanded: [],
+        });
+      }
 
       if (action === "pause") {
         const entry = getStore().pause(id);

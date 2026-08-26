@@ -49,6 +49,87 @@ export interface DynamicLoopState {
   lastUpdatedAt?: number;
 }
 
+export type OrchestrationStatus = "active" | "needs_attention" | "completed" | "cancelled";
+export type OrchestrationWorkStatus = "pending" | "active" | "completed" | "failed" | "uncertain" | "cancelled";
+export type OrchestrationDispatchStatus = "spawning" | "queued" | "running" | "completed" | "failed" | "interrupted" | "stopped" | "uncertain";
+export type OrchestrationConsumeStatus = "not_applicable" | "pending" | "consumed" | "unavailable";
+export type OrchestrationWakeReason = "completed" | "failed" | "uncertain" | "recovery";
+
+export interface OrchestrationActor {
+  sessionId: string;
+  runtimeId: string;
+  generation: number;
+}
+
+export interface OrchestrationOwner extends OrchestrationActor {
+  leaseExpiresAt: number;
+}
+
+export interface OrchestrationUsage {
+  toolUses?: number;
+  durationMs?: number;
+  tokens?: { input: number; output: number; total: number };
+}
+
+export interface OrchestrationDispatch {
+  dispatchId: string;
+  attempt: number;
+  ownerRuntimeId: string;
+  ownerGeneration: number;
+  status: OrchestrationDispatchStatus;
+  requestedAt: number;
+  agentId?: string;
+  boundAt?: number;
+  startedAt?: number;
+  settledAt?: number;
+  result?: string;
+  error?: string;
+  consumeStatus: OrchestrationConsumeStatus;
+  consumeAttempts: number;
+  usage?: OrchestrationUsage;
+}
+
+export interface OrchestrationWorkItem {
+  id: string;
+  prompt: string;
+  agentType?: string;
+  status: OrchestrationWorkStatus;
+  attemptCount: number;
+  dispatches: OrchestrationDispatch[];
+}
+
+export interface OrchestrationPendingWake {
+  reason: OrchestrationWakeReason;
+  sequence: number;
+  createdAt: number;
+}
+
+export interface OrchestrationState {
+  version: 1;
+  revision: number;
+  status: OrchestrationStatus;
+  goal: string;
+  concurrency: number;
+  maxAttempts: number;
+  model?: string;
+  maxTurns?: number;
+  owner: OrchestrationOwner;
+  work: OrchestrationWorkItem[];
+  nextWakeSequence: number;
+  pendingWake?: OrchestrationPendingWake;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface OrchestrationDefinitionInput {
+  goal: string;
+  work: Array<{ prompt: string; agentType?: string }>;
+  concurrency?: number;
+  maxAttempts?: number;
+  model?: string;
+  maxTurns?: number;
+}
+
 export type WorkflowTerminalStatus = "completed" | "paused";
 
 export interface WorkflowTaskDefinition {
@@ -222,6 +303,7 @@ export interface LoopEntry {
   fireCount?: number;
   dynamic?: DynamicLoopState;
   workflow?: WorkflowRunState;
+  orchestration?: OrchestrationState;
 }
 
 export interface LoopStoreData {

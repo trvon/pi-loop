@@ -16,8 +16,14 @@ export interface MockPiOptions {
   respondToTaskClean?: boolean;
   /** Respond to `tasks:rpc:update` with a canned reply built from the request. */
   respondToTaskUpdate?: (request: any) => { task: any } | { error: string };
+  /** Respond to `subagents:rpc:ping` with protocol v2 (or the supplied version). */
+  respondToSubagentPing?: boolean | number;
   /** Respond to `subagents:rpc:spawn` with this agent id (simulates pi-subagents). */
   respondToSubagentSpawn?: (request: any) => string;
+  /** Respond successfully to `subagents:rpc:stop`. */
+  respondToSubagentStop?: boolean;
+  /** Respond successfully to `subagents:rpc:consume`. */
+  respondToSubagentConsume?: boolean;
   /** Swallow `monitor:done` emits (used to isolate the direct-callback path). */
   suppressMonitorDoneDispatch?: boolean;
 }
@@ -124,12 +130,36 @@ export function createMockPi(options: MockPiOptions = {}): MockPi {
         return;
       }
 
+      if (name === "subagents:rpc:ping" && payload?.requestId && options.respondToSubagentPing) {
+        queueMicrotask(() => {
+          events.emit(`subagents:rpc:ping:reply:${payload.requestId}`, {
+            success: true,
+            data: { version: typeof options.respondToSubagentPing === "number" ? options.respondToSubagentPing : 2 },
+          });
+        });
+        return;
+      }
+
       if (name === "subagents:rpc:spawn" && payload?.requestId && options.respondToSubagentSpawn) {
         queueMicrotask(() => {
           events.emit(`subagents:rpc:spawn:reply:${payload.requestId}`, {
             success: true,
             data: { id: options.respondToSubagentSpawn?.(payload) ?? "agent-1" },
           });
+        });
+        return;
+      }
+
+      if (name === "subagents:rpc:stop" && payload?.requestId && options.respondToSubagentStop) {
+        queueMicrotask(() => {
+          events.emit(`subagents:rpc:stop:reply:${payload.requestId}`, { success: true });
+        });
+        return;
+      }
+
+      if (name === "subagents:rpc:consume" && payload?.requestId && options.respondToSubagentConsume) {
+        queueMicrotask(() => {
+          events.emit(`subagents:rpc:consume:reply:${payload.requestId}`, { success: true });
         });
         return;
       }

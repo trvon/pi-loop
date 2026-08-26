@@ -39,12 +39,20 @@ MonitorList
 MonitorStop monitorId="1"
 ```
 
+Run a finite batch of independent subagent work after the parent becomes idle:
+
+```text
+OrchestrationCreate goal="Review release readiness" work='[{"prompt":"Inspect API compatibility","agentType":"Explore"},{"prompt":"Review rollout risks","agentType":"Plan"}]' concurrency=2
+OrchestrationGet id="1"
+```
+
 ## What it provides
 
 - Cron, event, hybrid, dynamic goal, and opt-in workflow loops
 - Idle-safe agent re-wakes with dynamic-loop restart/session-switch recovery
 - Background command monitoring with buffered output, `onDone` wakes, and renewable inactivity alerts
 - Optional `pi-tasks` integration and a native task fallback
+- Session-scoped, bounded async subagent orchestration through protocol-v2 `pi-subagents`
 - Session-isolated persistence and a compact TUI status line
 
 ## Commands and tools
@@ -55,6 +63,7 @@ MonitorStop monitorId="1"
 | `/tasks` | Manage native fallback tasks when `pi-tasks` is absent |
 | `LoopCreate`, `LoopList`, `LoopUpdate`, `LoopDelete` | Create and control ordinary loops |
 | `WorkflowCreate`, `WorkflowClaim`, `WorkflowRevise`, `WorkflowTransition` | Create, claim, revise, and advance task-driven workflows; inspect them with `LoopList` |
+| `OrchestrationCreate`, `OrchestrationGet` | Run and inspect a finite batch of independent async subagent work; cancel with `LoopDelete` |
 | `MonitorCreate`, `MonitorList`, `MonitorStop` | Run and inspect background commands |
 | `TaskCreate`, `TaskList`, `TaskClaim`, `TaskHeartbeat`, `TaskUpdate`, `TaskDelete` | Native fallback task management |
 

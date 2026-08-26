@@ -12,9 +12,12 @@ import {
   type ReducerNotification,
   reduceNotificationState,
 } from "../notification-reducer.js";
-import type { DynamicLoopState, MonitorOutcome, Trigger, WorkflowRunState } from "../types.js";
+import { getOrchestrationCounts } from "../orchestration-reducer.js";
+import type { DynamicLoopState, MonitorOutcome, OrchestrationState, Trigger, WorkflowRunState } from "../types.js";
 import { getWorkflowOutcomeAvailability } from "../workflow-reducer.js";
 import { TASK_BACKLOG_ACTION_CONTRACT } from "./task-backlog-runtime.js";
+
+const MAX_ORCHESTRATION_WAKE_CHARS = 12_288;
 
 export interface LoopFireEvent {
   loopId: string;
@@ -28,6 +31,8 @@ export interface LoopFireEvent {
   taskBacklog?: boolean;
   dynamic?: DynamicLoopState;
   workflow?: WorkflowRunState;
+  orchestration?: OrchestrationState;
+  orchestrationWakeSequence?: number;
   monitorOutcome?: MonitorOutcome;
   sessionGeneration?: number;
 }
@@ -50,6 +55,7 @@ export interface NotificationRuntimeOptions {
   hasPendingTasks: () => Promise<number>;
   cleanDoneTasks: () => Promise<void>;
   getHasPendingMessages: () => boolean;
+  onLoopNotificationDelivered?: (data: { loopId: string; orchestrationWakeSequence?: number }) => void;
   debug?: (...args: unknown[]) => void;
 }
 
@@ -63,7 +69,7 @@ export interface NotificationRuntime {
 }
 
 export function createNotificationRuntime(options: NotificationRuntimeOptions): NotificationRuntime {
-  const { pi, hasPendingTasks, cleanDoneTasks, getHasPendingMessages, debug } = options;
+  const { pi, hasPendingTasks, cleanDoneTasks, getHasPendingMessages, onLoopNotificationDelivered, debug } = options;
 
   let notificationState: NotificationReducerState = {
     notificationsByKey: {},
@@ -124,6 +130,35 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     const constraint = data.readOnly
       ? "\n\nREAD-ONLY MODE — use only read tools (Read, TaskList, LoopList, MonitorList, etc.). No file writes, shell execution, or destructive changes."
       : "";
+
+    if (data.orchestration) {
+      const counts = getOrchestrationCounts(data.orchestration);
+      const lines = [
+        `[pi-loop] Orchestration #${loopId} requires parent attention.${constraint}`,
+        `Goal: ${data.orchestration.goal}`,
+        `Status: ${data.orchestration.status}`,
+        `Counts: pending=${counts.pending} active=${counts.active} completed=${counts.completed} failed=${counts.failed} uncertain=${counts.uncertain} cancelled=${counts.cancelled}`,
+      ];
+      const footer = [
+        `Use OrchestrationGet({ id: "${loopId}" }) for durable bounded evidence.`,
+        data.orchestration.status === "completed"
+          ? "The finite batch is complete and paused for inspection. Delete it with LoopDelete when its results are no longer needed."
+          : "The controller is paused when no worker remains active. Review failed or uncertain work; do not use TaskUpdate, LoopUpdate, or WorkflowTransition for this controller.",
+      ];
+      let omitted = 0;
+      for (const item of data.orchestration.work) {
+        const dispatch = item.dispatches.at(-1);
+        const itemLines = [`#${item.id} [${item.status}] ${item.agentType ?? "general-purpose"}`];
+        if (dispatch?.result) itemLines.push(`Result #${item.id}: ${dispatch.result.replace(/\s+/g, " ").slice(0, 500)}`);
+        if (dispatch?.error) itemLines.push(`Error #${item.id}: ${dispatch.error.replace(/\s+/g, " ").slice(0, 500)}`);
+        const projected = [...lines, ...itemLines, ...footer].join("\n").length;
+        if (projected > MAX_ORCHESTRATION_WAKE_CHARS) omitted += 1;
+        else lines.push(...itemLines);
+      }
+      if (omitted > 0) lines.push(`... ${omitted} work item(s) omitted; inspect them with OrchestrationGet.`);
+      lines.push(...footer);
+      return lines.join("\n");
+    }
 
     if (data.workflow) {
       const state = data.workflow.definition.states[data.workflow.currentState];
@@ -291,6 +326,14 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       deliverAs: "steer",
       triggerTurn: true,
     });
+    try {
+      onLoopNotificationDelivered?.({
+        loopId: notification.loopId,
+        orchestrationWakeSequence: (notification as ReducerNotification & { orchestrationWakeSequence?: number }).orchestrationWakeSequence,
+      });
+    } catch (error) {
+      debug?.(`loop:fire #${notification.loopId} — delivery acknowledgement failed`, error);
+    }
     return true;
   }
 

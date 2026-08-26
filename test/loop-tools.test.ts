@@ -13,6 +13,10 @@ function setup() {
   const onDynamicLoopActivated = vi.fn();
   const maybeBootstrapTaskLoop = vi.fn(async () => false);
   const isTaskSystemReady = vi.fn(() => true);
+  const cancelOrchestration = vi.fn(async (id: string, action: "pause" | "delete") => {
+    if (action === "delete") return store.delete(id);
+    return store.pause(id) !== undefined;
+  });
   registerLoopTools({
     pi,
     getStore: () => store as any,
@@ -23,6 +27,7 @@ function setup() {
     maybeBootstrapTaskLoop,
     isTaskSystemReady,
     onDynamicLoopActivated,
+    cancelOrchestration,
   });
   registerWorkflowTools({
     pi,
@@ -34,7 +39,7 @@ function setup() {
   });
   const result = async (name: string, args: any) => await toolMap.get(name)!.execute!("t", args);
   const text = async (name: string, args: any) => (await result(name, args)).content[0].text as string;
-  return { store, triggerSystem, text, result, toolMap, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated };
+  return { store, triggerSystem, text, result, toolMap, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated, cancelOrchestration };
 }
 
 describe("LoopCreate", () => {
@@ -259,6 +264,21 @@ describe("LoopList", () => {
     expect(out).toContain("[paused]");
     expect(out).not.toContain("age:");
   });
+
+  it("shows orchestration progress as its own controller kind", async () => {
+    const h = setup();
+    h.store.create({ type: "dynamic" }, "Parallel review", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "s", runtimeId: "r", generation: 1 },
+        definition: { goal: "Parallel review", work: [{ prompt: "Inspect" }] },
+      },
+    });
+
+    const out = await h.text("LoopList", {});
+    expect(out).toContain("[orchestration:active]");
+    expect(out).toContain("pending=1 active=0 completed=0 failed=0 uncertain=0");
+  });
 });
 
 describe("LoopUpdate", () => {
@@ -269,6 +289,19 @@ describe("LoopUpdate", () => {
       recurring: true,
       dynamic: { goal: "finish goal", iteration: 0 },
     });
+  });
+
+  it("rejects orchestration-owned dynamic state", async () => {
+    h.store.delete("1");
+    h.store.create({ type: "dynamic" }, "Parallel review", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "s", runtimeId: "r", generation: 1 },
+        definition: { goal: "Parallel review", work: [{ prompt: "Inspect" }] },
+      },
+    });
+
+    expect(await h.text("LoopUpdate", { id: "2", status: "continue" })).toContain("orchestration-owned");
   });
 
   it("continues a dynamic loop with progress and next wake", async () => {
@@ -711,6 +744,20 @@ describe("LoopDelete", () => {
     const out = await h.text("LoopDelete", { id: "1", action: "pause" });
     expect(out).toBe("Loop #1 paused");
     expect(h.store.get("1")?.status).toBe("paused");
+  });
+
+  it("delegates orchestration cancellation before deletion", async () => {
+    h.store.delete("1");
+    h.store.create({ type: "dynamic" }, "Parallel review", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "s", runtimeId: "r", generation: 1 },
+        definition: { goal: "Parallel review", work: [{ prompt: "Inspect" }] },
+      },
+    });
+
+    expect(await h.text("LoopDelete", { id: "2", action: "delete" })).toBe("Orchestration #2 cancelled and deleted");
+    expect(h.cancelOrchestration).toHaveBeenCalledWith("2", "delete");
   });
 
   it("reports auto-deletion tombstones for already deleted loops", async () => {

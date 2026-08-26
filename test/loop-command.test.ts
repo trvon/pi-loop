@@ -10,6 +10,10 @@ function setup() {
   const updateWidget = vi.fn();
   const maybeBootstrapTaskLoop = vi.fn(async () => false);
   const onDynamicLoopActivated = vi.fn();
+  const cancelOrchestration = vi.fn(async (id: string, action: "pause" | "delete") => {
+    if (action === "delete") return store.delete(id);
+    return store.pause(id) !== undefined;
+  });
   registerLoopCommand({
     pi,
     getStore: () => store as any,
@@ -17,9 +21,10 @@ function setup() {
     updateWidget,
     maybeBootstrapTaskLoop,
     onDynamicLoopActivated,
+    cancelOrchestration,
   });
   const command = commandMap.get("loop")!;
-  return { store, triggerSystem, updateWidget, maybeBootstrapTaskLoop, onDynamicLoopActivated, command };
+  return { store, triggerSystem, updateWidget, maybeBootstrapTaskLoop, onDynamicLoopActivated, cancelOrchestration, command };
 }
 
 describe("registerLoopCommand", () => {
@@ -322,6 +327,32 @@ describe("registerLoopCommand", () => {
     expect(h.store.get("1")).toBeUndefined();
     expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
     expect(ui.notify).toHaveBeenCalledWith("Loop #1 deleted", "info");
+  });
+
+  it("delegates orchestration cancellation before command deletion", async () => {
+    h.store.create({ type: "dynamic" }, "Parallel review", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "s", runtimeId: "r", generation: 1 },
+        definition: { goal: "Parallel review", work: [{ prompt: "Inspect" }] },
+      },
+    });
+    let loopVisits = 0;
+    const ui = {
+      select: vi.fn(async (title: string) => {
+        if (title === "Loop") return "View loops";
+        if (title === "Loops") return loopVisits++ === 0 ? "* #1 [active] Parallel review (dynamic)" : "< Back";
+        if (title.startsWith("#1")) return "x Delete";
+        return "< Back";
+      }),
+      input: vi.fn(),
+      notify: vi.fn(),
+    };
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(h.cancelOrchestration).toHaveBeenCalledWith("1", "delete");
+    expect(h.store.get("1")).toBeUndefined();
   });
 
   it("deletes a workflow loop and its trigger from the command", async () => {
