@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.9](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.8...pi-loop-v0.7.9) (2026-08-26)
+
+
+### Features
+
+* **orchestration:** add durable subagent batches ([#53](https://github.com/trvon/pi-loop/issues/53)) ([d1e5b82](https://github.com/trvon/pi-loop/commit/d1e5b823007dbe1ea180699b568158a93d51a92e))
+
+
+### Bug Fixes
+
+* **prompts:** preserve controller continuity ([#54](https://github.com/trvon/pi-loop/issues/54)) ([0b92914](https://github.com/trvon/pi-loop/commit/0b9291446b5c5c24b1c370ab962ad39296f2a19e))
+
 ## [0.7.8](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.7...pi-loop-v0.7.8) (2026-08-24)
 
 
