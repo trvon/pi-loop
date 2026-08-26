@@ -30,7 +30,7 @@ describe("MonitorManager", () => {
       });
     });
     const entry = manager.create(
-      `sh -c 'sleep 0.15; touch ${JSON.stringify(marker)}' & printf 'tree-ready\\n'; wait`,
+      `sh -c 'sleep 0.15; touch ${JSON.stringify(marker)}' & printf 'tree-ready\\n'; sleep 30`,
       "process-tree cleanup",
       timeout,
     );
