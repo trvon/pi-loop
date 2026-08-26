@@ -215,6 +215,8 @@ export default function (pi: ExtensionAPI) {
       workflow: entry.workflow,
       orchestration: entry.orchestration,
       orchestrationWakeSequence,
+      fireLimitReached: atMaxFires(entry),
+      workflowStateFireLimitReached: !!entry.workflow && atWorkflowStateFireLimit(entry.workflow),
       sessionGeneration,
       monitorOutcome: monitor
         ? {

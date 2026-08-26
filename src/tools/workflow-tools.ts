@@ -154,10 +154,13 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   const unavailable = availability.unavailable.sort((left, right) => Number(right.outcome === failure?.outcome) - Number(left.outcome === failure?.outcome));
   if (unavailable.length > 0) message += `\nUnavailable outcomes: ${unavailable.map((item) => `${item.outcome} — ${item.targetState} exhausted ${item.maxAttempts} attempt(s)`).join("; ")}.`;
   if (state?.terminal) return `${message}\nTerminal: ${state.terminal}`;
+  const cas = `revision=${workflow.definitionRevision ?? 1}, state=${workflow.currentState}, transition sequence=${workflow.transitionSeq}`;
   if (availability.available.length === 0 && unavailable.length === 0) {
-    return `${message}\nNeeds attention: this state declares no outcomes ("on"). Add on: {outcome: targetState} to advance it.`;
+    return `${message}\nPlan gap: this state declares no outcomes ("on"). Use WorkflowRevise with the displayed revision/state/sequence (${cas}) to add a recovery route. Persist it, then continue through its transition and claim when actionable; do not stop or terminal-pause merely to report this gap.`;
   }
-  if (availability.available.length === 0) return `${message}\nBlocked: all declared outcomes are unavailable.`;
+  if (availability.available.length === 0) {
+    return `${message}\nRoute gap: all declared outcomes are unavailable. If actionable work remains, use WorkflowRevise with the displayed revision/state/sequence (${cas}) to add a bounded recovery route, then continue through its transition and claim. Do not fabricate an outcome or stop merely to report the gap.`;
+  }
   const outcomes = availability.available.join(", ");
   if (execution && !execution.lease) {
     return `${message}\nChoose outcome: ${outcomes}\nNext: WorkflowClaim({ id: "${entry.id}" }), then complete the work and call WorkflowTransition({ id: "${entry.id}", outcome: "${availability.available[0]}", evidence: "..." })`;
@@ -173,10 +176,11 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     label: "WorkflowCreate",
     renderCall: renderToolCall("Workflow", (args) => `create · ${String(toolArg(args, "goal") ?? "workflow").slice(0, 56)}`),
     renderResult: renderToolResult,
-    description: "Create a named-state workflow. Definition: {version:1,initialState,states:{id:{prompt,on,task?:{subject,description},maxAttempts?,loop?,terminal?}}}. State work is embedded atomically; terminal is completed or paused.",
+    description: "Create a durable named-state controller for one goal. Definition: {version:1,initialState,states:{id:{prompt,on,task?:{subject,description},maxAttempts?,loop?,terminal?}}}. State work is embedded atomically; terminal is completed or paused.",
     promptGuidelines: [
-      "Use workflows for phase/outcome flows, not flat backlogs; declare concise outcomes and task:{subject,description}.",
-      "Workflow work is controller-owned: never use TaskClaim/TaskUpdate. Bound rework with maxAttempts.",
+      "Use WorkflowCreate instead of TaskCreate when one goal has ordered phases, conditional outcomes, rework, or durable handoff—even if the user calls the phases tasks.",
+      "Embed phase work as task:{subject,description}; use concise outcomes and maxAttempts. Workflow work never uses TaskClaim/TaskUpdate.",
+      "Persist in the correct owner: TaskUpdate for unfinished standalone tasks, LoopUpdate for dynamic loops, and WorkflowRevise or WorkflowTransition for workflow plan changes or completed phases.",
     ],
     parameters: Type.Object({
       goal: Type.String({ description: "Overall workflow goal" }),
@@ -274,7 +278,8 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     renderResult: renderToolResult,
     description: "Revise a running workflow with typed additive changes while preserving current work and history.",
     promptGuidelines: [
-      "Pass exact revision/state/sequence from LoopList and claim first. Insert prerequisites with add_state + redirect_transition; revise_state changes future work. Never create standalone tasks.",
+      "WorkflowRevise requires exact revision/state/sequence from LoopList; claim first only for unowned/expired active task work.",
+      "Persist actionable plan gaps with WorkflowRevise, then continue through the normal transition/claim; add_state + redirect_transition inserts prerequisites. Never create standalone tasks for workflow work.",
     ],
     parameters: Type.Object({
       id: Type.String({ description: "Workflow loop ID" }),
@@ -349,8 +354,8 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     renderResult: renderToolResult,
     description: "Advance one declared workflow outcome. The controller authorizes the current runtime lease; it never accepts a claim token.",
     promptGuidelines: [
-      "WorkflowTransition uses id, outcome, and optional evidence; claimId is invalid.",
-      "Use an exact outcome; inspect LoopList for state and attempt count.",
+      "WorkflowTransition uses id, outcome, and optional evidence; claimId is invalid. Outcome must be available and declared; inspect LoopList first.",
+      "If no outcome fits or the plan changed, use WorkflowRevise first—never fabricate an outcome or terminal-pause merely to report progress.",
     ],
     parameters: Type.Object({
       id: Type.String({ description: "Workflow loop ID" }),
