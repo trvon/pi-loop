@@ -556,6 +556,8 @@ describe("Workflow tools", () => {
     expect(revise.parameters.properties.actor).toBeUndefined();
     expect(revise.parameters.properties.claimId).toBeUndefined();
     expect(revise.description).toContain("typed additive changes");
+    expect(revise.promptGuidelines.join("\n")).toContain("Non-task WorkflowRevise needs no claim");
+    expect(revise.promptGuidelines.join("\n")).toContain("claim only unowned/expired active task work");
     expect(revise.promptGuidelines.join("\n")).toContain("Never create standalone tasks");
   });
 
