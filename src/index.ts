@@ -204,6 +204,8 @@ export default function (pi: ExtensionAPI) {
       taskBacklog: entry.taskBacklog,
       dynamic: entry.dynamic,
       workflow: entry.workflow,
+      fireLimitReached: atMaxFires(entry),
+      workflowStateFireLimitReached: !!entry.workflow && atWorkflowStateFireLimit(entry.workflow),
       sessionGeneration,
       monitorOutcome: monitor
         ? {

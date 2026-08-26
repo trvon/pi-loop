@@ -220,18 +220,11 @@ export function registerLoopTools(options: LoopToolsOptions): void {
     label: "LoopCreate",
     renderCall: renderToolCall("Loop", (args) => `create · ${String(toolArg(args, "prompt") ?? "scheduled work").slice(0, 56)}`),
     renderResult: renderToolResult,
-    description: `Create a persistent cron, event, hybrid, or idle-driven loop. Use it for recurring checks, reminders, event reactions, or explicit task-backlog processing; never use shell sleep/while loops.
-
-Set triggerType to cron, event, hybrid, or idle. Polling loops need maxFires; observation-only loops should set readOnly. Use taskBacklog only for a native task queue; use an idle loop to continue a broad goal. Use autoTask to create one task per fire.
-
-A completed iteration, unchanged result, or temporarily empty check is not a reason to delete the loop. Recurring loops persist; dynamic loops advance through LoopUpdate.`,
+    description: `Create a persistent cron, event, hybrid, or idle loop for recurring checks, event reactions, or autonomous backlog processing; never use shell sleep loops. Polling needs maxFires; observation-only loops should be readOnly. A completed iteration, unchanged result, or temporarily empty check is not a reason to delete the loop.`,
     promptGuidelines: [
-      "Prefer event triggers over cron; use triggerType `idle` with trigger `idle` for agent-paced continuation.",
-      "For autonomous backlogs use event `tasks:created`, recurring true, taskBacklog true, and bounded maxFires. It adopts unfinished tasks until terminal. Do not use autoTask.",
-      "Use an idle loop, not taskBacklog, to continue a broad goal without a native task queue.",
-      "Recurring loops are persistent controllers. Do not call LoopDelete after a normal fire, an unchanged check, or one completed iteration; only delete when the user explicitly asks to cancel or the loop's stated stop condition is satisfied.",
-      "For taskBacklog loops, do not instruct the agent to delete the loop; pi-loop auto-deletes it when the pending count reaches zero.",
-      "Report the created loop ID to the user.",
+      "Prefer event triggers; use triggerType `idle` with trigger `idle` for agent-paced continuation of one evolving goal that does not need WorkflowCreate phases/outcomes.",
+      "For autonomous backlogs use event `tasks:created`, recurring true, taskBacklog true, and bounded maxFires; never combine taskBacklog with autoTask or manually delete its loop.",
+      "Use LoopDelete only for explicit cancellation or a satisfied stop condition—not after a normal, empty, or unchanged iteration. Report the created loop ID.",
     ],
     parameters: Type.Object({
       trigger: Type.String({ description: "Cron expression (e.g., '5m', '1h', '0 9 * * 1-5'), event source (e.g., 'tool_execution_start'), hybrid spec, or literal 'idle' with triggerType='idle'" }),
@@ -434,9 +427,7 @@ Use this before creating new loops to avoid duplicates, or to find IDs for LoopD
     label: "LoopUpdate",
     renderCall: renderToolCall("Loop", (args) => `update · #${String(toolArg(args, "id") ?? "?")} · ${String(toolArg(args, "status") ?? "continue")}`),
     renderResult: renderToolResult,
-    description: `Update progress for a dynamic loop.
-
-Use this exactly once after each dynamic loop wake. Mark status as "continue" with updated state/metrics and optional nextInterval whenever any work remains, "completed" only when the overall goal and done criteria are satisfied, or "paused" when genuinely blocked. Do not use LoopDelete to finish an iteration.`,
+    description: `Update a dynamic loop exactly once after each wake. Use "continue" with state/metrics and optional nextInterval whenever work remains, including empty or unchanged iterations; "completed" only when done; "paused" only for a genuine blocker or required user authority. Persist before notifying the user; never use LoopDelete to finish an iteration.`,
     parameters: Type.Object({
       id: Type.String({ description: "Dynamic loop ID to update" }),
       status: Type.String({ description: "continue, completed, or paused", enum: ["continue", "completed", "paused"] }),
@@ -501,11 +492,7 @@ Use this exactly once after each dynamic loop wake. Mark status as "continue" wi
     label: "LoopDelete",
     renderCall: renderToolCall("Loop", (args) => `${String(toolArg(args, "action") ?? "delete")} · #${String(toolArg(args, "id") ?? "?")}`),
     renderResult: renderToolResult,
-    description: `Delete or pause a loop by its ID.
-
-Use "pause" to temporarily stop a loop without removing it. Use "delete" to permanently remove it.
-
-Do not use this after a normal loop fire, an unchanged check, an empty iteration, or one step of a dynamic goal. Recurring loops remain active across iterations; dynamic loops use LoopUpdate. Delete only when the user explicitly asks to cancel the loop or its stated stop condition is satisfied.`,
+    description: `Pause or delete a loop. Do neither after a normal, empty, or unchanged iteration: recurring loops persist and dynamic loops use LoopUpdate. Delete only for explicit cancellation or a satisfied stop condition; pause only for a genuine temporary blocker or required user authority.`,
     parameters: Type.Object({
       id: Type.String({ description: "Loop ID to delete or pause" }),
       action: Type.Optional(Type.String({ description: "delete or pause (default: delete)", enum: ["delete", "pause"], default: "delete" })),
