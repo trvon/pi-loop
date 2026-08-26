@@ -1,4 +1,5 @@
-import type { DynamicLoopState, LoopEntry, LoopFireOrigin, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionChange, WorkflowRuntimeActor } from "./types.js";
+import { applyOrchestrationEvent, createOrchestrationState, type OrchestrationEvent } from "./orchestration-reducer.js";
+import type { DynamicLoopState, LoopEntry, LoopFireOrigin, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionChange, WorkflowRuntimeActor } from "./types.js";
 import { createWorkflowRun, transitionWorkflowRun } from "./workflow-reducer.js";
 import { reviseWorkflowRun, type WorkflowRevisionSummary } from "./workflow-revision.js";
 
@@ -39,6 +40,7 @@ export type LoopReducerEvent =
       dynamic?: Partial<DynamicLoopState>;
       workflow?: WorkflowDefinition;
       actor?: WorkflowRuntimeActor;
+      orchestration?: { definition: OrchestrationDefinitionInput; owner: OrchestrationActor };
     };
   }
   | {
@@ -77,6 +79,14 @@ export type LoopReducerEvent =
       prompt?: string;
       dynamic: Partial<DynamicLoopState>;
     };
+  }
+  | {
+    type: "LOOP_ORCHESTRATION_MUTATED";
+    at: number;
+    source: ReducerSource;
+    entityType?: "loop";
+    entityId?: string;
+    payload: { id: string; event: OrchestrationEvent };
   }
   | {
     type: "LOOP_WORKFLOW_REVISED";
@@ -214,6 +224,9 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
           }
         : undefined,
       workflow: event.payload.workflow ? createWorkflowRun(event.payload.workflow, event.at, event.payload.actor) : undefined,
+      orchestration: event.payload.orchestration
+        ? createOrchestrationState(event.payload.orchestration.definition, event.payload.orchestration.owner, event.at)
+        : undefined,
     };
     next.loopsById[id] = loop;
     return {
@@ -281,6 +294,14 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
       awaitingUpdate: event.payload.dynamic.awaitingUpdate ?? loop.dynamic?.awaitingUpdate ?? false,
       lastUpdatedAt: event.payload.dynamic.lastUpdatedAt ?? event.at,
     };
+    loop.updatedAt = event.at;
+  }
+
+  if (event.type === "LOOP_ORCHESTRATION_MUTATED") {
+    if (!loop.orchestration) return { state, effects: [] };
+    const result = applyOrchestrationEvent(loop.orchestration, event.payload.event);
+    if (!result.applied) return { state, effects: [] };
+    loop.orchestration = result.state;
     loop.updatedAt = event.at;
   }
 
