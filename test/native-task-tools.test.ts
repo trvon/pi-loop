@@ -282,9 +282,11 @@ describe("TaskUpdate", () => {
     expect(await h.text("TaskUpdate", { id: "99", status: "completed" })).toBe("Task #99 not found");
   });
 
-  it("documents the taskId→id correction in its guidelines", () => {
+  it("documents the taskId→id correction and unfinished handoff persistence", () => {
     const guidelines = (h.tool("TaskUpdate") as any).promptGuidelines as string[];
     expect(guidelines.some((g) => g.includes("`id`, not `taskId`"))).toBe(true);
+    expect(guidelines.some((g) => g.includes("persist material progress, discovered dependencies, and the next action"))).toBe(true);
+    expect(guidelines.some((g) => g.includes("closed means intentionally abandoned"))).toBe(true);
   });
 });
 

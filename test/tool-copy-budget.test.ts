@@ -40,6 +40,9 @@ describe("registered tool copy budget", () => {
       "onDone",
       "WorkflowTransition uses id, outcome, and optional evidence",
       "session LoopStore orchestration",
+      "ordered phases, conditional outcomes, rework, or durable handoff",
+      "independently completable backlog items",
+      "Persist in the correct owner: TaskUpdate for unfinished standalone tasks",
     ]) {
       expect(copy).toContain(required);
     }

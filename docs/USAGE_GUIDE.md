@@ -36,6 +36,17 @@ A hybrid trigger combines cron and event delivery with a debounce window:
 LoopCreate trigger="cron:5m event:tasks:created" prompt="Process pending tasks" triggerType="hybrid" debounceMs=30000
 ```
 
+### Choosing one controller
+
+Choose one durable owner before decomposing work:
+
+- use `WorkflowCreate` when one goal has ordered phases, conditional outcomes, rework, or durable handoff—even if those phases are described as tasks;
+- use multiple `TaskCreate` calls for independently completable items in a flat or manually assigned backlog;
+- use a dynamic `LoopCreate` for one evolving, self-paced goal that does not need named phase/outcome routing;
+- use `taskBacklog` only when autonomous processing of standalone tasks was explicitly requested.
+
+Do not mirror workflow phases into standalone tasks.
+
 ### Dynamic goal loops
 
 Free text passed to `/loop` creates a self-paced dynamic goal:
@@ -55,14 +66,16 @@ LoopUpdate id="1" status="completed"
 
 - `continue` saves progress and wakes again when idle.
 - `continue` with `nextInterval` schedules a timed wake.
-- `paused` preserves progress without firing.
+- `paused` preserves progress without firing and is reserved for a genuine blocker or required user authority.
 - `completed` finishes and deletes the loop.
+
+An empty or unchanged iteration is not a blocker. Persist current state with `LoopUpdate status="continue"` before ending the turn or notifying the user.
 
 Paused dynamic loops can be resumed from the `/loop` menu. If an in-memory wake is lost during a restart or session switch, persisted dynamic state recovers it.
 
 ### Opt-in workflow loops
 
-Use a workflow only when work has stable named phases and outcomes. Ordinary reminders, polling, event hooks, and flat task backlogs should continue to use `LoopCreate` or the task tools.
+Use a workflow when one goal has stable named phases, conditional outcomes, bounded rework, or durable handoff. This includes large related work that an agent might otherwise split into chained standalone tasks. Ordinary reminders, polling, event hooks, independently completable backlogs, and self-paced goals without phase routing should continue to use `LoopCreate` or the task tools.
 
 ```text
 WorkflowCreate goal="Fix the regression" definition='{
@@ -107,7 +120,9 @@ WorkflowRevise id="1" expectedRevision=1 expectedState="investigate" expectedTra
 
 `WorkflowRevise` stores the prior definition, reason, accepted changes, timestamp, and runtime actor as immutable history. It preserves current execution and lease state, changes only future work or current outgoing edges, and rejects stale revisions or transitions. It never creates standalone tasks. See the [reference](./REFERENCE.md#adaptive-revision) for operation and graph rules.
 
-To repeat a state until evidence supports an outcome, add a cron-only state policy: `"loop":{"schedule":"0 7 * * *","maxFires":10,"startImmediately":false}`. Only the active state's policy is armed. Scheduled wakes retain the active execution; `WorkflowTransition` remains the only operation that settles it and unlocks the destination execution and cadence. `maxFires` is local to that state and pauses the workflow when exhausted. State policies do not wake immediately unless `startImmediately` is `true`.
+A missing prerequisite, missing route, or exhausted route is a plan gap—not automatically a blocker. Persist an actionable recovery route with `WorkflowRevise`, then continue through the revised transition and claim while work remains actionable. Call `WorkflowTransition` only when an available declared outcome is supported by evidence; never fabricate one. Do not stop or move the controller to terminal `paused` merely to report progress. Reserve that state for a declared blocker or required user authority.
+
+To repeat a state until evidence supports an outcome, add a cron-only state policy: `"loop":{"schedule":"0 7 * * *","maxFires":10,"startImmediately":false}`. Only the active state's policy is armed. Scheduled wakes retain the active execution; `WorkflowTransition` remains the only operation that settles it and unlocks the destination execution and cadence. Below the fire cap, a no-change iteration leaves the workflow active; persist material future-plan changes with `WorkflowRevise`. Reaching `maxFires` pauses the workflow and schedules no next cadence. Transition when evidence supports an available outcome; otherwise revise in a bounded recovery state/route, then transition and claim it. State policies do not wake immediately unless `startImmediately` is `true`.
 
 `LoopList` includes workflow state, active execution, transition evidence, and valid outcomes alongside ordinary loops.
 
@@ -204,7 +219,7 @@ TaskUpdate id="1" status="closed" claimId="<claim-id>"  # abandon without comple
 TaskDelete id="1"
 ```
 
-The native provider is selected for the session and exposes `/tasks`, compact status-line tracking, persisted task state, lifecycle events, and task RPC replies. `TaskClaim` provides one live owner per task, renewable heartbeats, and takeover only after lease expiry. It also moves the task to `in_progress`; a following `TaskUpdate status="in_progress"` is harmless but redundant. Claimed terminal updates require the exact live claim token; an expired token must be replaced by reclaiming the task. `closed` is terminal like `completed`, is excluded from pending backlog work, and deliberately does not emit `tasks:completed`; use it when work is intentionally abandoned.
+The native provider is selected for the session and exposes `/tasks`, compact status-line tracking, persisted task state, lifecycle events, and task RPC replies. Standalone tasks are for independently completable backlog items; use a workflow instead when related items are ordered phases of one evolving goal. `TaskClaim` provides one live owner per task, renewable heartbeats, and takeover only after lease expiry. It also moves the task to `in_progress`; a following `TaskUpdate status="in_progress"` is harmless but redundant. Claimed terminal updates require the exact live claim token; an expired token must be replaced by reclaiming the task. Before handing off unfinished work, update its description with material progress, discovered dependencies, and the next action. `closed` is terminal like `completed`, is excluded from pending backlog work, and deliberately does not emit `tasks:completed`; use it when work is intentionally abandoned.
 
 See the [reference](./REFERENCE.md#mutation-guarantees) for ownership and mutation boundaries.
 

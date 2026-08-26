@@ -33,6 +33,8 @@ export interface LoopFireEvent {
   workflow?: WorkflowRunState;
   orchestration?: OrchestrationState;
   orchestrationWakeSequence?: number;
+  fireLimitReached?: boolean;
+  workflowStateFireLimitReached?: boolean;
   monitorOutcome?: MonitorOutcome;
   sessionGeneration?: number;
 }
@@ -202,22 +204,44 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       }
       if (outcomes.length > 0) lines.push(`Allowed outcomes: ${outcomes.join(", ")}`);
       if (outcomes.length === 0 && availability.unavailable.length === 0 && !state?.terminal) {
-        lines.push(`This state declares no outcomes ("on"). Add on:{outcome:targetState} to the definition to advance it.`);
+        lines.push(
+          `Plan gap: this state declares no outcomes ("on"). Use WorkflowRevise with revision=${data.workflow.definitionRevision ?? 1}, state=${data.workflow.currentState}, transition sequence=${data.workflow.transitionSeq} to add a recovery route.`,
+          "Persist the revised route, then continue through its transition and claim when actionable; do not stop or terminal-pause merely to report this gap.",
+        );
       }
       if (availability.unavailable.length > 0) {
         lines.push(`Unavailable outcomes: ${availability.unavailable.map((item) => item.outcome).join(", ")} (attempt limit reached)`);
+        if (outcomes.length === 0 && !state?.terminal) {
+          lines.push(
+            `Route gap: no declared outcome is currently available. Use WorkflowRevise with revision=${data.workflow.definitionRevision ?? 1}, state=${data.workflow.currentState}, transition sequence=${data.workflow.transitionSeq} to add a bounded recovery route when actionable work remains.`,
+            "Persist the recovery, then continue through its transition and claim; do not fabricate an outcome or stop merely to report this gap.",
+          );
+        }
       }
       if (state?.terminal) {
         lines.push(`Terminal: ${state.terminal} — this workflow state is terminal; no transition is needed.`);
+      } else if (state?.loop && (data.fireLimitReached || data.workflowStateFireLimitReached)) {
+        lines.push(
+          `Workflow lifecycle: Loop #${loopId} has reached its fire cap; this workflow is paused and no next cadence is scheduled.`,
+          "Use WorkflowTransition when evidence supports an available outcome. Otherwise add a bounded recovery state/route with WorkflowRevise, then transition and claim it; do not wait for another cadence or delete the controller.",
+        );
       } else if (state?.loop) {
         lines.push(
           `Workflow lifecycle: Loop #${loopId} runs this state on its configured cadence until an acceptance condition is met.`,
-          "Complete the active workflow work. Do not call WorkflowTransition merely because this iteration finished; call it only with a declared outcome and supporting evidence when the state can advance.",
+          "A no-change cadence iteration below the fire cap is not a blocker: leave the workflow active for its next cadence.",
+          "Persist material future-plan changes with WorkflowRevise, then continue when actionable; do not stop or terminal-pause solely to report progress.",
+          "Do not call WorkflowTransition merely because this iteration finished; call it only with an available declared outcome and supporting evidence.",
+        );
+      } else if (outcomes.length === 0) {
+        lines.push(
+          `Workflow lifecycle: Loop #${loopId} remains the controller for this goal; do not call LoopDelete.`,
+          "Do not call WorkflowTransition without an available outcome. Revise the route and continue when actionable; reserve terminal pause for a genuine blocker or required user authority.",
         );
       } else {
         lines.push(
-          `Workflow lifecycle: Loop #${loopId} is an opt-in state controller. Do not call LoopDelete after this state.`,
-          "Before ending this turn, call WorkflowTransition exactly once with id, one allowed outcome, and evidence. Terminal outcomes complete or pause the workflow automatically.",
+          `Workflow lifecycle: Loop #${loopId} is the controller for this goal. Do not call LoopDelete after this state.`,
+          "Complete the active work and call WorkflowTransition once with an available outcome and evidence.",
+          "If work reveals a missing prerequisite or route, use WorkflowRevise first, then continue through the revised transition and claim; do not stop or terminal-pause merely to report progress.",
         );
       }
       return lines.join("\n");
