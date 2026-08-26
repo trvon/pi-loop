@@ -179,6 +179,89 @@ describe("loop:fire custom message delivery", () => {
     expect(content).not.toContain("call LoopUpdate exactly once");
   });
 
+  it("persists a recoverable workflow plan gap instead of demanding an impossible transition", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
+      loopId: "gap",
+      prompt: "Complete the migration",
+      trigger: { type: "dynamic" },
+      timestamp: Date.now(),
+      recurring: true,
+      workflow: {
+        definition: {
+          version: 1,
+          initialState: "implement",
+          states: {
+            implement: { prompt: "Implement the migration." },
+            done: { prompt: "Report completion.", terminal: "completed" },
+          },
+        },
+        definitionRevision: 3,
+        currentState: "implement",
+        transitionSeq: 2,
+        stateEnteredAt: Date.now(),
+        attemptsByState: { implement: 1 },
+      },
+    });
+    await flushAsync();
+
+    const content = sentMessages[0].message.content;
+    expect(content).toContain("Plan gap: this state declares no outcomes");
+    expect(content).toContain("WorkflowRevise");
+    expect(content).toContain("revision=3, state=implement, transition sequence=2");
+    expect(content).toContain("Persist the revised route, then continue through its transition and claim when actionable");
+    expect(content).toContain("do not stop or terminal-pause merely to report this gap");
+    expect(content).not.toContain("call WorkflowTransition exactly once");
+  });
+
+  it("keeps a no-change cadenced workflow active while persisting material plan changes", async () => {
+    const { pi, sentMessages, emitExtension } = createMockPi();
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+    const ctx = createCtx(false);
+    await emitExtension("turn_start", null, ctx);
+
+    pi.events.emit("loop:fire", {
+      loopId: "cadence",
+      prompt: "Observe the rollout",
+      trigger: { type: "dynamic" },
+      timestamp: Date.now(),
+      recurring: true,
+      workflow: {
+        definition: {
+          version: 1,
+          initialState: "observe",
+          states: {
+            observe: {
+              prompt: "Check rollout evidence.",
+              loop: { schedule: "*/5 * * * *", maxFires: 6 },
+              on: { accepted: "done" },
+            },
+            done: { prompt: "Report completion.", terminal: "completed" },
+          },
+        },
+        definitionRevision: 2,
+        currentState: "observe",
+        transitionSeq: 1,
+        stateEnteredAt: Date.now(),
+        attemptsByState: { observe: 1 },
+        stateFireCounts: { observe: 2 },
+      },
+    });
+    await flushAsync();
+
+    const content = sentMessages[0].message.content;
+    expect(content).toContain("A no-change cadence iteration below the fire cap is not a blocker");
+    expect(content).toContain("leave the workflow active for its next cadence");
+    expect(content).toContain("Persist material future-plan changes with WorkflowRevise, then continue when actionable");
+    expect(content).toContain("do not stop or terminal-pause solely to report progress");
+  });
+
   it("does not advertise a self-loop outcome after its target attempt limit is exhausted", async () => {
     const { pi, sentMessages, emitExtension } = createMockPi();
     const extension = await import("../src/index.js");
