@@ -83,7 +83,7 @@ test/orchestration-tools.test.ts
 test/property/orchestration.property.test.ts
 ```
 
-No live-agent suite is required for the first version because upstream lacks status/list and idempotent dispatch keys; integration tests own the exact protocol-v2 event ordering deterministically.
+Deterministic integration tests own timeout ambiguity and exact lifecycle ordering because upstream lacks status/list and idempotent dispatch keys. The opt-in live scenario additionally validates the supported protocol-v2 spawn, settlement, consume, and active-cancellation path against a real provider.
 
 ## Task-backlog coverage
 
@@ -118,6 +118,16 @@ Backlog scenario:
 ```bash
 PI_LOOP_LIVE_MODEL="openai-codex/gpt-5.6-sol:minimal" npm run test:e2e:backlog
 ```
+
+Subagent orchestration scenario:
+
+```bash
+PI_LOOP_LIVE_MODEL="openai-codex/gpt-5.6-sol:minimal" \
+PI_LOOP_LIVE_SUBAGENTS_EXTENSION="$HOME/.pi/agent/npm/node_modules/@tintinweb/pi-subagents/src/index.ts" \
+npm run test:e2e:orchestration
+```
+
+It runs in a temporary session-scoped project, proves two isolated workers settle with durable consumed evidence, then creates and cancels an active worker. The extension path defaults to the standard user package location when `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` is omitted.
 
 It requires this first-run sequence:
 
