@@ -43,7 +43,7 @@ export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
     label: "TaskCreate",
     renderCall: renderToolCall("Task", (args) => `create · ${String(toolArg(args, "subject") ?? "task").slice(0, 56)}`),
     renderResult: renderToolResult,
-    description: "Create one independently completable task across turns for a flat or manually assigned backlog. Creating tasks does not start autonomous work. Use subject and description only.",
+    description: "Create an independently completable task across turns for a flat or manually assigned backlog. Creating tasks does not start autonomous work. Use subject and description only.",
     promptGuidelines: [
       "Use multiple TaskCreate calls only for independently completable backlog items that can be assigned or completed separately.",
       "If related items advance one evolving goal through ordered phases, conditional outcomes, rework, or durable handoff, use WorkflowCreate instead—even when the user calls them tasks.",
