@@ -118,6 +118,8 @@ RPC uses request IDs and `<channel>:reply:<requestId>` success/error envelopes. 
 - Tool parameters use exact TypeBox field names; do not add aliases.
 - Recover obvious schema-call mistakes silently.
 - Tool descriptions must state ownership and recovery boundaries without exceeding `test/tool-copy-budget.test.ts`.
+- Model guidance must choose one controller: workflows for ordered phase/outcome/rework/handoff flows, standalone tasks for independently completable backlogs, and dynamic loops for self-paced goals without phase routing.
+- A progress notification is not a terminal pause. Persist unfinished standalone or dynamic-loop progress with `TaskUpdate` or `LoopUpdate`; persist workflow plan changes or completed phases with `WorkflowRevise` or `WorkflowTransition`, then continue while work remains actionable.
 - Mutations go through reducers/stores; do not directly edit persisted maps from tools/runtimes.
 - Rejections are state-preserving and include a specific next action.
 - Use red → green regressions for bugs and state-machine changes.
