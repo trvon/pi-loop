@@ -20,6 +20,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { registerLoopCommand } from "./commands/loop-command.js";
 import { atMaxFires } from "./loop-reducer.js";
 import { MonitorManager } from "./monitor-manager.js";
+import { rpcCall, rpcProbe } from "./rpc/cross-extension-rpc.js";
 import { createMonitorOnDoneRuntime } from "./runtime/monitor-ondone-runtime.js";
 import {
   createNotificationRuntime,
@@ -28,12 +29,14 @@ import {
 import { resolveLoopStorePath, resolveTaskStorePath } from "./runtime/scope.js";
 import { registerSessionRuntimeHooks } from "./runtime/session-runtime.js";
 import { isStaleExtensionContextError } from "./runtime/stale-context.js";
+import { createSubagentOrchestrationRuntime, type SubagentOrchestrationRuntime } from "./runtime/subagent-orchestration-runtime.js";
 import { createTaskBacklogRuntime } from "./runtime/task-backlog-runtime.js";
 import { createTaskProviderRuntime, type TaskProviderRuntime } from "./runtime/task-provider-runtime.js";
 import { CronScheduler } from "./scheduler.js";
 import { LoopStore } from "./store.js";
 import { registerLoopTools } from "./tools/loop-tools.js";
 import { registerMonitorTools } from "./tools/monitor-tools.js";
+import { registerSubagentOrchestrationTools } from "./tools/subagent-orchestration-tools.js";
 import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
 import type { LoopEntry, LoopFireOrigin, MonitorEntry, Trigger } from "./types.js";
@@ -52,6 +55,9 @@ export default function (pi: ExtensionAPI) {
   const piLoopScope = process.env.PI_LOOP_SCOPE as "memory" | "session" | "project" | undefined;
   let loopScope: "memory" | "session" | "project" = piLoopScope ?? "session";
   let sessionGeneration = 0;
+  let _latestCtx: ExtensionContext | undefined;
+  let _sessionId: string | undefined;
+  let orchestrationRuntime: SubagentOrchestrationRuntime | undefined;
 
   const getScopeOptions = () => ({ piLoopEnv, loopScope });
 
@@ -78,6 +84,9 @@ export default function (pi: ExtensionAPI) {
     hasPendingTasks: () => hasPendingTasks(),
     cleanDoneTasks: () => cleanDoneTasks(),
     getHasPendingMessages: () => _latestCtx?.hasPendingMessages() ?? false,
+    onLoopNotificationDelivered: ({ loopId, orchestrationWakeSequence }) => {
+      if (orchestrationWakeSequence !== undefined) orchestrationRuntime?.acknowledgeWake(loopId, orchestrationWakeSequence);
+    },
     debug,
   });
 
@@ -191,7 +200,7 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  function emitLoopFire(entry: LoopEntry, monitor?: MonitorEntry): void {
+  function emitLoopFire(entry: LoopEntry, monitor?: MonitorEntry, orchestrationWakeSequence?: number): void {
     pi.events.emit("loop:fire", {
       loopId: entry.id,
       prompt: entry.prompt,
@@ -204,6 +213,8 @@ export default function (pi: ExtensionAPI) {
       taskBacklog: entry.taskBacklog,
       dynamic: entry.dynamic,
       workflow: entry.workflow,
+      orchestration: entry.orchestration,
+      orchestrationWakeSequence,
       sessionGeneration,
       monitorOutcome: monitor
         ? {
@@ -289,8 +300,19 @@ export default function (pi: ExtensionAPI) {
 
   // ── Session lifecycle ──
 
-  let _latestCtx: ExtensionContext | undefined;
-  let _sessionId: string | undefined;
+  orchestrationRuntime = createSubagentOrchestrationRuntime({
+    events: pi.events,
+    getStore: () => store,
+    getScope: () => loopScope,
+    getPiLoopEnv: () => piLoopEnv,
+    getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId, generation: sessionGeneration } : undefined,
+    getGeneration: () => sessionGeneration,
+    rpcCall: (channel, params, timeoutMs) => rpcCall(pi.events, channel, params, timeoutMs),
+    emitWake: (entry, wake) => emitLoopFire(entry, undefined, wake.sequence),
+    updateWidget: () => widget.update(),
+    isContextCurrent: isCurrentExtensionContext,
+    debug,
+  });
 
   registerSessionRuntimeHooks({
     pi,
@@ -333,6 +355,9 @@ export default function (pi: ExtensionAPI) {
     clearWorkflowMonitorWaits: () => {
       store.clearWorkflowMonitorWaits();
     },
+    recoverOrchestrations: () => orchestrationRuntime!.recover(),
+    pumpOrchestrations: () => orchestrationRuntime!.pump(),
+    shutdownOrchestrations: () => orchestrationRuntime!.shutdown(),
     shutdownMonitors: () => monitorManager.shutdown(),
     hasPendingTasks,
     cleanDoneTasks,
@@ -392,6 +417,17 @@ export default function (pi: ExtensionAPI) {
     onDynamicLoopActivated: (entry) => {
       onLoopFire(entry);
     },
+    cancelOrchestration: (id, action) => orchestrationRuntime!.cancel(id, action),
+  });
+
+  registerSubagentOrchestrationTools({
+    pi,
+    getStore: () => store,
+    getScope: () => loopScope,
+    getPiLoopEnv: () => piLoopEnv,
+    getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId, generation: sessionGeneration } : undefined,
+    probeSubagents: () => rpcProbe(pi.events, "subagents:rpc:ping", 1_000),
+    updateWidget: () => widget.update(),
   });
 
   registerWorkflowTools({
@@ -438,6 +474,7 @@ export default function (pi: ExtensionAPI) {
     onDynamicLoopActivated: (entry) => {
       onLoopFire(entry);
     },
+    cancelOrchestration: (id, action) => orchestrationRuntime!.cancel(id, action),
   });
 
 }

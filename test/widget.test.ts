@@ -201,6 +201,26 @@ describe("LoopWidget status rendering", () => {
     ]);
   });
 
+  it("shows orchestration count and bounded worker progress separately", () => {
+    store.create({ type: "dynamic" }, "Parallel review", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "s", runtimeId: "r", generation: 1 },
+        definition: {
+          goal: "Parallel review",
+          work: [{ prompt: "Inspect API" }, { prompt: "Inspect runtime" }],
+          concurrency: 2,
+        },
+      },
+    });
+
+    widget.update();
+    expect(latestStatusCall()).toEqual([
+      "loops",
+      "◇ 1 orchestration | #1 active · 0/2 done · 0 active",
+    ]);
+  });
+
   it("does not count one-shot monitor completion loops as visible loops in status", () => {
     store.create(
       { type: "event", source: "monitor:done", filter: '{"monitorId":"5"}' },

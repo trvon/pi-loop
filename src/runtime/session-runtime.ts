@@ -32,6 +32,9 @@ export interface SessionRuntimeOptions {
   adoptTaskBacklogLoops: (baselineFireCounts?: ReadonlyMap<string, number>, isCurrent?: () => boolean) => Promise<number>;
   releaseTaskBacklogWakes: () => void;
   clearWorkflowMonitorWaits: () => void;
+  recoverOrchestrations: () => Promise<void>;
+  pumpOrchestrations: () => Promise<void>;
+  shutdownOrchestrations: () => Promise<void>;
   shutdownMonitors: () => Promise<void>;
   hasPendingTasks: () => Promise<number>;
   cleanDoneTasks: () => Promise<void>;
@@ -59,6 +62,9 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     adoptTaskBacklogLoops,
     releaseTaskBacklogWakes,
     clearWorkflowMonitorWaits,
+    recoverOrchestrations,
+    pumpOrchestrations,
+    shutdownOrchestrations,
     shutdownMonitors,
     hasPendingTasks,
     cleanDoneTasks,
@@ -111,11 +117,12 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     if (!isCurrentGeneration(generation)) return;
     clearWorkflowMonitorWaits();
     const store = getStore();
+    store.clearExpired();
+    store.expireEventLoops(sessionStartedAt);
+    await recoverOrchestrations();
+    if (!isCurrentGeneration(generation)) return;
     const triggerSystem = getTriggerSystem();
-    const loops = store.list();
-    if (loops.length > 0) {
-      store.clearExpired();
-      store.expireEventLoops(sessionStartedAt);
+    if (store.list().length > 0) {
       triggerSystem.start();
       ensureHeartbeat();
     }
@@ -124,6 +131,8 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
   }
 
   async function pumpLoops(generation = getSessionGeneration()): Promise<void> {
+    await pumpOrchestrations();
+    if (!isCurrentGeneration(generation)) return;
     const store = getStore();
     const scheduler = getScheduler();
     const pendingTasks = new Map<string, boolean>();
@@ -200,6 +209,8 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     await adoptTaskBacklogLoops(agentStartFireCounts, () => isCurrentGeneration(generation));
     if (!isCurrentGeneration(generation)) return;
     agentStartFireCounts = undefined;
+    await pumpOrchestrations();
+    if (!isCurrentGeneration(generation)) return;
     await flushPendingNotifications({ ignorePendingMessages: true });
     if (!isCurrentGeneration(generation)) return;
     await pumpLoops(generation);
@@ -212,6 +223,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     stopHeartbeat();
     releaseTaskBacklogWakes();
     notificationRuntime.clear("session_shutdown");
+    await shutdownOrchestrations();
     setSessionId(undefined);
     storeUpgraded = false;
     persistedShown = false;
@@ -226,6 +238,7 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     stopHeartbeat();
     notificationRuntime.clear("session_switch");
     releaseTaskBacklogWakes();
+    await shutdownOrchestrations();
     setSessionId(undefined);
     storeUpgraded = false;
     persistedShown = false;

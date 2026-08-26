@@ -37,6 +37,7 @@ export interface LoopCommandOptions {
   updateWidget: () => void;
   maybeBootstrapTaskLoop?: (entry: LoopEntry) => Promise<boolean>;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
+  cancelOrchestration?: (id: string, action: "pause" | "delete") => Promise<boolean>;
 }
 
 type LoopCommandRoute =
@@ -78,7 +79,7 @@ function parseLoopCommandRoute(input: string): LoopCommandRoute {
 }
 
 export function registerLoopCommand(options: LoopCommandOptions): void {
-  const { pi, getStore, getTriggerSystem, updateWidget, maybeBootstrapTaskLoop, onDynamicLoopActivated } = options;
+  const { pi, getStore, getTriggerSystem, updateWidget, maybeBootstrapTaskLoop, onDynamicLoopActivated, cancelOrchestration } = options;
 
   function createCronLoop(ui: ExtensionUIContext, interval: string, prompt: string, notifyEvery: boolean) {
     let entry: LoopEntry | undefined;
@@ -168,7 +169,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
       if (entry) {
         const actions = ["x Delete"];
         if (entry.status === "active") actions.unshift("- Pause");
-        else if (entry.status === "paused" && !isTerminalWorkflowRun(entry.workflow)) actions.unshift("* Resume");
+        else if (entry.status === "paused" && !entry.orchestration && !isTerminalWorkflowRun(entry.workflow)) actions.unshift("* Resume");
         actions.push("< Back");
 
         const detail = entry.workflow
@@ -177,14 +178,20 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
         const action = await ui.select(detail, actions);
 
         if (action === "x Delete") {
-          getTriggerSystem().remove(entry.id);
-          getStore().delete(entry.id);
-          updateWidget();
+          if (entry.orchestration) await cancelOrchestration?.(entry.id, "delete");
+          else {
+            getTriggerSystem().remove(entry.id);
+            getStore().delete(entry.id);
+            updateWidget();
+          }
           ui.notify(`Loop #${entry.id} deleted`, "info");
         } else if (action === "- Pause") {
-          getStore().pause(entry.id);
-          getTriggerSystem().remove(entry.id);
-          updateWidget();
+          if (entry.orchestration) await cancelOrchestration?.(entry.id, "pause");
+          else {
+            getStore().pause(entry.id);
+            getTriggerSystem().remove(entry.id);
+            updateWidget();
+          }
           ui.notify(`Loop #${entry.id} paused`, "info");
         } else if (action === "* Resume") {
           const resumed = getStore().resume(entry.id);

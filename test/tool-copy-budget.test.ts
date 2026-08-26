@@ -39,6 +39,7 @@ describe("registered tool copy budget", () => {
       "triggerType",
       "onDone",
       "WorkflowTransition uses id, outcome, and optional evidence",
+      "session LoopStore orchestration",
     ]) {
       expect(copy).toContain(required);
     }

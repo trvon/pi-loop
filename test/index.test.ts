@@ -102,6 +102,53 @@ describe("workflow runtime wiring", () => {
   });
 });
 
+describe("subagent orchestration runtime wiring", () => {
+  const sessionId = "orchestration-session";
+
+  beforeEach(() => clearTestLoopStore(sessionId));
+  afterEach(() => clearTestLoopStore(sessionId));
+
+  it("dispatches a bounded batch, consumes settled evidence, and wakes the idle parent once", async () => {
+    let nextAgent = 0;
+    const { pi, toolMap, emittedEvents, sentMessages, emitExtension } = createMockPi({
+      respondToSubagentPing: 2,
+      respondToSubagentSpawn: () => `agent-${++nextAgent}`,
+      respondToSubagentConsume: true,
+      respondToSubagentStop: true,
+    });
+    extension(pi as any);
+    await flushAsync();
+    const ctx = createCtx({ sessionId });
+    await emitExtension("turn_start", null, ctx);
+
+    const created = await toolMap.get("OrchestrationCreate")!.execute!("create", {
+      goal: "Review release readiness",
+      work: [
+        { prompt: "Inspect API", agentType: "Explore" },
+        { prompt: "Inspect runtime", agentType: "Explore" },
+      ],
+      concurrency: 2,
+    });
+    expect(created.content[0].text).toContain("Orchestration #1 created");
+
+    await emitExtension("agent_end", null, ctx);
+    await flushAsync();
+    expect(emittedEvents.filter((event) => event.name === "subagents:rpc:spawn")).toHaveLength(2);
+
+    pi.events.emit("subagents:completed", { id: "agent-1", status: "completed", result: "API is compatible." });
+    pi.events.emit("subagents:completed", { id: "agent-2", status: "completed", result: "Runtime is bounded." });
+    await flushAsync();
+
+    expect(emittedEvents.filter((event) => event.name === "subagents:rpc:consume")).toHaveLength(2);
+    expect(sentMessages.filter((item) => item.message.content.includes("Orchestration #1 requires parent attention"))).toHaveLength(1);
+    const inspected = await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1" });
+    expect(inspected.content[0].text).toContain("completed=2");
+    const loops = await toolMap.get("LoopList")!.execute!("list", {});
+    expect(loops.content[0].text).toContain("[paused]");
+    expect(loops.content[0].text).toContain("[orchestration:completed]");
+  });
+});
+
 describe("native task fallback", () => {
   let cwd: string;
   let originalCwd: string;
