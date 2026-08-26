@@ -58,6 +58,8 @@ MonitorStop monitorId="1"
 | `MonitorCreate`, `MonitorList`, `MonitorStop` | Run and inspect background commands |
 | `TaskCreate`, `TaskList`, `TaskClaim`, `TaskHeartbeat`, `TaskUpdate`, `TaskDelete` | Native fallback task management |
 
+Choose one owner: workflows for one goal with ordered phases/outcomes/rework/handoff, standalone tasks for independently completable backlog items, and dynamic loops for a self-paced goal without phase routing. Persist unfinished task/loop progress or workflow plan changes in that owner, then continue while work remains actionable.
+
 See the [usage guide](./docs/USAGE_GUIDE.md) for operator workflows and the [reference](./docs/REFERENCE.md) for authority, persistence, mutation, RPC, and recovery boundaries.
 
 ## Development

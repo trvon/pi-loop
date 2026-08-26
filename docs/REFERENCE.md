@@ -47,7 +47,7 @@ Project scope shares durable state but does not yet elect one scheduler owner ac
 - hybrid: `{type:"hybrid", cron, event, debounceMs}`
 - dynamic: `{type:"dynamic"}`
 
-`LoopCreate` creates ordinary controllers. `LoopUpdate` is only for dynamic non-workflow loops. `LoopDelete` pauses or removes controllers. Recurring loops expire after seven days unless recreated; fire limits bound repeated execution.
+`LoopCreate` creates ordinary controllers. Use dynamic loops for one evolving goal without named phase/outcome routing; use workflows for ordered phases, conditional outcomes, rework, or durable handoff; use standalone tasks for independently completable backlog items. `LoopUpdate` is only for dynamic non-workflow loops and must persist `continue` after empty or unchanged iterations while work remains. `LoopDelete` pauses or removes controllers. Recurring loops expire after seven days unless recreated; fire limits bound repeated execution.
 
 Wake delivery is idle-driven. A due timer or event mutates loop state, emits `loop:fire`, buffers a generation-tagged notification, and sends a hidden Pi message when delivery is safe. Stale extension contexts are probed before fire mutation.
 
@@ -68,7 +68,7 @@ A run persists current state, transition sequence, attempts, state fire counts, 
 
 The initial task execution is leased to the creating runtime. Every destination execution, including self-loop retries, starts unowned. `WorkflowClaim` claims unowned work, renews the same owner, or takes over an expired lease. Live foreign ownership fails closed.
 
-`WorkflowTransition` validates the current lease, declared outcome, attempt limit, active execution, and definition revision. One locked write settles source work, records evidence, advances state, and creates the destination execution. Completed terminal states delete the controller; paused terminal states preserve it for inspection.
+`WorkflowTransition` validates the current lease, declared available outcome, attempt limit, active execution, and definition revision. One locked write settles source work, records evidence, advances state, and creates the destination execution. A missing or exhausted route is handled through `WorkflowRevise`, not a fabricated transition. Completed terminal states delete the controller; paused terminal states preserve it for inspection and represent a declared blocker or required user authority—not a progress notification.
 
 ### Adaptive revision
 
@@ -81,7 +81,7 @@ The initial task execution is leased to the creating runtime. Every destination 
 
 Revision is additive: no remove, rename, full replacement, or current-state content mutation. Added states must be reachable and rejoin prior or terminal work. Redirected routes must retain a path to their prior target.
 
-Acceptance appends the prior definition, reason, actor, timestamp, and patch to immutable history, then increments `definitionRevision`. Current execution, lease, counters, and scheduler state remain unchanged. Maximum definition size is 65,536 UTF-8 bytes and maximum revision count is 32.
+Acceptance appends the prior definition, reason, actor, timestamp, and patch to immutable history, then increments `definitionRevision`. Current execution, lease, counters, and scheduler state remain unchanged. Persist actionable plan gaps, then continue through the revised transition and claim while work remains actionable; revision never creates standalone workflow tasks. Maximum definition size is 65,536 UTF-8 bytes and maximum revision count is 32.
 
 Revision and transition race through the same LoopStore lock. Revision-first makes a stale transition fail its definition CAS; transition-first makes a stale revision fail state/sequence CAS.
 
@@ -89,7 +89,7 @@ Revision and transition race through the same LoopStore lock. Revision-first mak
 
 Native task statuses are `pending`, `in_progress`, `completed`, and `closed`. `TaskClaim` starts or resumes unfinished work and returns a renewable bearer claim ID. `TaskHeartbeat` renews it. Terminal update or deletion of live claimed work requires that ID. Expired claims may be taken over.
 
-Task prerequisites are description conventions, not first-class graph fields. Backlog workers use `TaskGet` to follow them.
+Standalone tasks are independently completable backlog items. Related work that advances one evolving goal through ordered phases, conditional outcomes, rework, or durable handoff belongs in a workflow instead. Task prerequisites are description conventions, not first-class graph fields. Backlog workers use `TaskGet` to follow them, and unfinished handoffs persist material progress and next action through `TaskUpdate`.
 
 pi-loop probes external `pi-tasks` through protocol-v2 RPC. When unavailable, the native provider and tools are registered. `autoTask` creates one standalone task per ordinary loop fire. `taskBacklog` adopts existing unfinished tasks and must use a recurring `tasks:created` trigger.
 
