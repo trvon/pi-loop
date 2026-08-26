@@ -141,6 +141,7 @@ export function createSubagentOrchestrationRuntime(
   const earlyEvents = new Map<string, EarlyLifecycleEvent>();
   const wakeQueued = new Set<string>();
   const consumeInFlight = new Set<string>();
+  const dispatchesInFlight = new Map<string, Set<Promise<void>>>();
   let active = true;
   let reconcileQueued = false;
   let pumpPromise: Promise<void> | undefined;
@@ -191,6 +192,25 @@ export function createSubagentOrchestrationRuntime(
     return undefined;
   }
 
+  function trackDispatch(loopId: string, promise: Promise<void>): Promise<void> {
+    const pending = dispatchesInFlight.get(loopId) ?? new Set<Promise<void>>();
+    pending.add(promise);
+    dispatchesInFlight.set(loopId, pending);
+    const remove = () => {
+      pending.delete(promise);
+      if (pending.size === 0) dispatchesInFlight.delete(loopId);
+    };
+    void promise.then(remove, remove);
+    return promise;
+  }
+
+  async function drainDispatches(loopId?: string): Promise<void> {
+    const pending = loopId
+      ? [...(dispatchesInFlight.get(loopId) ?? [])]
+      : [...dispatchesInFlight.values()].flatMap((items) => [...items]);
+    await Promise.allSettled(pending);
+  }
+
   function schedulePump(): void {
     if (!active || reconcileQueued) return;
     reconcileQueued = true;
@@ -214,8 +234,15 @@ export function createSubagentOrchestrationRuntime(
     });
   }
 
+  function canConsume(loopId: string, agentId: string): boolean {
+    const state = getStore().get(loopId)?.orchestration;
+    if (!state || !actorOwns(state)) return false;
+    const dispatch = state.work.flatMap((item) => item.dispatches).find((candidate) => candidate.agentId === agentId);
+    return dispatch?.consumeStatus === "pending" && dispatch.consumeAttempts < 3;
+  }
+
   function consumeSettled(loopId: string, agentId: string): void {
-    if (consumeInFlight.has(agentId)) return;
+    if (consumeInFlight.has(agentId) || !canConsume(loopId, agentId)) return;
     consumeInFlight.add(agentId);
     let call: Promise<unknown>;
     try {
@@ -239,7 +266,9 @@ export function createSubagentOrchestrationRuntime(
     if (!match) {
       const settled = event.kind === "started" ? undefined : findSettledAgent(event.id);
       if (settled) {
-        consumeSettled(settled.entry.id, event.id);
+        if (settled.dispatch.consumeStatus === "pending" && settled.dispatch.consumeAttempts < 3) {
+          consumeSettled(settled.entry.id, event.id);
+        }
         return true;
       }
       if (rememberUnknown) rememberEarly(event);
@@ -305,6 +334,22 @@ export function createSubagentOrchestrationRuntime(
     handleLifecycle(early.event, false);
   }
 
+  function isAgentBound(agentId: string): boolean {
+    return getStore().list().some((entry) => entry.orchestration?.work.some((item) =>
+      item.dispatches.some((dispatch) => dispatch.agentId === agentId)));
+  }
+
+  async function stopUnboundSpawn(agentId: string): Promise<void> {
+    if (isAgentBound(agentId)) return;
+    try {
+      await rpcCall(STOP_RPC, { agentId }, STOP_TIMEOUT_MS);
+      if (isAgentBound(agentId)) return;
+      await rpcCall(CONSUME_RPC, { agentId }, STOP_TIMEOUT_MS);
+    } catch (error) {
+      debug?.("orchestration orphan spawn cleanup failed", { agentId, error });
+    }
+  }
+
   async function dispatchWork(entry: LoopEntry, item: OrchestrationWorkItem): Promise<void> {
     if (!isContextCurrent()) return;
     const state = entry.orchestration;
@@ -338,9 +383,15 @@ export function createSubagentOrchestrationRuntime(
       }, SPAWN_TIMEOUT_MS);
       const reply = asSpawnReply(rawReply);
       if (!reply) throw new Error("Invalid subagent spawn reply");
-      if (!isContextCurrent()) return;
+      if (!isContextCurrent()) {
+        await stopUnboundSpawn(reply.id);
+        return;
+      }
       const fresh = getStore().get(entry.id)?.orchestration;
-      if (!fresh || !actorOwns(fresh)) return;
+      if (!fresh || !actorOwns(fresh)) {
+        await stopUnboundSpawn(reply.id);
+        return;
+      }
       const bound = getStore().mutateOrchestration(entry.id, {
         type: "dispatch_bound",
         at: now(),
@@ -353,15 +404,17 @@ export function createSubagentOrchestrationRuntime(
         replayEarly(reply.id);
       } else {
         const latest = getStore().get(entry.id)?.orchestration;
-        if (!latest || !actorOwns(latest)) return;
-        getStore().mutateOrchestration(entry.id, {
-          type: "dispatch_uncertain",
-          at: now(),
-          expected: expected(latest),
-          workId: item.id,
-          dispatchId,
-          error: `Spawn reply could not be bound safely: ${bound.reason ?? "state changed"}.`,
-        });
+        if (latest && actorOwns(latest)) {
+          getStore().mutateOrchestration(entry.id, {
+            type: "dispatch_uncertain",
+            at: now(),
+            expected: expected(latest),
+            workId: item.id,
+            dispatchId,
+            error: `Spawn reply could not be bound safely: ${bound.reason ?? "state changed"}.`,
+          });
+        }
+        await stopUnboundSpawn(reply.id);
       }
     } catch (error) {
       if (!isContextCurrent()) return;
@@ -412,10 +465,12 @@ export function createSubagentOrchestrationRuntime(
     if (!actor || actor.generation !== getGeneration()) return;
 
     for (const listed of getStore().list()) {
-      retryPendingConsumes(listed);
       let entry = listed;
       let state = entry.orchestration;
-      if (!state || entry.status !== "active") continue;
+      if (!state) continue;
+      const recoveringWake = entry.status === "paused" && state.pendingWake !== undefined
+        && getOrchestrationCounts(state).active === 0;
+      if (entry.status !== "active" && !recoveringWake) continue;
       if (!actorOwns(state)) {
         const adopted = getStore().mutateOrchestration(entry.id, {
           type: "owner_adopted",
@@ -436,7 +491,8 @@ export function createSubagentOrchestrationRuntime(
         entry = renewed.entry!;
         state = entry.orchestration!;
       }
-      if (state.status !== "active") continue;
+      retryPendingConsumes(entry);
+      if (entry.status !== "active" || state.status !== "active") continue;
 
       while (true) {
         const freshEntry = getStore().get(entry.id);
@@ -445,10 +501,10 @@ export function createSubagentOrchestrationRuntime(
         if (getOrchestrationCounts(fresh).active >= fresh.concurrency) break;
         const pending = fresh.work.find((item) => item.status === "pending");
         if (!pending) break;
-        await dispatchWork(freshEntry, pending);
+        await trackDispatch(entry.id, dispatchWork(freshEntry, pending));
       }
     }
-    emitPendingWakes();
+    if (active) emitPendingWakes();
     updateWidget();
   }
 
@@ -509,6 +565,7 @@ export function createSubagentOrchestrationRuntime(
       }
     }
     await Promise.all(stops);
+    await drainDispatches();
     wakeQueued.clear();
     updateWidget();
   }
@@ -538,6 +595,7 @@ export function createSubagentOrchestrationRuntime(
     });
     if (!result.applied) return false;
     await Promise.all(agentIds.map((agentId) => stopCancelledAgent(id, agentId)));
+    await drainDispatches(id);
     if (action === "delete") getStore().delete(id);
     else getStore().pause(id);
     for (const key of wakeQueued) {
@@ -581,6 +639,7 @@ export function createSubagentOrchestrationRuntime(
       earlyEvents.clear();
       wakeQueued.clear();
       consumeInFlight.clear();
+      dispatchesInFlight.clear();
     },
   };
 }

@@ -220,6 +220,7 @@ describe("subagent orchestration runtime", () => {
     h.pi.events.emit("subagents:completed", { id: "agent-shared", result: "one result" });
     await h.drain();
     expect(h.store.get(h.entry.id)?.orchestration?.work.map((item) => item.status)).toEqual(["completed", "uncertain"]);
+    expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:stop")).toHaveLength(0);
   });
 
   it("marks an ambiguous spawn timeout uncertain and never retries it", async () => {
@@ -260,6 +261,24 @@ describe("subagent orchestration runtime", () => {
     expect(h.store.get(h.entry.id)!.orchestration!.owner.leaseExpiresAt).toBeGreaterThan(before);
   });
 
+  it("replays a durable pending wake after paused-owner lease recovery", async () => {
+    const h = setup({ workCount: 1 });
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "done" });
+    await h.drain();
+    const previous = h.store.get(h.entry.id)!.orchestration!;
+    expect(h.store.get(h.entry.id)?.status).toBe("paused");
+    expect(h.emitWake).toHaveBeenCalledTimes(1);
+
+    h.setActor({ sessionId: owner.sessionId, runtimeId: "runtime-b", generation: 3 });
+    h.setNow(previous.owner.leaseExpiresAt + 1);
+    await h.runtime.recover();
+
+    expect(h.store.get(h.entry.id)?.orchestration?.owner).toMatchObject({ runtimeId: "runtime-b", generation: 3 });
+    expect(h.emitWake).toHaveBeenCalledTimes(2);
+    expect(h.store.get(h.entry.id)?.orchestration?.pendingWake).toMatchObject({ reason: "completed", sequence: 1 });
+  });
+
   it("retries bounded consume acknowledgement after durable settlement", async () => {
     let consumeAttempts = 0;
     const rpc = vi.fn(async (channel: string) => {
@@ -277,6 +296,21 @@ describe("subagent orchestration runtime", () => {
 
     expect(consumeAttempts).toBe(2);
     expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.consumeStatus).toBe("consumed");
+  });
+
+  it("does not consume again for duplicate terminal lifecycle events", async () => {
+    const h = setup({ workCount: 1 });
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.consumeStatus).toBe("consumed");
+    const before = h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume").length;
+
+    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "duplicate" });
+    await Promise.resolve();
+
+    expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume")).toHaveLength(before);
   });
 
   it("drops lifecycle events from a stale extension context before mutation", async () => {
@@ -314,6 +348,26 @@ describe("subagent orchestration runtime", () => {
     expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.status).toBe("pending");
   });
 
+  it("stops a worker whose spawn reply arrives after cancellation", async () => {
+    let resolveSpawn: ((value: unknown) => void) | undefined;
+    const rpc = vi.fn(async (channel: string) => {
+      if (channel === "subagents:rpc:spawn") return await new Promise((resolve) => { resolveSpawn = resolve; });
+      return undefined;
+    });
+    const h = setup({ workCount: 1, rpc });
+    const pumping = h.runtime.pump();
+    await Promise.resolve();
+
+    const cancelling = h.runtime.cancel(h.entry.id, "delete");
+    await Promise.resolve();
+    resolveSpawn?.({ id: "agent-after-cancel" });
+    await Promise.all([pumping, cancelling]);
+
+    expect(h.rpc.mock.calls).toContainEqual(["subagents:rpc:stop", { agentId: "agent-after-cancel" }, 1_000]);
+    expect(h.rpc.mock.calls).toContainEqual(["subagents:rpc:consume", { agentId: "agent-after-cancel" }, 1_000]);
+    expect(h.store.get(h.entry.id)).toBeUndefined();
+  });
+
   it("fences cancellation before stopping and deleting owned workers", async () => {
     const h = setup({ workCount: 2, concurrency: 2 });
     await h.runtime.pump();
@@ -343,10 +397,12 @@ describe("subagent orchestration runtime", () => {
     const pumping = h.runtime.pump();
     await Promise.resolve();
 
-    await h.runtime.shutdown();
+    const shuttingDown = h.runtime.shutdown();
+    await Promise.resolve();
     resolveSpawn?.({ id: "agent-too-late" });
-    await pumping;
+    await Promise.all([pumping, shuttingDown]);
 
+    expect(h.rpc.mock.calls).toContainEqual(["subagents:rpc:stop", { agentId: "agent-too-late" }, 1_000]);
     expect(h.store.get(h.entry.id)?.orchestration).toMatchObject({
       status: "needs_attention",
       work: [{ status: "uncertain" }],
