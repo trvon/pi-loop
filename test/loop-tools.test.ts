@@ -183,19 +183,20 @@ describe("LoopCreate", () => {
   });
 
   it("tells agents to preserve recurring and dynamic loop controllers", () => {
-    const loopCreate = h.toolMap.get("LoopCreate")!;
+    const loopCreate = h.toolMap.get("LoopCreate")! as any;
     const loopUpdate = h.toolMap.get("LoopUpdate")!;
     const loopDelete = h.toolMap.get("LoopDelete")!;
 
     expect(loopCreate.description).toContain("A completed iteration, unchanged result, or temporarily empty check is not a reason to delete the loop");
-    expect(loopCreate.promptGuidelines).toContain(
-      "Recurring loops are persistent controllers. Do not call LoopDelete after a normal fire, an unchanged check, or one completed iteration; only delete when the user explicitly asks to cancel or the loop's stated stop condition is satisfied.",
+    expect(loopCreate.promptGuidelines.join("\n")).toContain(
+      "Use LoopDelete only for explicit cancellation or a satisfied stop condition",
     );
-    expect(loopCreate.promptGuidelines).toContain(
-      "For taskBacklog loops, do not instruct the agent to delete the loop; pi-loop auto-deletes it when the pending count reaches zero.",
+    expect(loopCreate.promptGuidelines.join("\n")).toContain("Report the created loop ID");
+    expect(loopCreate.promptGuidelines.join("\n")).toContain(
+      "never combine taskBacklog with autoTask or manually delete its loop",
     );
-    expect(loopUpdate.description).toContain("Do not use LoopDelete to finish an iteration");
-    expect(loopDelete.description).toContain("Do not use this after a normal loop fire");
+    expect(loopUpdate.description).toContain("never use LoopDelete to finish an iteration");
+    expect(loopDelete.description).toContain("Do neither after a normal, empty, or unchanged iteration");
   });
 });
 
@@ -565,8 +566,11 @@ describe("Workflow tools", () => {
       },
     });
     const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition: noOutcomes });
-    expect(out).toContain("Needs attention: this state declares no outcomes");
-    expect(out).toContain('Add on: {outcome: targetState}');
+    expect(out).toContain("Plan gap: this state declares no outcomes");
+    expect(out).toContain("Use WorkflowRevise with the displayed revision/state/sequence");
+    expect(out).toContain("Persist it, then continue through its transition and claim when actionable");
+    expect(out).toContain("do not stop or terminal-pause merely to report this gap");
+    expect(out).not.toContain("Next: WorkflowTransition");
   });
 
   it("claims and renews the workflow execution lease through the tool", async () => {
@@ -622,6 +626,9 @@ describe("Workflow tools", () => {
     });
 
     expect(message.indexOf("to_bb")).toBeLessThan(message.indexOf("to_aa"));
+    expect(message).toContain("Route gap: all declared outcomes are unavailable");
+    expect(message).toContain("use WorkflowRevise");
+    expect(message).not.toContain("Next: WorkflowTransition");
   });
 
   it("queues the next wake after transitioning into an ordinary no-loop phase", async () => {

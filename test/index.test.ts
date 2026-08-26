@@ -29,8 +29,8 @@ describe("workflow runtime wiring", () => {
   const sessionIds = ["workflow-cap-session", "workflow-task-session"];
   beforeEach(() => sessionIds.forEach(clearTestLoopStore));
   afterEach(() => sessionIds.forEach(clearTestLoopStore));
-  it("pauses an immediately fired workflow state at its local fire cap", async () => {
-    const { pi, toolMap, extensionHandlers } = createMockPi();
+  it("pauses an immediately fired workflow state at its local fire cap with recovery guidance", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
     extension(pi as any);
     await flushAsync();
 
@@ -57,9 +57,14 @@ describe("workflow runtime wiring", () => {
     });
 
     await toolMap.get("WorkflowCreate")!.execute!("workflow-local-cap", { goal: "Process records", definition });
+    await flushAsync();
     const loops = await toolMap.get("LoopList")!.execute!("list-workflows", {});
+    const wake = sentMessages.find((item) => item.message.content.includes("fired (workflow)"));
 
     expect(loops.content[0].text).toContain("[paused]");
+    expect(wake?.message.content).toContain("has reached its fire cap; this workflow is paused and no next cadence is scheduled");
+    expect(wake?.message.content).toContain("Otherwise add a bounded recovery state/route with WorkflowRevise, then transition and claim it");
+    expect(wake?.message.content).not.toContain("leave the workflow active for its next cadence");
   });
 
   it("creates and completes task-bearing workflow work", async () => {
@@ -147,7 +152,7 @@ describe("native task fallback", () => {
     });
   });
 
-  it("guides TaskCreate toward broad-goal decomposition without advertising unsupported fields", async () => {
+  it("routes independently completable backlogs to TaskCreate and phased goals to workflows", async () => {
     const { pi, toolMap } = createMockPi();
 
     extension(pi as any);
@@ -155,16 +160,16 @@ describe("native task fallback", () => {
     await Promise.resolve();
 
     const taskCreate = toolMap.get("TaskCreate") as any;
-    expect(taskCreate.description).toContain("broad user goal");
+    expect(taskCreate.description).toContain("independently completable task");
     expect(taskCreate.description).not.toContain("metadata");
-    expect(taskCreate.promptGuidelines).toContain(
-      "When the user gives a broad goal, use multiple TaskCreate calls to decompose it into a small backlog of concrete tasks rather than one oversized task.",
+    expect(taskCreate.promptGuidelines.join("\n")).toContain(
+      "Use multiple TaskCreate calls only for independently completable backlog items",
     );
-    expect(taskCreate.promptGuidelines).toContain(
-      "If the user supplies a shared goal or meta-goal, preserve it explicitly using the user's wording and tie each created task back to that goal in its description.",
+    expect(taskCreate.promptGuidelines.join("\n")).toContain(
+      "use WorkflowCreate instead—even when the user calls them tasks",
     );
-    expect(taskCreate.promptGuidelines).toContain(
-      "When the user asks to break work into tasks, create the backlog directly and do not pivot to loops, monitors, or other automation unless the user also asked for ongoing automation.",
+    expect(taskCreate.promptGuidelines.join("\n")).toContain(
+      "do not add loops or autonomous processing unless requested",
     );
   });
 

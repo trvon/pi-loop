@@ -39,6 +39,9 @@ describe("registered tool copy budget", () => {
       "triggerType",
       "onDone",
       "WorkflowTransition uses id, outcome, and optional evidence",
+      "ordered phases, conditional outcomes, rework, or durable handoff",
+      "independently completable backlog items",
+      "Persist in the correct owner: TaskUpdate for unfinished standalone tasks",
     ]) {
       expect(copy).toContain(required);
     }
