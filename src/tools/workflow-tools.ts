@@ -278,7 +278,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     renderResult: renderToolResult,
     description: "Revise a running workflow with typed additive changes while preserving current work and history.",
     promptGuidelines: [
-      "Non-task WorkflowRevise needs no claim. Use exact revision/state/sequence; claim only unowned/expired active task work.",
+      "Non-task WorkflowRevise needs no claim. Pass exact CAS; use WorkflowClaim only for unowned/expired task work.",
       "Persist actionable plan gaps with WorkflowRevise, then continue through the normal transition/claim; add_state + redirect_transition inserts prerequisites. Never create standalone tasks for workflow work.",
     ],
     parameters: Type.Object({

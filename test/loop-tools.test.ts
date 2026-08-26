@@ -188,16 +188,24 @@ describe("LoopCreate", () => {
   });
 
   it("tells agents to preserve recurring and dynamic loop controllers", () => {
-    const loopCreate = h.toolMap.get("LoopCreate")! as any;
-    const loopUpdate = h.toolMap.get("LoopUpdate")!;
-    const loopDelete = h.toolMap.get("LoopDelete")!;
+    const loopCreate = h.toolMap.get("LoopCreate");
+    const loopUpdate = h.toolMap.get("LoopUpdate");
+    const loopDelete = h.toolMap.get("LoopDelete");
+    expect(loopCreate).toBeDefined();
+    expect(loopUpdate).toBeDefined();
+    expect(loopDelete).toBeDefined();
+    if (!loopCreate || !loopUpdate || !loopDelete) throw new Error("loop tools were not registered");
+    const promptGuidelines = loopCreate.promptGuidelines;
+    expect(Array.isArray(promptGuidelines)).toBe(true);
+    if (!Array.isArray(promptGuidelines)) throw new Error("LoopCreate promptGuidelines were not registered");
+    const guidance = promptGuidelines.join("\n");
 
     expect(loopCreate.description).toContain("A completed iteration, unchanged result, or temporarily empty check is not a reason to delete the loop");
-    expect(loopCreate.promptGuidelines.join("\n")).toContain(
+    expect(guidance).toContain(
       "Use LoopDelete only for explicit cancellation or a satisfied stop condition",
     );
-    expect(loopCreate.promptGuidelines.join("\n")).toContain("Report the created loop ID");
-    expect(loopCreate.promptGuidelines.join("\n")).toContain(
+    expect(guidance).toContain("Report the created loop ID");
+    expect(guidance).toContain(
       "never combine taskBacklog with autoTask or manually delete its loop",
     );
     expect(loopUpdate.description).toContain("never use LoopDelete to finish an iteration");
@@ -557,7 +565,7 @@ describe("Workflow tools", () => {
     expect(revise.parameters.properties.claimId).toBeUndefined();
     expect(revise.description).toContain("typed additive changes");
     expect(revise.promptGuidelines.join("\n")).toContain("Non-task WorkflowRevise needs no claim");
-    expect(revise.promptGuidelines.join("\n")).toContain("claim only unowned/expired active task work");
+    expect(revise.promptGuidelines.join("\n")).toContain("use WorkflowClaim only for unowned/expired task work");
     expect(revise.promptGuidelines.join("\n")).toContain("Never create standalone tasks");
   });
 
