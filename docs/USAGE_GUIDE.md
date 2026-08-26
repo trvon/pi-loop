@@ -121,6 +121,34 @@ LoopDelete id="1" action="delete"
 
 `LoopDelete` defaults to `action="delete"` and removes the controller and its embedded executions.
 
+## Async subagent orchestration
+
+`OrchestrationCreate` runs a finite batch of independent work after the parent turn becomes idle:
+
+```text
+OrchestrationCreate goal="Review release readiness" work='[
+  {"prompt":"Inspect API compatibility","agentType":"Explore"},
+  {"prompt":"Review rollout risks","agentType":"Plan"}
+]' concurrency=2 maxAttempts=2 maxTurns=12
+```
+
+This surface requires the default file-backed session scope and `@tintinweb/pi-subagents` protocol v2. It rejects memory/project scope, `PI_LOOP=off`, and custom `PI_LOOP` paths. The batch is stored only in `LoopStore`; it does not create standalone tasks or delegate workflow states.
+
+Work items must be independent. The controller does not model dependencies or protect overlapping filesystem writes. Each spawned worker is background, does not inherit parent context, and is isolated from extension tools, so it cannot call pi-loop task/workflow/controller tools. The optional `agentType`, `model`, and `maxTurns` fields are the only invocation overrides.
+
+Local `concurrency` bounds spawning/queued/running dispatches while pi-subagents keeps its own global concurrency ceiling. A proved worker failure retries up to `maxAttempts`. A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
+
+Inspect compact progress with `LoopList` and durable evidence with:
+
+```text
+OrchestrationGet id="1"
+OrchestrationGet id="1" workId="2"
+```
+
+The parent is not woken merely to refill capacity. It wakes once when all work completes, attempts are exhausted, or a dispatch becomes uncertain. Results are persisted before the consume RPC. Completed and attention batches pause for inspection; `LoopUpdate` cannot mutate them. `LoopDelete` first fences cancellation, best-effort stops known workers, then pauses or deletes the controller.
+
+Session shutdown/switch stops owned workers before rebinding storage. Confirmed stops remain retryable within their attempt budget; unconfirmed workers become uncertain. A crashed runtime cannot safely reconstruct an upstream worker, so ownership-expiry recovery fails closed instead of redispatching it.
+
 ## Background monitors
 
 `MonitorCreate` runs a shell command without blocking the agent:

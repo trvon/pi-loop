@@ -69,6 +69,22 @@ test/injection.test.ts
 test/property/workflow.property.test.ts
 ```
 
+## Subagent orchestration coverage
+
+The orchestration suites prove finite-batch bounds, capacity reservation before spawn, reducer/store CAS immutability, lifecycle identity, early-start replay, bounded settlement before consume, retry/uncertainty policy, durable wake acknowledgement, session teardown, cancellation, scheduler exclusion, tool scope gating, compact presentation, and extension wiring.
+
+Primary files:
+
+```text
+test/orchestration-reducer.test.ts
+test/orchestration-store.test.ts
+test/orchestration-runtime.test.ts
+test/orchestration-tools.test.ts
+test/property/orchestration.property.test.ts
+```
+
+No live-agent suite is required for the first version because upstream lacks status/list and idempotent dispatch keys; integration tests own the exact protocol-v2 event ordering deterministically.
+
 ## Task-backlog coverage
 
 A backlog wake must call `TaskList`, inspect `TaskGet`, claim or resume one task, perform work, run observable validation, and settle the task in the same turn. Tests reject status-only progress, missing claims, reasoning-only validation, and deferral to a later wake.
@@ -113,7 +129,7 @@ Without `PI_LOOP_LIVE_MODEL`, live scripts exit with `SKIP`. Reports are bounded
 
 ## Property and fuzz replay
 
-The fixed-seed property suite covers cron boundaries, reducer determinism, workflow transition/revision immutability, attempt limits, and file-backed task replay.
+The fixed-seed property suite covers cron boundaries, reducer determinism, workflow transition/revision immutability, orchestration CAS/bounds/uncertainty, attempt limits, and file-backed task replay.
 
 Override campaign size:
 

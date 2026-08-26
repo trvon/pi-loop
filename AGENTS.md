@@ -2,7 +2,7 @@
 
 ## Purpose
 
-pi-loop is a Pi extension for scheduled/event-driven re-wakes, self-paced goals, task-driven workflows, native fallback tasks, and background process monitoring.
+pi-loop is a Pi extension for scheduled/event-driven re-wakes, self-paced goals, task-driven workflows, bounded subagent orchestration, native fallback tasks, and background process monitoring.
 
 Stack: strict TypeScript 7, ES2022, TypeBox, Vitest, and Biome.
 
@@ -10,10 +10,11 @@ Stack: strict TypeScript 7, ES2022, TypeBox, Vitest, and Biome.
 
 Do not blur these domains:
 
-- `LoopStore` exclusively owns loops, workflow definitions, revisions, embedded executions, workflow history, and server-held workflow leases.
+- `LoopStore` exclusively owns loops, workflow definitions/revisions/executions/history/leases, and finite subagent orchestration batches/dispatches.
 - `TaskStore` or external `pi-tasks` owns standalone tasks only.
 - `/tasks`, task RPC, `TaskClaim`, and `TaskUpdate` never control workflow work.
 - `MonitorManager` owns process-local monitor state; monitor recovery across Pi death is not implemented.
+- `pi-subagents` owns worker execution and global concurrency. pi-loop owns only session-scoped orchestration intent, bounded evidence, local capacity, and recovery decisions.
 - Pending notifications are memory-only; persisted controllers recover on resume, not while Pi is absent.
 
 A feature that requires a cross-store workflow/task transaction violates the architecture.
@@ -24,14 +25,14 @@ A feature that requires a cross-store workflow/task transaction violates the arc
 src/index.ts                 extension registration and runtime wiring
 src/api.ts                   supported @trevonistrevon/pi-loop/api surface
 src/types.ts                 loop, workflow, revision, monitor contracts
-src/store.ts                 LoopStore and workflow atomic mutations
+src/store.ts                 LoopStore workflow/orchestration atomic mutations
 src/task-store.ts            standalone native task persistence
 src/*-reducer.ts             pure state transitions
 src/coordinator.ts           reducer/effect coordination
 src/scheduler.ts             cron scheduling and fire times
 src/trigger-system.ts        cron/event/hybrid activation
 src/monitor-manager.ts       child processes and bounded output
-src/runtime/                 session, notification, backlog, task-provider, monitor wiring
+src/runtime/                 session, notification, backlog, orchestration, task-provider, monitor wiring
 src/tools/                   model-facing tool definitions
 src/commands/                /loop and /tasks
 src/rpc/                     vendored cross-extension RPC
@@ -52,6 +53,20 @@ A workflow is one dynamic `LoopEntry` with a version-1 named-state definition.
 - Transition CAS includes definition revision so transition/revision races fail closed in either order.
 - Terminal completed workflows are deleted; terminal paused workflows remain inspectable.
 
+## Subagent orchestration contract
+
+A first-generation orchestration is one finite, session-file-backed `LoopEntry` batch.
+
+- It accepts explicit independent work only; it never discovers TaskStore work or workflow executions.
+- Creation requires protocol-v2 `pi-subagents` and rejects memory/project/custom/off storage.
+- Every dispatch is persisted before spawn and fenced by controller revision, owner runtime/generation, work ID, dispatch ID, attempt, and upstream agent ID.
+- `spawning`, `queued`, and `running` consume local capacity; pi-subagents retains its global queue.
+- Lifecycle evidence is bounded and persisted before `subagents:rpc:consume`.
+- Proved failures may retry within the item budget. Ambiguous timeout/recovery never retries automatically.
+- The existing session heartbeat reconciles orchestration; do not add another timer or scheduler.
+- Session teardown invalidates callbacks before best-effort stop and state reconciliation.
+- Project scope, dependency graphs, dynamic work addition, and exactly-once dispatch remain unsupported.
+
 See `docs/REFERENCE.md` for the public contract.
 
 ## Persistence and lifecycle
@@ -64,7 +79,7 @@ Reducer-backed stores use:
 - previous-snapshot recovery;
 - visible corruption failure when recovery is impossible.
 
-`PI_LOOP_SCOPE` is `memory`, `session` (default), or `project`. Session shutdown/switch increments generation, stops triggers, clears pending wakes, and reaps monitors before rebinding. Delayed callbacks must fail closed after generation/context changes.
+`PI_LOOP_SCOPE` is `memory`, `session` (default), or `project`. Session shutdown/switch increments generation, stops triggers, clears pending wakes, stops owned orchestration workers, and reaps monitors before rebinding. Delayed callbacks must fail closed after generation/context changes.
 
 Project scope does not yet elect one scheduler owner. Do not confuse planned scheduler fencing with workflow execution leases.
 
@@ -128,6 +143,9 @@ Lint has four established optional-chain warnings; do not add new warnings. Work
 
 - 25 active loops
 - 25 running monitors
+- 32 orchestration work items
+- 8 local orchestration workers
+- 3 orchestration attempts per item
 - seven-day recurring-loop lifetime
 - five-minute self-paced default interval
 - 32 workflow definition revisions
