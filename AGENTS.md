@@ -55,7 +55,7 @@ A workflow is one dynamic `LoopEntry` with a version-1 named-state definition.
 
 ## Subagent orchestration contract
 
-A first-generation orchestration is one finite, session-file-backed `LoopEntry` batch.
+An orchestration is one finite, session-file-backed `LoopEntry` batch.
 
 - It accepts explicit independent work only; it never discovers TaskStore work or workflow executions.
 - Creation requires protocol-v2 `pi-subagents` and rejects memory/project/custom/off storage.

@@ -2,15 +2,16 @@
 
 ## Authority boundaries
 
-pi-loop has three independent authorities:
+pi-loop separates controller, standalone-task, worker-execution, and monitor authorities:
 
 | Domain | Authority | Storage |
 | --- | --- | --- |
-| Loops, workflows, and subagent orchestrations | `LoopStore` | `.pi/loops/*.json` |
+| Loop controllers, workflow state, and orchestration intent, evidence, and local capacity | `LoopStore` | `.pi/loops/*.json` |
 | Standalone native tasks | `TaskStore` or external `pi-tasks` | `.pi/tasks/*.json` or provider-owned |
+| Orchestration worker execution and global concurrency | protocol-v2 `pi-subagents` | provider-owned |
 | Running monitors | `MonitorManager` | process memory |
 
-Workflow state work is embedded in `LoopStore` as `WorkflowExecutionRecord`. It never appears in TaskStore, `/tasks`, task RPC, `TaskClaim`, or `TaskUpdate`. Standalone tasks never control workflow transitions. Finite orchestration work is also embedded in LoopStore; it never discovers or projects tasks or workflow executions.
+Workflow state work is embedded in `LoopStore` as `WorkflowExecutionRecord`. It never appears in TaskStore, `/tasks`, task RPC, `TaskClaim`, or `TaskUpdate`. Standalone tasks never control workflow transitions. Finite orchestration intent, dispatch reservations, local capacity, and evidence are embedded in LoopStore; they never discover or project tasks or workflow executions. `pi-subagents` owns worker execution and its global queue.
 
 Notification buffers and monitor process handles are memory-only. Orchestration wake intent is durable until delivery acknowledgement, but delivery remains at-least-once across a crash. Persisted controllers recover when Pi resumes; they do not execute while Pi is absent.
 
@@ -21,7 +22,7 @@ Notification buffers and monitor process handles are memory-only. Orchestration 
 - `src/store.ts`: loop/workflow/orchestration persistence and atomic mutations
 - `src/task-store.ts`: standalone native task persistence
 - `src/*-reducer.ts`: pure state transitions
-- `src/runtime/`: session, notification, backlog, task-provider, and monitor completion wiring
+- `src/runtime/`: session, notification, backlog, task-provider, orchestration, and monitor-completion wiring
 - `src/tools/`: model-facing tool registrations
 - `src/rpc/`: vendored cross-extension RPC contract
 - `src/ui/`: status widget and tool rendering
@@ -36,7 +37,7 @@ File-backed stores use PID locks, unique temporary snapshots, fsync, atomic rena
 - `session` (default): isolated by Pi session ID;
 - `project`: shared in the working directory.
 
-Project scope shares durable state but does not yet elect one scheduler owner across concurrent Pi runtimes. Workflow execution leases prevent duplicate phase work; they are separate from the planned project scheduler fence. Subagent orchestration rejects memory, project, disabled, and custom-path stores; its first protocol is default file-backed session scope only.
+Project scope shares durable state but does not yet elect one scheduler owner across concurrent Pi runtimes. Workflow execution leases prevent duplicate phase work; they are separate from the planned project scheduler fence. Subagent orchestration rejects memory, project, disabled, and custom-path stores; it supports only default file-backed session scope.
 
 ## Loop model
 
