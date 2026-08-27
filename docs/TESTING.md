@@ -93,7 +93,7 @@ Description-declared prerequisites are followed through `TaskGet`; TaskStore has
 
 ## Live E2E
 
-Live tests are opt-in and run in isolated temporary project scope.
+Live tests are opt-in and run in isolated temporary workspaces. Stateful workflow and backlog scenarios use project scope; orchestration uses default file-backed session scope.
 
 ```bash
 PI_LOOP_LIVE_MODEL="openai-codex/gpt-5.6-sol:minimal" npm run test:e2e
@@ -119,6 +119,12 @@ Backlog scenario:
 PI_LOOP_LIVE_MODEL="openai-codex/gpt-5.6-sol:minimal" npm run test:e2e:backlog
 ```
 
+The backlog scenario requires this first-run sequence:
+
+```text
+TaskList → TaskGet → TaskClaim → write/edit → shell validation → TaskUpdate completed
+```
+
 Subagent orchestration scenario:
 
 ```bash
@@ -127,13 +133,7 @@ PI_LOOP_LIVE_SUBAGENTS_EXTENSION="$HOME/.pi/agent/npm/node_modules/@tintinweb/pi
 npm run test:e2e:orchestration
 ```
 
-It runs in a temporary session-scoped project, proves two isolated workers settle with durable consumed evidence, then creates and cancels an active worker. The extension path defaults to the standard user package location when `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` is omitted.
-
-It requires this first-run sequence:
-
-```text
-TaskList → TaskGet → TaskClaim → write/edit → shell validation → TaskUpdate completed
-```
+It runs in a temporary workspace with default file-backed session scope, proves two isolated workers settle with durable consumed evidence, then creates and cancels an active worker. The extension path defaults to the standard user package location when `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` is omitted.
 
 Without `PI_LOOP_LIVE_MODEL`, live scripts exit with `SKIP`. Reports are bounded JSON under `.artifacts/` and do not record credentials; claim IDs are redacted where applicable.
 

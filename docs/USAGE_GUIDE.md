@@ -235,7 +235,9 @@ Workers bootstrap existing work, coalesce repeated create events, resume eligibl
 
 Monitor events:
 
+- `monitor:started`
 - `monitor:output`
+- `monitor:finished`
 - `monitor:done`
 - `monitor:error`
 
@@ -274,7 +276,9 @@ const { id, task } = await rpcCall(pi.events, TASKS_RPC.create, {
 | `tasks:rpc:pending` | `{}` | `{ pending }` |
 | `tasks:rpc:create` | `{ subject, description, metadata? }` | `{ id, task }` |
 | `tasks:rpc:clean` | `{}` | `{ pruned }` |
-| `tasks:rpc:update` | `{ id, status?, subject?, description? }` | `{ task }` |
+| `tasks:rpc:update` | `{ id, status?, subject?, description?, claimId? }` | `{ task }` |
+| `tasks:rpc:claim` | `{ id, ownerSessionId, ownerRuntimeId, leaseMs, claimId? }` | `{ task, claim, takenOver, renewed }` |
+| `tasks:rpc:heartbeat` | `{ id, claimId, leaseMs }` | `{ task }` |
 
 Requests include `requestId`; replies arrive on `<channel>:reply:<requestId>` as `{ success: true, data }` or `{ success: false, error }`.
 
@@ -296,6 +300,6 @@ Session files live under `.pi/loops/` and `.pi/tasks/`. Keep `session` as the no
 
 ## Status line and limits
 
-The TUI status line summarizes active loops, monitors, and native tasks. Use `LoopList`, `MonitorList`, and `/tasks` for detail. `LoopList` reports active-loop `age` as wall-clock time since creation, including pause and process downtime; paused loops omit the field. The status clears when no work is active.
+The TUI status line summarizes ordinary loops, workflows, orchestrations, running monitors, and native tasks. Use `LoopList`, `OrchestrationGet`, `MonitorList`, and `/tasks` for detail. `LoopList` reports active-loop `age` as wall-clock time since creation, including pause and process downtime; paused loops omit the field. The status clears when no work is active.
 
-The runtime allows at most 25 active loops and 25 running monitors.
+The runtime allows at most 25 active loops and 25 running monitors. Each orchestration batch allows up to 32 work items, 8 local workers, and 3 attempts per item.

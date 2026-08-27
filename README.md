@@ -1,6 +1,6 @@
 <p align="center">
 <h1 align="center">@trevonistrevon/pi-loop</h1>
-<h6 align="center">Scheduled and event-driven agent re-wakes for pi, with dynamic goals and background process monitoring.</h6>
+<h6 align="center">Durable agent loops, workflows, tasks, subagent orchestration, and background monitoring for Pi.</h6>
 </p>
 
 ## Install
@@ -54,6 +54,8 @@ OrchestrationGet id="1"
 - Optional `pi-tasks` integration and a native task fallback
 - Session-scoped, bounded async subagent orchestration through protocol-v2 `pi-subagents`
 - Session-isolated persistence and a compact TUI status line
+
+> **Research note:** These features are designed to benefit my research. The loop may drive this tool toward unexpected design choices, so treat those choices as experimental and review them before relying on them.
 
 ## Commands and tools
 
