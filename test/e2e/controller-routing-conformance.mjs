@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
+import { sendRpcPrompt } from "./rpc-child-io.mjs";
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const configuredModels = process.env.PI_LOOP_LIVE_ROUTING_MODELS ?? process.env.PI_LOOP_LIVE_MODEL;
@@ -26,10 +27,6 @@ const CONTROLLER_TOOLS = new Set(["WorkflowCreate", "TaskCreate", "LoopCreate"])
 
 if (models.length === 0) throw new Error("No routing models were configured");
 if (scenarios.length === 0) throw new Error("No controller-routing scenarios matched PI_LOOP_LIVE_ROUTING_SCENARIOS");
-
-function send(child, id, message) {
-  child.stdin.write(`${JSON.stringify({ id, type: "prompt", message })}\n`);
-}
 
 function textResult(event) {
   return (event.result?.content ?? [])
@@ -185,6 +182,12 @@ async function runScenario(model, scenario) {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
+  const reportChildFailure = (channel, cause) => {
+    const error = new Error(`pi ${channel} failed for ${scenario.id}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    failure ??= error;
+    rejectSettled?.(failure);
+  };
+  child.once("error", (cause) => reportChildFailure("process", cause));
   child.stderr.on("data", (chunk) => {
     stderr = `${stderr}${chunk}`.slice(-24_000);
   });
@@ -251,7 +254,7 @@ async function runScenario(model, scenario) {
 
   try {
     await new Promise((resolveWait) => setTimeout(resolveWait, startupMs));
-    send(child, `routing-${scenario.id}`, scenario.prompt);
+    sendRpcPrompt(child, `routing-${scenario.id}`, scenario.prompt, (cause) => reportChildFailure("stdin", cause));
     await settled;
     return {
       ...evaluateScenario(scenario, toolCalls, toolResults, agentRuns, Date.now() - startedAt - startupMs),
