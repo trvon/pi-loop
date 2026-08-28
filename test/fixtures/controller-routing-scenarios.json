@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "ordered-task-series",
+      "category": "ambiguous-task-series",
+      "prompt": "Please create a series of tasks for shipping our storage migration: first investigate existing behavior; based on those findings implement the migration; validate it; if validation fails return to implementation; then publish a final report. Keep progress durable across turns.",
+      "expectedTool": "WorkflowCreate",
+      "expectedCount": 1,
+      "argumentCheck": "workflow-rework",
+      "holdout": false
+    },
+    {
+      "id": "phased-request-called-loop",
+      "category": "ambiguous-loop",
+      "prompt": "Set up a loop for our security release. Analyze the issue, patch it, run the tests, and if tests fail go back to patching. Finish once tests pass. I do not need a timer; I just want it to keep its place.",
+      "expectedTool": "WorkflowCreate",
+      "expectedCount": 1,
+      "argumentCheck": "workflow-rework",
+      "holdout": false
+    },
+    {
+      "id": "independent-task-series",
+      "category": "independent-tasks",
+      "prompt": "Break release preparation into tasks: update the documentation, audit dependencies, and draft the announcement. They are independent and can be assigned to different people. Do not start an autonomous worker.",
+      "expectedTool": "TaskCreate",
+      "expectedCount": 3,
+      "argumentCheck": "independent-tasks",
+      "holdout": false
+    },
+    {
+      "id": "bounded-recurring-loop",
+      "category": "recurring-loop",
+      "prompt": "Create a loop that checks our deployment every 10 minutes and reports when it becomes healthy. Stop after at most 12 checks.",
+      "expectedTool": "LoopCreate",
+      "expectedCount": 1,
+      "argumentCheck": "bounded-cron-loop",
+      "holdout": true
+    },
+    {
+      "id": "self-paced-idle-loop",
+      "category": "self-paced-loop",
+      "prompt": "Set up a loop that keeps improving our documentation until there are no broken internal links. There is no schedule and I do not want separate phases; continue whenever the agent is idle.",
+      "expectedTool": "LoopCreate",
+      "expectedCount": 1,
+      "argumentCheck": "idle-loop",
+      "holdout": true
+    },
+    {
+      "id": "singular-task-with-rework",
+      "category": "ambiguous-task",
+      "prompt": "Create a task for the authentication regression: first reproduce it, then implement the fix based on the reproduction, run tests, and if tests fail revise the fix before reporting completion.",
+      "expectedTool": "WorkflowCreate",
+      "expectedCount": 1,
+      "argumentCheck": "workflow-rework",
+      "holdout": true
+    }
+  ]
+}
