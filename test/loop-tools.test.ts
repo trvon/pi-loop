@@ -290,6 +290,58 @@ describe("LoopList", () => {
     expect(out).not.toContain("age:");
   });
 
+  it("shows workflow activity, workflow age, and current-state age", async () => {
+    const h = setup();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      h.store.create({ type: "dynamic" }, "Ship activity UX", {
+        recurring: true,
+        workflow: {
+          version: 1,
+          initialState: "work",
+          states: {
+            work: {
+              prompt: "Work.",
+              task: { subject: "Work", description: "Implement." },
+              on: { done: "done" },
+            },
+            done: { prompt: "Done.", terminal: "completed" },
+          },
+        },
+      });
+      vi.advanceTimersByTime(90_000);
+
+      const idle = await h.text("LoopList", {});
+      expect(idle).toContain("[active] Ship activity UX");
+      expect(idle).toContain("[activity:idle 2m]");
+      expect(idle).toContain("age: 2m");
+      expect(idle).toContain("[workflow:work 2m]");
+
+      h.store.get("1")!.workflow!.activeExecution!.lease = {
+        ownerSessionId: "session",
+        ownerRuntimeId: "runtime",
+        acquiredAt: Date.now() - 30_000,
+        heartbeatAt: Date.now() - 20_000,
+        expiresAt: Date.now() - 10_000,
+        attempt: 1,
+      };
+      const expired = await h.text("LoopList", {});
+      expect(expired).toContain("[activity:idle 10s]");
+      expect(expired).toContain("Lease: expired at");
+      expect(expired).toContain("Next: WorkflowClaim");
+
+      h.store.pause("1", "administrative", "waiting for approval");
+      vi.advanceTimersByTime(30_000);
+      const paused = await h.text("LoopList", {});
+      expect(paused).toContain("[paused] Ship activity UX");
+      expect(paused).toContain("[activity:paused 30s]");
+      expect(paused).toContain("age: 2m");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows orchestration progress as its own controller kind", async () => {
     const h = setup();
     h.store.create({ type: "dynamic" }, "Parallel review", {
@@ -487,7 +539,7 @@ describe("Workflow tools", () => {
       kind: "workflow",
       action: "create",
       tone: "success",
-      summary: "Workflow #1 active · investigate · attempt 1",
+      summary: expect.stringContaining("Workflow #1 active · investigate · attempt 1 · running"),
     });
     expect(createResult.details.expanded).toEqual(expect.arrayContaining([
       "Goal: Fix the regression",
@@ -500,7 +552,7 @@ describe("Workflow tools", () => {
       kind: "workflow",
       action: "transition",
       tone: "success",
-      summary: "Workflow #1 advanced · investigate → fix",
+      summary: expect.stringContaining("Workflow #1 advanced · investigate → fix · idle"),
     });
 
     const claimResult = await h.result("WorkflowClaim", { id: "1" });
@@ -508,7 +560,7 @@ describe("Workflow tools", () => {
       kind: "workflow",
       action: "claim",
       tone: "success",
-      summary: "Workflow #1 lease active · fix",
+      summary: expect.stringContaining("Workflow #1 lease active · fix · running"),
     });
 
     const reviseResult = await h.result("WorkflowRevise", {
@@ -523,7 +575,7 @@ describe("Workflow tools", () => {
       kind: "workflow",
       action: "revise",
       tone: "success",
-      summary: "Workflow #1 revised · r1 → r2",
+      summary: expect.stringContaining("Workflow #1 revised · r1 → r2 · running"),
     });
   });
 
@@ -538,8 +590,9 @@ describe("Workflow tools", () => {
     });
   });
 
-  it("distinguishes workflows from ordinary loops in LoopList presentation", async () => {
+  it("keeps transitioned workflow recovery details in bounded LoopList presentation", async () => {
     await h.result("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    await h.result("WorkflowTransition", { id: "1", outcome: "found", evidence: "Reproduced." });
     const list = await h.result("LoopList", {});
     expect(list.details).toMatchObject({
       kind: "loop",
@@ -547,6 +600,9 @@ describe("Workflow tools", () => {
       tone: "info",
       summary: "1 workflow · 1 active",
     });
+    expect(list.details.expanded).toContainEqual(expect.stringContaining("Lease: unowned"));
+    expect(list.details.expanded).toContainEqual(expect.stringContaining("Choose outcome: passing"));
+    expect(list.details.expanded).toContainEqual(expect.stringContaining("Next: WorkflowClaim"));
   });
 
   it("embeds initial task work without creating an external task", async () => {
@@ -813,8 +869,12 @@ describe("Workflow tools", () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     await h.text("WorkflowTransition", { id: "1", outcome: "found" });
     await h.text("WorkflowClaim", { id: "1" });
-    const out = await h.text("WorkflowTransition", { id: "1", outcome: "passing" });
-    expect(out).toContain("Workflow #1 completed and deleted");
+    const result = await h.result("WorkflowTransition", { id: "1", outcome: "passing" });
+    expect(result.content[0].text).toContain("Workflow #1 completed and deleted");
+    expect(result.details.summary).toContain("stopped");
+    expect(result.details.expanded).toContainEqual(expect.stringContaining("Activity: stopped"));
+    expect(result.details.expanded).toContainEqual(expect.stringContaining("Workflow age:"));
+    expect(result.details.expanded).toContainEqual(expect.stringContaining("State age:"));
     expect(h.store.get("1")).toBeUndefined();
   });
 

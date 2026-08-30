@@ -172,7 +172,7 @@ describe("LoopWidget status rendering", () => {
     expect(latestStatusCall()).toEqual(["loops", "↻ 1 loop · ▶ 1 monitor"]);
   });
 
-  it("shows workflow count and active phase separately from ordinary loops", () => {
+  it("shows workflow count, activity, phase, and age separately from ordinary loops", () => {
     store.create(
       { type: "dynamic" },
       "Ship migration",
@@ -197,8 +197,73 @@ describe("LoopWidget status rendering", () => {
     widget.update();
     expect(latestStatusCall()).toEqual([
       "loops",
-      "◆ 1 workflow | #1 investigate · attempt 1/2 · unowned",
+      "◆ 1 workflow | #1 idle 0s · investigate 0s · age 0s",
     ]);
+  });
+
+  it("keeps paused workflows visible with pause duration", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      const entry = store.create({ type: "dynamic" }, "Ship migration", {
+        recurring: true,
+        workflow: {
+          version: 1,
+          initialState: "investigate",
+          states: {
+            investigate: { prompt: "Investigate.", on: { done: "done" } },
+            done: { prompt: "Done.", terminal: "completed" },
+          },
+        },
+      });
+      store.pause(entry.id, "administrative", "waiting for approval");
+      vi.advanceTimersByTime(60_000);
+
+      widget.update();
+      expect(latestStatusCall()).toEqual([
+        "loops",
+        "◆ 1 workflow | #1 paused 1m · investigate 1m · age 1m",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("repaints when a live workflow lease expires", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      const entry = store.create({ type: "dynamic" }, "Ship migration", {
+        recurring: true,
+        workflow: {
+          version: 1,
+          initialState: "investigate",
+          states: {
+            investigate: {
+              prompt: "Investigate.",
+              task: { subject: "Investigate", description: "Collect evidence." },
+              on: { done: "done" },
+            },
+            done: { prompt: "Done.", terminal: "completed" },
+          },
+        },
+      });
+      expect(store.claimWorkflowExecution(entry.id, { sessionId: "session", runtimeId: "runtime" }, 60).claimed).toBe(true);
+
+      widget.update();
+      expect(latestStatusCall()?.[1]).toContain("#1 running 0s");
+
+      vi.advanceTimersByTime(59_999);
+      expect(latestStatusCall()?.[1]).toContain("#1 running 0s");
+
+      vi.advanceTimersByTime(1);
+      expect(latestStatusCall()).toEqual([
+        "loops",
+        "◆ 1 workflow | #1 idle 0s · investigate 1m · age 1m",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows orchestration count and bounded worker progress separately", () => {

@@ -5,6 +5,7 @@ import { parseInterval } from "../loop-parse.js";
 import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { LoopEntry, Trigger } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
+import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "../ui/workflow-presentation.js";
 import { getActiveWorkflowStateLoop } from "../workflow-reducer.js";
 import { displayRows, textResult } from "./tool-result.js";
 import { formatWorkflowSummary } from "./workflow-tools.js";
@@ -383,6 +384,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
       }
 
       const lines: string[] = [];
+      const now = Date.now();
       for (const entry of loops) {
         const workflowSchedule = entry.workflow && getActiveWorkflowStateLoop(entry.workflow)?.schedule;
         const triggerDesc = workflowSchedule ? `workflow cron: ${workflowSchedule}` : formatTrigger(entry.trigger, "list");
@@ -390,16 +392,20 @@ export function registerLoopTools(options: LoopToolsOptions): void {
         const nextFire = workflowSchedule || entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.dynamic?.nextWakeAt !== undefined
           ? getScheduler().nextFire(entry.id)
           : undefined;
+        const activity = entry.workflow ? deriveWorkflowActivity(entry, now) : undefined;
         const statusIcon = entry.status === "active" ? "*" : entry.status === "paused" ? "-" : "x";
         let line = `${statusIcon} #${entry.id} [${entry.status}] ${entry.prompt.slice(0, 60)}`;
         line += ` (${triggerDesc})`;
+        if (activity) line += ` [activity:${activity.status} ${formatCompactWorkflowDuration(activity.activityMs)}]`;
         line += ` expiresAt: ${new Date(entry.expiresAt).toISOString()}`;
         if (nextFire) {
-          const remaining = Math.max(0, nextFire - Date.now());
+          const remaining = Math.max(0, nextFire - now);
           line += ` next: ${formatRemaining(remaining)}`;
         }
-        if (entry.status === "active") {
-          line += ` age: ${formatRemaining(Math.max(0, Date.now() - entry.createdAt))}`;
+        if (activity) {
+          line += ` age: ${formatCompactWorkflowDuration(activity.workflowAgeMs)}`;
+        } else if (entry.status === "active") {
+          line += ` age: ${formatRemaining(Math.max(0, now - entry.createdAt))}`;
         }
         if (entry.pause) line += ` [pause:${entry.pause.kind}]`;
         if (entry.autoTask) line += " [auto-task]";
@@ -409,9 +415,9 @@ export function registerLoopTools(options: LoopToolsOptions): void {
           line += ` [orchestration:${entry.orchestration.status}]`;
           line += ` pending=${counts.pending} active=${counts.active} completed=${counts.completed} failed=${counts.failed} uncertain=${counts.uncertain}`;
           lines.push(line);
-        } else if (entry.workflow) {
-          line += ` [workflow:${entry.workflow.currentState}]`;
-          lines.push(formatWorkflowSummary(entry, line));
+        } else if (entry.workflow && activity) {
+          line += ` [workflow:${entry.workflow.currentState} ${formatCompactWorkflowDuration(activity.stateAgeMs)}]`;
+          lines.push(formatWorkflowSummary(entry, line, undefined, now));
         } else {
           lines.push(line);
         }
@@ -430,7 +436,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
         action: "list",
         tone: "info",
         summary: `${kinds.join(" · ")} · ${loops.filter((entry) => entry.status === "active").length} active`,
-        expanded: displayRows(lines),
+        expanded: displayRows(lines, workflowCount > 0 ? 16 : 8),
       }));
     },
   });

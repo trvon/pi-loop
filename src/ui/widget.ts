@@ -3,7 +3,7 @@ import type { MonitorManager } from "../monitor-manager.js";
 import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { LoopStore } from "../store.js";
 import type { LoopEntry } from "../types.js";
-import { workflowAttemptLabel, workflowLeaseLabel } from "./workflow-presentation.js";
+import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "./workflow-presentation.js";
 
 interface TaskSummary {
   count: number;
@@ -13,6 +13,7 @@ interface TaskSummary {
 export class LoopWidget {
   private uiCtx: ExtensionUIContext | undefined;
   private taskSummaryProvider: (() => TaskSummary) | undefined;
+  private activityRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private store: LoopStore,
@@ -24,6 +25,7 @@ export class LoopWidget {
   }
 
   setStore(store: LoopStore) {
+    this.clearActivityRefresh();
     this.store = store;
   }
 
@@ -33,7 +35,9 @@ export class LoopWidget {
 
   update() {
     if (!this.uiCtx) return;
+    this.clearActivityRefresh();
     this.uiCtx.setStatus("loops", this.computeStatus());
+    this.scheduleActivityRefresh();
   }
 
   private computeStatus(): string | undefined {
@@ -63,7 +67,8 @@ export class LoopWidget {
     }
     const workflow = workflows.length === 1 ? workflows[0] : undefined;
     if (workflow?.workflow) {
-      line += ` | #${workflow.id} ${workflow.workflow.currentState} · attempt ${workflowAttemptLabel(workflow)} · ${workflowLeaseLabel(workflow)}`;
+      const activity = deriveWorkflowActivity(workflow);
+      line += ` | #${workflow.id} ${activity.status} ${formatCompactWorkflowDuration(activity.activityMs)} · ${workflow.workflow.currentState} ${formatCompactWorkflowDuration(activity.stateAgeMs)} · age ${formatCompactWorkflowDuration(activity.workflowAgeMs)}`;
     }
     const orchestration = orchestrations.length === 1 ? orchestrations[0] : undefined;
     if (orchestration?.orchestration) {
@@ -75,7 +80,26 @@ export class LoopWidget {
   }
 
   dispose() {
+    this.clearActivityRefresh();
     this.uiCtx?.setStatus("loops", undefined);
+  }
+
+  private scheduleActivityRefresh() {
+    const workflows = this.store.list().filter((entry) => entry.workflow && isStatusVisibleLoop(entry));
+    const workflow = workflows.length === 1 ? workflows[0]?.workflow : undefined;
+    const expiresAt = workflow?.activeExecution?.lease?.expiresAt;
+    if (expiresAt === undefined || expiresAt <= Date.now()) return;
+    this.activityRefreshTimer = setTimeout(() => {
+      this.activityRefreshTimer = undefined;
+      this.update();
+    }, expiresAt - Date.now());
+    this.activityRefreshTimer.unref?.();
+  }
+
+  private clearActivityRefresh() {
+    if (this.activityRefreshTimer === undefined) return;
+    clearTimeout(this.activityRefreshTimer);
+    this.activityRefreshTimer = undefined;
   }
 }
 
@@ -117,6 +141,7 @@ function formatCount(count: number, noun: string): string {
 }
 
 function isStatusVisibleLoop(loop: LoopEntry): boolean {
+  if (loop.workflow && loop.status === "paused") return true;
   if (loop.status !== "active") return false;
   if (loop.recurring) return true;
   return !(loop.trigger.type === "event" && loop.trigger.source === "monitor:done");

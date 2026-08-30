@@ -127,7 +127,7 @@ A missing prerequisite, missing route, or exhausted route is a plan gap—not au
 
 To repeat a state until evidence supports an outcome, add a cron-only state policy: `"loop":{"schedule":"0 7 * * *","maxFires":10,"startImmediately":false}`. Only the active state's policy is armed. Scheduled wakes retain the active execution; `WorkflowTransition` remains the only operation that settles it and unlocks the destination execution and cadence. Below the fire cap, a no-change iteration leaves the workflow active; persist material future-plan changes with `WorkflowRevise`. Reaching `maxFires` pauses the workflow and schedules no next cadence. Transition when evidence supports an available outcome; otherwise revise in a bounded recovery state/route, then transition and claim it. State policies do not wake immediately unless `startImmediately` is `true`.
 
-`LoopList` includes workflow state, active execution, transition evidence, and valid outcomes alongside ordinary loops.
+`LoopList` includes workflow state, active execution, transition evidence, valid outcomes, wall-clock workflow age, current-state age, and derived activity alongside ordinary loops. Activity is `running` only while a task execution has a live lease, `paused` when the controller has durable pause provenance, and otherwise `idle` while it waits on a monitor, claim, outcome, or non-task wake. A completed transition reports an ephemeral `stopped` snapshot, then the workflow remains deleted rather than retaining a UI-only tombstone.
 
 ### Inspecting and stopping loops
 
@@ -307,6 +307,6 @@ Session files live under `.pi/loops/` and `.pi/tasks/`. Keep `session` as the no
 
 ## Status line and limits
 
-The TUI status line summarizes ordinary loops, workflows, orchestrations, running monitors, and native tasks. Use `LoopList`, `OrchestrationGet`, `MonitorList`, and `/tasks` for detail. `LoopList` reports active-loop `age` as wall-clock time since creation, including pause and process downtime; paused loops omit age and show available pause provenance. The status clears when no work is active.
+The TUI status line summarizes ordinary loops, workflows, orchestrations, running monitors, and native tasks. A single workflow shows its derived activity duration, current state and state age, and total wall-clock age; paused workflows remain visible. Use `LoopList`, `OrchestrationGet`, `MonitorList`, and `/tasks` for detail. Ordinary active-loop `age` is wall-clock time since creation; paused ordinary loops omit age and show available pause provenance. The status clears when no work is active.
 
 The runtime allows at most 25 active loops and 25 running monitors. Each orchestration batch allows up to 32 work items, 8 local workers, and 3 attempts per item.

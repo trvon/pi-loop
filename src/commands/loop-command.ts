@@ -6,7 +6,7 @@ import type {
 import { formatTrigger } from "../loop-format.js";
 import { isValidCronExpression, parseInterval } from "../loop-parse.js";
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
-import { formatWorkflowInspection } from "../ui/workflow-presentation.js";
+import { formatWorkflowInspection, workflowActivityLabel } from "../ui/workflow-presentation.js";
 import { isTerminalWorkflowRun } from "../workflow-reducer.js";
 
 interface LoopStoreLike {
@@ -154,9 +154,11 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
       return;
     }
 
+    const now = Date.now();
     const choices = loops.map((l) => {
       const icon = l.status === "active" ? "*" : l.status === "paused" ? "-" : "x";
-      return `${icon} #${l.id} [${l.status}] ${l.prompt.slice(0, 50)} (${formatTrigger(l.trigger, "command")})`;
+      const activity = l.workflow ? ` [activity:${workflowActivityLabel(l, now)}]` : "";
+      return `${icon} #${l.id} [${l.status}] ${l.prompt.slice(0, 50)}${activity} (${formatTrigger(l.trigger, "command")})`;
     });
     choices.push("< Back");
 
