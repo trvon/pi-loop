@@ -9,13 +9,17 @@ describe("CronScheduler", () => {
   let store: LoopStore;
   let scheduler: CronScheduler;
   let fired: string[];
+  let expired: Array<{ id: string; disposition: string }>;
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     store = new LoopStore();
     fired = [];
+    expired = [];
     scheduler = new CronScheduler(store, (entry) => {
       fired.push(entry.id);
+    }, (entry, disposition) => {
+      expired.push({ id: entry.id, disposition });
     });
   });
 
@@ -451,14 +455,49 @@ describe("CronScheduler", () => {
     expect(fired).toHaveLength(0);
   });
 
-  it("deletes expired entries on pump", () => {
-    const entry = store.create(cronTrigger, "expired", { recurring: false });
-    entry.expiresAt = Date.now() - 1;
+  it("tracks event-only loops to the same observable expiry boundary", () => {
+    const entry = store.create({ type: "event", source: "deploy:finished" }, "event expiry", {
+      recurring: true,
+    });
+    entry.expiresAt = Date.now() + 60_000;
     scheduler.add(entry);
 
-    vi.advanceTimersByTime(10 * 60 * 1000);
+    vi.advanceTimersByTime(60_000);
     scheduler.pump(Date.now());
+
+    expect(store.get(entry.id)).toBeUndefined();
+    expect(expired).toEqual([{ id: entry.id, disposition: "deleted" }]);
+  });
+
+  it("does not consume expiry under a stale extension context", () => {
+    const entry = store.create(cronTrigger, "expired", { recurring: true });
+    entry.expiresAt = Date.now() + 60_000;
+    scheduler = new CronScheduler(store, vi.fn(), vi.fn(), () => false);
+    scheduler.add(entry);
+
+    vi.advanceTimersByTime(60_000);
+    scheduler.pump(Date.now());
+
+    expect(store.get(entry.id)).toBeDefined();
+  });
+
+  it("keeps recurring entries observable until expiry and reports retirement once", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:01Z"));
+    const entry = store.create(cronTrigger, "expired", { recurring: true });
+    entry.expiresAt = Date.now() + 60_000;
+    scheduler.add(entry);
+
+    expect(store.get(entry.id)).toBeDefined();
+    expect(scheduler.nextFire(entry.id)).toBeUndefined();
+    expect(expired).toEqual([]);
+
+    vi.advanceTimersByTime(60_000);
+    scheduler.pump(Date.now());
+
     expect(fired).toHaveLength(0);
     expect(store.get(entry.id)).toBeUndefined();
+    expect(expired).toEqual([{ id: entry.id, disposition: "deleted" }]);
+    scheduler.pump(Date.now() + 60_000);
+    expect(expired).toHaveLength(1);
   });
 });

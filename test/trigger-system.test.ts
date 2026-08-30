@@ -147,6 +147,21 @@ describe("TriggerSystem", () => {
     });
   });
 
+  it("retires an event loop instead of firing after its expiry boundary", () => {
+    const eventTrigger: Trigger = { type: "event", source: "expired_event" };
+    const entry = store.create(eventTrigger, "expired event", { recurring: true });
+    entry.expiresAt = Date.now();
+    system.add(entry);
+
+    pi.events.emit("expired_event", {});
+
+    expect(store.get(entry.id)).toBeUndefined();
+    const fireCalls = (pi.events.emit as any).mock.calls.filter(
+      (call: string[]) => call[0] === "loop:fire",
+    );
+    expect(fireCalls).toEqual([]);
+  });
+
   it("deletes one-shot event loops immediately after the first fire", () => {
     const eventTrigger: Trigger = { type: "event", source: "fire_once" };
     const entry = store.create(eventTrigger, "one-shot", { recurring: false });

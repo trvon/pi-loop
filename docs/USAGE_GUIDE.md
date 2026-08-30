@@ -15,7 +15,7 @@ LoopCreate trigger="0 9 * * 1-5" prompt="Review weekday alerts" maxFires=10
 
 Intervals such as `5m`, `2h`, and `1d` are converted to cron expressions. Full five-field cron expressions are also accepted. Cron and hybrid loops track their next fire time and deliver only when the agent is idle.
 
-Use `maxFires` for polling or other bounded work so a loop cannot run indefinitely. Recurring loops expire after seven days.
+Use `maxFires` for polling or other bounded work so a loop cannot run indefinitely. Recurring loops expire after seven days. `LoopList` exposes each controller's exact `expiresAt` boundary; expiry emits `loops:expired` and a hidden Pi wake that reports whether the controller was deleted or paused. Renewal is explicit: recreate the loop only when its schedule is still required.
 
 ### Event loops
 
@@ -244,6 +244,11 @@ Monitor events:
 - `monitor:done`
 - `monitor:error`
 
+Loop lifecycle events:
+
+- `loops:expired` — `{loopId, prompt, trigger, recurring, createdAt, expiresAt, expiredAt, disposition, source, reason}`
+- `loops:autodeleted`
+
 Native task lifecycle events:
 
 - `tasks:created`
@@ -254,7 +259,6 @@ Native task lifecycle events:
 - `tasks:updated`
 - `tasks:deleted`
 - `tasks:backlog_empty`
-- `loops:autodeleted`
 
 Task event payloads include `previousStatus`. Transition events report the status before the transition; details-only `tasks:updated` events report the status current at edit time.
 

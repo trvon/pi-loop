@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { LoopStore } from "../store.js";
+import type { LoopEntry, LoopExpiryDisposition } from "../types.js";
 import type { NotificationRuntime } from "./notification-runtime.js";
 import type { LoopScope } from "./scope.js";
 
@@ -38,6 +39,8 @@ export interface SessionRuntimeOptions {
   shutdownMonitors: () => Promise<void>;
   hasPendingTasks: () => Promise<number>;
   cleanDoneTasks: () => Promise<void>;
+  isContextCurrent: () => boolean;
+  emitLoopExpired: (entry: LoopEntry, disposition: LoopExpiryDisposition, generation: number) => void;
 }
 
 export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): void {
@@ -68,6 +71,8 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     shutdownMonitors,
     hasPendingTasks,
     cleanDoneTasks,
+    isContextCurrent,
+    emitLoopExpired,
   } = options;
 
   let storeUpgraded = false;
@@ -116,8 +121,13 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     migrateTaskBacklogLoops();
     if (!isCurrentGeneration(generation)) return;
     clearWorkflowMonitorWaits();
+    if (!isContextCurrent()) return;
     const store = getStore();
-    store.clearExpired();
+    const expired = store.expireEntries(sessionStartedAt);
+    for (const record of expired) {
+      if (!isCurrentGeneration(generation)) return;
+      emitLoopExpired(record.entry, record.disposition, generation);
+    }
     store.expireEventLoops(sessionStartedAt);
     await recoverOrchestrations();
     if (!isCurrentGeneration(generation)) return;

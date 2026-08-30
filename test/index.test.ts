@@ -172,6 +172,47 @@ describe("native task fallback", () => {
     vi.useRealTimers();
   });
 
+  it("emits and delivers observable expiry for a recurring cron loop", async () => {
+    const { pi, toolMap, extensionHandlers, emittedEvents, sentMessages } = createMockPi();
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const ctx = createCtx({ sessionId: "expiry-session" });
+
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    await toolMap.get("LoopCreate")!.execute!("create-expiring", {
+      trigger: "0 8 * * *",
+      prompt: "Daily release check",
+      triggerType: "cron",
+      recurring: true,
+    });
+    pi.events.on("loops:expired", () => {
+      throw new Error("consumer failed");
+    });
+
+    vi.setSystemTime(new Date("2026-01-08T00:00:00Z"));
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(emittedEvents).toContainEqual({
+      name: "loops:expired",
+      payload: expect.objectContaining({
+        loopId: "1",
+        prompt: "Daily release check",
+        expiresAt: Date.parse("2026-01-08T00:00:00Z"),
+        disposition: "deleted",
+        source: "scheduler",
+        reason: "expires_at",
+      }),
+    });
+
+    for (const handler of extensionHandlers.get("agent_end") ?? []) await handler(null, ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sentMessages.some((item) => item.message.content.includes("Loop #1 expired and was deleted"))).toBe(true);
+    const list = await toolMap.get("LoopList")!.execute!("list-expired", {});
+    expect(list.content[0].text).toContain("No loops configured");
+  });
+
   it("registers native task tools when pi-tasks is unavailable", async () => {
     const { pi, toolMap, commandMap } = createMockPi();
 

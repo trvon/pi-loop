@@ -11,6 +11,8 @@ export interface LoopDeletionTombstone {
 export type LoopDeletionTombstoneInput = Omit<LoopDeletionTombstone, "id" | "deletedAt" | "prompt">;
 
 export type LoopStatus = "active" | "paused";
+export type LoopExpiryDisposition = "deleted" | "paused";
+export type LoopExpirySource = "scheduler" | "session_recovery";
 
 export type LoopPauseKind = "administrative" | "controller_limit" | "semantic_terminal" | "orchestration_settlement";
 

@@ -39,9 +39,7 @@ export class TriggerSystem {
 
   add(entry: LoopEntry): void {
     if (isTerminalWorkflowRun(entry.workflow)) return;
-    if (entry.trigger.type === "cron" || entry.trigger.type === "hybrid" || entry.trigger.type === "dynamic") {
-      this.scheduler.add(entry);
-    }
+    this.scheduler.add(entry);
     if (entry.trigger.type === "event" || entry.trigger.type === "hybrid") {
       const ev = entry.trigger.type === "hybrid" ? entry.trigger.event : entry.trigger;
       this.subscribeEvent(entry, ev.source, ev.filter);
@@ -117,7 +115,13 @@ export class TriggerSystem {
       return;
     }
 
-    this.lastFireTime.set(current.id, Date.now());
+    const now = Date.now();
+    if (now >= current.expiresAt) {
+      this.scheduler.expire(current, now);
+      return;
+    }
+
+    this.lastFireTime.set(current.id, now);
     this.onFire(current, "event");
 
     const fresh = this.store.get(entry.id);

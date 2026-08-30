@@ -21,6 +21,7 @@ import { registerLoopCommand } from "./commands/loop-command.js";
 import { atMaxFires } from "./loop-reducer.js";
 import { MonitorManager } from "./monitor-manager.js";
 import { rpcCall, rpcProbe } from "./rpc/cross-extension-rpc.js";
+import { buildLoopExpiredPayload } from "./runtime/loop-events.js";
 import { createMonitorOnDoneRuntime } from "./runtime/monitor-ondone-runtime.js";
 import {
   createNotificationRuntime,
@@ -40,7 +41,7 @@ import { registerMonitorTools } from "./tools/monitor-tools.js";
 import { registerSubagentOrchestrationTools } from "./tools/subagent-orchestration-tools.js";
 import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
-import type { LoopEntry, LoopFireOrigin, MonitorEntry, Trigger } from "./types.js";
+import type { LoopEntry, LoopExpiryDisposition, LoopExpirySource, LoopFireOrigin, MonitorEntry, Trigger } from "./types.js";
 import { LoopWidget } from "./ui/widget.js";
 import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop, isTerminalWorkflowRun } from "./workflow-reducer.js";
 
@@ -73,7 +74,16 @@ export default function (pi: ExtensionAPI) {
   // call), so stale monitors don't linger in the count between turns.
   monitorManager.setOnChange(() => widget.update());
 
-  scheduler = new CronScheduler(store, (entry, origin) => onLoopFire(entry, undefined, origin));
+  function createScheduler(loopStore: LoopStore): CronScheduler {
+    return new CronScheduler(
+      loopStore,
+      (entry, origin) => onLoopFire(entry, undefined, origin),
+      (entry, disposition) => emitLoopExpired(entry, disposition, "scheduler"),
+      isCurrentExtensionContext,
+    );
+  }
+
+  scheduler = createScheduler(store);
   triggerSystem = new TriggerSystem(pi, scheduler, store, (entry, origin) => onLoopFire(entry, undefined, origin));
 
   let taskProvider: TaskProviderRuntime | undefined;
@@ -200,6 +210,24 @@ export default function (pi: ExtensionAPI) {
       debug("extension context went stale, dropping runtime callback");
       return false;
     }
+  }
+
+  function emitLoopExpired(
+    entry: LoopEntry,
+    disposition: LoopExpiryDisposition,
+    source: LoopExpirySource,
+    generation = sessionGeneration,
+  ): void {
+    if (generation !== sessionGeneration || !isCurrentExtensionContext()) return;
+    triggerSystem.remove(entry.id);
+    const payload = buildLoopExpiredPayload(entry, disposition, source, Date.now());
+    try {
+      pi.events.emit("loops:expired", payload);
+    } catch (error) {
+      debug(`loops:expired #${entry.id} — event listener failed`, error);
+    }
+    void notificationRuntime.queueOrDeliverLoopExpired({ ...payload, sessionGeneration: generation })
+      .catch((error) => debug(`loops:expired #${entry.id} — notification failed`, error));
   }
 
   function emitLoopFire(entry: LoopEntry, monitor?: MonitorEntry, orchestrationWakeSequence?: number): void {
@@ -332,7 +360,7 @@ export default function (pi: ExtensionAPI) {
         memoryLoopStores.set(sessionId, store);
       }
       widget.setStore(store);
-      scheduler = new CronScheduler(store, (entry, origin) => onLoopFire(entry, undefined, origin));
+      scheduler = createScheduler(store);
       triggerSystem = new TriggerSystem(pi, scheduler, store, (entry, origin) => onLoopFire(entry, undefined, origin));
     },
     clearAllLoops: () => {
@@ -365,6 +393,10 @@ export default function (pi: ExtensionAPI) {
     shutdownMonitors: () => monitorManager.shutdown(),
     hasPendingTasks,
     cleanDoneTasks,
+    isContextCurrent: isCurrentExtensionContext,
+    emitLoopExpired: (entry, disposition, generation) => {
+      emitLoopExpired(entry, disposition, "session_recovery", generation);
+    },
   });
 
   // ── Loop fire handler — queues an in-memory notification, then injects a custom message when delivery is safe ──

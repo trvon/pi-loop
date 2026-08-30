@@ -169,7 +169,12 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
       if (entry) {
         const actions = ["x Delete"];
         if (entry.status === "active") actions.unshift("- Pause");
-        else if (entry.status === "paused" && !entry.orchestration && !isTerminalWorkflowRun(entry.workflow)) actions.unshift("* Resume");
+        else if (
+          entry.status === "paused"
+          && Date.now() < entry.expiresAt
+          && !entry.orchestration
+          && !isTerminalWorkflowRun(entry.workflow)
+        ) actions.unshift("* Resume");
         actions.push("< Back");
 
         const detail = entry.workflow
