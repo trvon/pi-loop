@@ -6,6 +6,7 @@ import { LoopStore } from "../src/store.js";
 import { TaskStore } from "../src/task-store.js";
 import {
   attemptClaimedTransition,
+  classifyWorkflowPause,
   contextFor,
   type ExperimentClaim,
   type ExperimentObservation,
@@ -135,6 +136,12 @@ describe("test-only blocker reconciliation experiment", () => {
       observation(context, claim.fact, false, { provider: "monitor-A" }),
       observation(context, claim.fact, true, { provider: "monitor-B" }),
     ], NOW)).toMatchObject({ decision: "unresolved", reason: "conflicting_observations" });
+
+    const signedZeroClaim = environmentalClaim(context, "signed_zero", 0);
+    expect(reconcileClaim(signedZeroClaim, [
+      observation(context, signedZeroClaim.fact, 0, { provider: "number-A" }),
+      observation(context, signedZeroClaim.fact, -0, { provider: "number-B" }),
+    ], NOW)).toMatchObject({ decision: "unresolved", reason: "conflicting_observations" });
   });
 
   it("E6 leaves absent, abstained, and provider-error evidence unresolved", () => {
@@ -170,6 +177,7 @@ describe("test-only blocker reconciliation experiment", () => {
     const result = attemptClaimedTransition({
       store: loopStore,
       workflowId: workflow.id,
+      runtimeContextDigest: "workspace-A",
       outcome: "blocked",
       claim: environmentalClaim(context, "repository_dirty", true),
       observations: [observation(context, "repository_dirty", true)],
@@ -180,6 +188,44 @@ describe("test-only blocker reconciliation experiment", () => {
     expect(loopStore.get(workflow.id)).toMatchObject({ status: "paused", workflow: { currentState: "blocked", transitionSeq: 1 } });
     expect(readFileSync(loopPath)).not.toHaveLength(0);
     expect(readFileSync(taskPath)).toEqual(taskBytes);
+  });
+
+  it("E7 rejects claim replay across workflow, state, revision, execution, and workspace scope", () => {
+    const mutations: Array<{
+      label: string;
+      mutate: (context: ReturnType<typeof contextFor>) => ReturnType<typeof contextFor>;
+    }> = [
+      { label: "workflow", mutate: (context) => ({ ...context, workflowId: "other-workflow" }) },
+      { label: "state", mutate: (context) => ({ ...context, currentState: "other-state" }) },
+      { label: "revision", mutate: (context) => ({ ...context, definitionRevision: context.definitionRevision + 1 }) },
+      { label: "execution", mutate: (context) => ({ ...context, activeExecutionId: "other-execution" }) },
+      { label: "workspace", mutate: (context) => ({ ...context, contextDigest: "workspace-B" }) },
+    ];
+
+    for (const replay of mutations) {
+      const { loopPath, taskPath, loopStore, workflow } = setup();
+      const actualContext = contextFor(workflow, "workspace-A");
+      const replayedContext = replay.mutate(actualContext);
+      const loopBytes = readFileSync(loopPath);
+      const taskBytes = readFileSync(taskPath);
+      const claim = environmentalClaim(replayedContext, "repository_dirty", true);
+      const result = attemptClaimedTransition({
+        store: loopStore,
+        workflowId: workflow.id,
+        runtimeContextDigest: "workspace-A",
+        outcome: "blocked",
+        claim,
+        observations: [observation(replayedContext, claim.fact, true)],
+        now: NOW,
+      });
+
+      expect(result, replay.label).toMatchObject({
+        decision: { decision: "unresolved", reason: "stale_claim_context" },
+      });
+      expect(result.transition, replay.label).toBeUndefined();
+      expect(readFileSync(loopPath), replay.label).toEqual(loopBytes);
+      expect(readFileSync(taskPath), replay.label).toEqual(taskBytes);
+    }
   });
 
   it.each([
@@ -195,6 +241,7 @@ describe("test-only blocker reconciliation experiment", () => {
     const result = attemptClaimedTransition({
       store: loopStore,
       workflowId: workflow.id,
+      runtimeContextDigest: "workspace-A",
       outcome: "blocked",
       claim: environmentalClaim(context, "repository_dirty", true),
       observations: [observation(context, "repository_dirty", actual, { status })],
@@ -238,6 +285,7 @@ describe("test-only blocker reconciliation experiment", () => {
       const result = attemptClaimedTransition({
         store: loopStore,
         workflowId: workflow.id,
+        runtimeContextDigest: "workspace-A",
         outcome: "blocked",
         claim,
         observations: [testCase.mutate(observation(context, claim.fact, true))],
@@ -256,6 +304,7 @@ describe("test-only blocker reconciliation experiment", () => {
     const result = attemptClaimedTransition({
       store: loopStore,
       workflowId: workflow.id,
+      runtimeContextDigest: "workspace-A",
       outcome: "blocked",
       claim: environmentalClaim(context, "repository_dirty", true),
       observations: [observation(context, "repository_dirty", true)],
@@ -275,11 +324,87 @@ describe("test-only blocker reconciliation experiment", () => {
     });
   });
 
-  it("E9 exposes administrative pause as distinct from semantic transition settlement", () => {
-    const { loopStore, workflow } = setup();
-    const before = loopStore.get(workflow.id)!;
-    const paused = loopStore.pause(workflow.id)!;
+  it("resubmits delayed environmental evidence safely after file-backed store recreation", () => {
+    const { loopPath, taskPath, loopStore, workflow } = setup();
+    const context = contextFor(workflow, "workspace-A");
+    const claim = environmentalClaim(context, "validation_process_failed", true);
+    const loopBytes = readFileSync(loopPath);
+    const taskBytes = readFileSync(taskPath);
 
+    const waiting = attemptClaimedTransition({
+      store: loopStore,
+      workflowId: workflow.id,
+      runtimeContextDigest: "workspace-A",
+      outcome: "blocked",
+      claim,
+      observations: [],
+      now: NOW,
+    });
+    expect(waiting).toMatchObject({ decision: { decision: "unresolved" } });
+    expect(waiting.transition).toBeUndefined();
+    expect(readFileSync(loopPath)).toEqual(loopBytes);
+
+    const restartedStore = new LoopStore(loopPath);
+    const resumed = attemptClaimedTransition({
+      store: restartedStore,
+      workflowId: workflow.id,
+      runtimeContextDigest: "workspace-A",
+      outcome: "blocked",
+      claim,
+      observations: [observation(context, claim.fact, true, { provider: "delayed-monitor-status" })],
+      now: NOW,
+    });
+
+    expect(resumed).toMatchObject({ decision: { decision: "confirmed" }, transition: { applied: true } });
+    expect(readFileSync(taskPath)).toEqual(taskBytes);
+  });
+
+  it("resubmits a scoped user-authority decision safely after store recreation", () => {
+    const { loopPath, taskPath, loopStore, workflow } = setup();
+    const context = contextFor(workflow, "workspace-A");
+    const claim: ExperimentClaim = {
+      class: "user_authority",
+      fact: "destructive_change_approved",
+      expected: true,
+      context,
+    };
+    const taskBytes = readFileSync(taskPath);
+    const waiting = attemptClaimedTransition({
+      store: loopStore,
+      workflowId: workflow.id,
+      runtimeContextDigest: "workspace-A",
+      outcome: "blocked",
+      claim,
+      observations: [observation(context, claim.fact, true)],
+      now: NOW,
+    });
+    expect(waiting).toMatchObject({ decision: { decision: "requires_user_authority" } });
+    expect(waiting.transition).toBeUndefined();
+
+    const restartedStore = new LoopStore(loopPath);
+    const resumed = attemptClaimedTransition({
+      store: restartedStore,
+      workflowId: workflow.id,
+      runtimeContextDigest: "workspace-A",
+      outcome: "blocked",
+      claim,
+      observations: [observation(context, claim.fact, true, {
+        sourceClass: "user_authority",
+        provider: "explicit-user-decision",
+      })],
+      now: NOW,
+    });
+
+    expect(resumed).toMatchObject({ decision: { decision: "confirmed" }, transition: { applied: true } });
+    expect(readFileSync(taskPath)).toEqual(taskBytes);
+  });
+
+  it("E9 classifies semantic terminal pause separately from unattributed nonsemantic pause", () => {
+    const administrative = setup();
+    const before = administrative.loopStore.get(administrative.workflow.id)!;
+    expect(classifyWorkflowPause(before)).toBe("not_paused");
+
+    const paused = administrative.loopStore.pause(administrative.workflow.id)!;
     expect(paused).toMatchObject({
       status: "paused",
       workflow: {
@@ -288,6 +413,11 @@ describe("test-only blocker reconciliation experiment", () => {
       },
     });
     expect(paused.workflow?.lastTransition).toBeUndefined();
-    expect(loopStore.resume(workflow.id)).toMatchObject({ status: "active" });
+    expect(classifyWorkflowPause(paused)).toBe("nonsemantic_unattributed");
+
+    const semantic = setup();
+    const transitioned = semantic.loopStore.transitionWorkflow(semantic.workflow.id, { outcome: "blocked" });
+    expect(transitioned).toMatchObject({ applied: true, terminal: "paused" });
+    expect(classifyWorkflowPause(semantic.loopStore.get(semantic.workflow.id)!)).toBe("semantic_terminal");
   });
 });

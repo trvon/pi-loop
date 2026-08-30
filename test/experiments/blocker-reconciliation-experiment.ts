@@ -48,15 +48,31 @@ interface WorkflowExpectedState {
   activeExecutionId?: string;
 }
 
+export type ExperimentPauseClass = "not_paused" | "semantic_terminal" | "nonsemantic_unattributed";
+
 export interface ExperimentTransitionAttempt {
   store: LoopStore;
   workflowId: string;
+  runtimeContextDigest: string;
   outcome: string;
   claim: ExperimentClaim;
   observations: ExperimentObservation[];
   now: number;
   actor?: WorkflowRuntimeActor;
   beforeCommit?: (expected: WorkflowExpectedState) => void;
+}
+
+export function classifyWorkflowPause(entry: LoopEntry): ExperimentPauseClass {
+  if (entry.status !== "paused") return "not_paused";
+  const workflow = entry.workflow;
+  if (!workflow) return "nonsemantic_unattributed";
+  const state = workflow.definition.states[workflow.currentState];
+  const transition = workflow.lastTransition;
+  return state?.terminal === "paused"
+      && transition?.to === workflow.currentState
+      && transition.sequence === workflow.transitionSeq
+    ? "semantic_terminal"
+    : "nonsemantic_unattributed";
 }
 
 export function contextFor(entry: LoopEntry, contextDigest: string): ExperimentWorkflowContext {
@@ -134,8 +150,8 @@ export function reconcileClaim(
     };
   }
 
-  const values = new Set(current.map((observation) => `${typeof observation.actual}:${String(observation.actual)}`));
-  if (values.size > 1) {
+  const firstValue = current[0]!.actual;
+  if (current.some((observation) => !Object.is(observation.actual, firstValue))) {
     return {
       decision: "unresolved",
       reason: "conflicting_observations",
@@ -161,7 +177,7 @@ export function attemptClaimedTransition(input: ExperimentTransitionAttempt): {
     };
   }
 
-  const currentContext = contextFor(entry, input.claim.context.contextDigest);
+  const currentContext = contextFor(entry, input.runtimeContextDigest);
   if (!sameContext(currentContext, input.claim.context)) {
     return {
       decision: { decision: "unresolved", reason: "stale_claim_context", providers: [] },
