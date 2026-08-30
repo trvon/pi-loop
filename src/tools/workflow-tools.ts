@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { formatLastTransitionLines } from "../loop-format.js";
 import type { LoopEntry, Trigger, WorkflowAdmissionRecord, WorkflowDefinition, WorkflowRevisionChange, WorkflowRevisionFailure, WorkflowRuntimeActor } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
-import { workflowAttemptLabel, workflowDisplayDetails } from "../ui/workflow-presentation.js";
+import { workflowAttemptLabel, workflowDisplayDetails, workflowLeaseLabel, workflowTimingSummaryLine } from "../ui/workflow-presentation.js";
 import { admitWorkflowTransition, type WorkflowAdmissionProvider } from "../workflow-admission.js";
 import { validateWorkflowDefinition } from "../workflow-definition.js";
 import { getActiveWorkflowStateLoop, getWorkflowOutcomeAvailability, type WorkflowTransitionFailure } from "../workflow-reducer.js";
@@ -143,13 +143,13 @@ function formatWorkflowDefinitionError(error: string | undefined): string {
   return `Workflow definition rejected: ${error ?? "unknown validation error"}\nRequired fields: version: 1, initialState, and states.\nExample definition:\n${WORKFLOW_DEFINITION_EXAMPLE}\nNext: correct the JSON and call WorkflowCreate again.`;
 }
 
-export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure?: WorkflowTransitionFailure): string {
+export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure?: WorkflowTransitionFailure, now = Date.now()): string {
   const workflow = entry.workflow!;
   const state = workflow.definition.states[workflow.currentState];
   const availability = getWorkflowOutcomeAvailability(workflow);
   const attempt = workflow.attemptsByState[workflow.currentState] ?? 1;
   const attemptLabel = state?.maxAttempts ? `${attempt}/${state.maxAttempts}` : String(attempt);
-  let message = `${heading}\nGoal: ${entry.prompt}\nDefinition revision: ${workflow.definitionRevision ?? 1}\nCurrent state: ${workflow.currentState}\nTransition sequence: ${workflow.transitionSeq}\nAttempt: ${attemptLabel}`;
+  let message = `${heading}\nGoal: ${entry.prompt}\n${workflowTimingSummaryLine(entry, now)}\nDefinition revision: ${workflow.definitionRevision ?? 1}\nCurrent state: ${workflow.currentState}\nTransition sequence: ${workflow.transitionSeq}\nAttempt: ${attemptLabel}`;
   if (entry.pause) message += `\nPause cause: ${entry.pause.kind}${entry.pause.reason ? ` — ${entry.pause.reason}` : ""}`;
   if (workflow.lastTransition) message += `\n${formatLastTransitionLines(workflow.lastTransition).join("\n")}`;
   if (state?.prompt) message += `\nInstruction: ${state.prompt}`;
@@ -157,7 +157,7 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   if (execution) {
     const lease = execution.lease;
     message += `\nActive workflow work: ${execution.subject} (${execution.id})`;
-    message += lease ? `\nLease: active until ${new Date(lease.expiresAt).toISOString()}` : "\nLease: unowned; claim it before continuing.";
+    message += `\nLease: ${workflowLeaseLabel(entry, now)}${lease && lease.expiresAt > now ? "" : "; claim it before continuing."}`;
   } else if (state?.task) {
     message += "\nWorkflow work: missing; this workflow needs recovery.";
   } else {
@@ -175,7 +175,7 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
     return `${message}\nRoute gap: all declared outcomes are unavailable. If actionable work remains, use WorkflowRevise with the displayed revision/state/sequence (${cas}) to add a bounded recovery route, then continue through its transition and claim. Do not fabricate an outcome or stop merely to report the gap.`;
   }
   const outcomes = availability.available.join(", ");
-  if (execution && !execution.lease) {
+  if (execution && (!execution.lease || execution.lease.expiresAt <= now)) {
     return `${message}\nChoose outcome: ${outcomes}\nNext: WorkflowClaim({ id: "${entry.id}" }), then complete the work and call WorkflowTransition({ id: "${entry.id}", outcome: "${availability.available[0]}", evidence: "..." })`;
   }
   return `${message}\nChoose outcome: ${outcomes}\nNext: WorkflowTransition({ id: "${entry.id}", outcome: "${availability.available[0]}", evidence: "..." })`;

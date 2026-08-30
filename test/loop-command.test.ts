@@ -154,6 +154,12 @@ describe("registerLoopCommand", () => {
 
     await h.command.handler!("", { ui } as any);
 
+    const loopChoices = ui.select.mock.calls.find(([title]) => title === "Loops")?.[1] as string[];
+    expect(loopChoices[0]).toContain("[active] Ship the migration");
+    expect(loopChoices[0]).toContain("[activity:idle 0s]");
+    expect(detailTitle).toContain("Activity: idle");
+    expect(detailTitle).toContain("Workflow age:");
+    expect(detailTitle).toContain("State age:");
     expect(detailTitle).toContain("State: investigate · attempt 1/2");
     expect(detailTitle).toContain("Revision: 1 · transition: 0");
     expect(detailTitle).toContain("Lease: unowned");
