@@ -26,6 +26,7 @@ src/index.ts                 extension registration and runtime wiring
 src/api.ts                   supported @trevonistrevon/pi-loop/api surface
 src/types.ts                 loop, workflow, revision, monitor contracts
 src/store.ts                 LoopStore workflow/orchestration atomic mutations
+src/workflow-admission.ts    provider-neutral blocker transition admission
 src/task-store.ts            standalone native task persistence
 src/*-reducer.ts             pure state transitions
 src/coordinator.ts           reducer/effect coordination
@@ -48,10 +49,12 @@ A workflow is one dynamic `LoopEntry` with a version-1 named-state definition.
 - The creator owns the initial execution lease.
 - Every destination/retry execution starts unowned and requires `WorkflowClaim`.
 - `WorkflowTransition` validates the live owner, settles source work, records evidence, advances state, and creates destination work in one locked write.
+- Paused terminal outcomes require a typed blocker claim; trusted providers run outside the LoopStore lock, then the transition uses exact state/revision/execution CAS.
+- Machine observations never grant user authority. Rejected, stale, or contradicted claims are state-preserving; restart recovery is explicit resubmission, not a persisted proposal.
 - `WorkflowRevise` applies typed additive changes with definition/state/sequence CAS, immutable prior-definition history, and no scheduler or TaskStore effect.
 - Current materialized state content is immutable. Current outgoing edges and future state content may be revised.
 - Transition CAS includes definition revision so transition/revision races fail closed in either order.
-- Terminal completed workflows are deleted; terminal paused workflows remain inspectable.
+- Terminal completed workflows are deleted; terminal paused workflows remain inspectable with bounded admission and pause provenance.
 
 ## Subagent orchestration contract
 

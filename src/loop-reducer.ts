@@ -1,5 +1,5 @@
 import { applyOrchestrationEvent, createOrchestrationState, type OrchestrationEvent } from "./orchestration-reducer.js";
-import type { DynamicLoopState, LoopEntry, LoopFireOrigin, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionChange, WorkflowRuntimeActor } from "./types.js";
+import type { DynamicLoopState, LoopEntry, LoopFireOrigin, LoopPauseKind, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowAdmissionRecord, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionChange, WorkflowRuntimeActor } from "./types.js";
 import { createWorkflowRun, transitionWorkflowRun } from "./workflow-reducer.js";
 import { reviseWorkflowRun, type WorkflowRevisionSummary } from "./workflow-revision.js";
 
@@ -44,8 +44,15 @@ export type LoopReducerEvent =
     };
   }
   | {
+    type: "LOOP_PAUSED";
+    at: number;
+    source: ReducerSource;
+    entityType?: "loop";
+    entityId?: string;
+    payload: { id: string; kind: LoopPauseKind; reason?: string };
+  }
+  | {
     type:
-      | "LOOP_PAUSED"
       | "LOOP_RESUMED"
       | "LOOP_FIRED"
       | "LOOP_DELETED"
@@ -114,6 +121,7 @@ export type LoopReducerEvent =
       id: string;
       outcome: string;
       evidence?: string;
+      admission?: WorkflowAdmissionRecord;
       actor?: WorkflowRuntimeActor;
     };
   }
@@ -127,6 +135,7 @@ export type LoopReducerEvent =
       id: string;
       outcome: string;
       evidence?: string;
+      admission?: WorkflowAdmissionRecord;
       actor?: WorkflowRuntimeActor;
       terminal: "completed" | "paused";
     };
@@ -259,11 +268,13 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
 
   if (event.type === "LOOP_PAUSED") {
     loop.status = "paused";
+    loop.pause = { kind: event.payload.kind, at: event.at, ...(event.payload.reason ? { reason: event.payload.reason } : {}) };
     loop.updatedAt = event.at;
   }
 
   if (event.type === "LOOP_RESUMED") {
     loop.status = "active";
+    loop.pause = undefined;
     loop.updatedAt = event.at;
   }
 
@@ -336,6 +347,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
     const result = transitionWorkflowRun(loop.workflow, {
       outcome: event.payload.outcome,
       evidence: event.payload.evidence,
+      admission: event.payload.admission,
       actor: event.payload.actor,
     }, event.at);
     if (!result.applied) return { state, effects: [] };
@@ -358,6 +370,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
     const result = transitionWorkflowRun(loop.workflow, {
       outcome: event.payload.outcome,
       evidence: event.payload.evidence,
+      admission: event.payload.admission,
       actor: event.payload.actor,
     }, event.at);
     if (!result.applied || result.terminal !== event.payload.terminal) return { state, effects: [] };
@@ -381,6 +394,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
       lastUpdatedAt: event.at,
     };
     loop.status = "paused";
+    loop.pause = { kind: "semantic_terminal", at: event.at };
     loop.updatedAt = event.at;
   }
 

@@ -7,6 +7,15 @@ import { LoopStore } from "../src/store.js";
 import type { Trigger, WorkflowRunState } from "../src/types.js";
 
 const cronTrigger: Trigger = { type: "cron", schedule: "*/5 * * * *" };
+const trustedAdmission = {
+  claimClass: "environmental" as const,
+  provider: "test",
+  subject: "release",
+  fact: "failed",
+  expected: true,
+  observations: ["test@1"],
+  decidedAt: 1,
+};
 
 describe("LoopStore (in-memory)", () => {
   let store: LoopStore;
@@ -68,7 +77,20 @@ describe("LoopStore (in-memory)", () => {
     store.create(cronTrigger, "test", { recurring: true });
     const entry = store.pause("1");
 
-    expect(entry!.status).toBe("paused");
+    expect(entry).toMatchObject({
+      status: "paused",
+      pause: { kind: "administrative" },
+    });
+  });
+
+  it("records controller-limit pause provenance", () => {
+    store.create(cronTrigger, "test", { recurring: true });
+    const entry = store.pause("1", "controller_limit", "workflow fire cap reached");
+
+    expect(entry).toMatchObject({
+      status: "paused",
+      pause: { kind: "controller_limit", reason: "workflow fire cap reached" },
+    });
   });
 
   it("resumes loops explicitly", () => {
@@ -76,7 +98,26 @@ describe("LoopStore (in-memory)", () => {
     store.pause("1");
     const entry = store.resume("1");
 
-    expect(entry!.status).toBe("active");
+    expect(entry).toMatchObject({ status: "active" });
+    expect(entry?.pause).toBeUndefined();
+  });
+
+  it("rejects a paused terminal transition without trusted admission", () => {
+    store.create({ type: "dynamic" }, "Investigate", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "investigate",
+        states: {
+          investigate: { prompt: "Find the blocker.", on: { blocked: "blocked" } },
+          blocked: { prompt: "Report the blocker.", terminal: "paused" },
+        },
+      },
+    });
+    const result = store.transitionWorkflow("1", { outcome: "blocked" });
+
+    expect(result).toMatchObject({ applied: false, error: expect.stringContaining("require trusted admission") });
+    expect(store.get("1")).toMatchObject({ status: "active", workflow: { currentState: "investigate" } });
   });
 
   it("atomically pauses a workflow that reaches a paused terminal state", () => {
@@ -91,11 +132,16 @@ describe("LoopStore (in-memory)", () => {
         },
       },
     });
-    const result = store.transitionWorkflow("1", { outcome: "blocked" });
+    const result = store.transitionWorkflow("1", { outcome: "blocked", admission: trustedAdmission });
 
     expect(result.terminal).toBe("paused");
     expect(store.resume("1")).toBeUndefined();
-    expect(store.get("1")?.status).toBe("paused");
+    expect(store.get("1")).toMatchObject({
+      status: "paused",
+      pause: { kind: "semantic_terminal" },
+    });
+    store.pause("1", "administrative", "later duplicate pause");
+    expect(store.get("1")?.pause).toMatchObject({ kind: "semantic_terminal" });
   });
 
   it("atomically removes a workflow that reaches a completed terminal state", () => {
@@ -467,7 +513,65 @@ describe("LoopStore (file-backed)", () => {
     store1.pause("1");
 
     const store2 = new LoopStore(filePath);
-    expect(store2.get("1")!.status).toBe("paused");
+    expect(store2.get("1")).toMatchObject({ status: "paused", pause: { kind: "administrative" } });
+  });
+
+  it("loads legacy paused snapshots without synthesized provenance", () => {
+    const store = new LoopStore(filePath);
+    store.create(cronTrigger, "test", { recurring: true });
+    store.pause("1");
+    const data = JSON.parse(readFileSync(filePath, "utf8"));
+    delete data.loops[0].pause;
+    writeFileSync(filePath, JSON.stringify(data));
+    rmSync(`${filePath}.prev`, { force: true });
+
+    expect(new LoopStore(filePath).get("1")).toMatchObject({ status: "paused" });
+    expect(new LoopStore(filePath).get("1")?.pause).toBeUndefined();
+  });
+
+  it("fails closed on malformed persisted pause provenance", () => {
+    const store = new LoopStore(filePath);
+    store.create(cronTrigger, "test", { recurring: true });
+    store.pause("1");
+    const data = JSON.parse(readFileSync(filePath, "utf8"));
+    data.loops[0].pause.kind = "invented";
+    writeFileSync(filePath, JSON.stringify(data));
+    rmSync(`${filePath}.prev`, { force: true });
+
+    expect(() => new LoopStore(filePath)).toThrow("Corrupt store");
+  });
+
+  it("fails closed on malformed persisted admission provenance", () => {
+    const store = new LoopStore(filePath);
+    store.create({ type: "dynamic" }, "Investigate", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Work.", on: { blocked: "blocked" } },
+          blocked: { prompt: "Blocked.", terminal: "paused" },
+        },
+      },
+    });
+    store.transitionWorkflow("1", {
+      outcome: "blocked",
+      admission: {
+        claimClass: "environmental",
+        provider: "monitor",
+        subject: "m1",
+        fact: "status",
+        expected: "error",
+        observations: ["monitor@1"],
+        decidedAt: Date.now(),
+      },
+    });
+    const data = JSON.parse(readFileSync(filePath, "utf8"));
+    data.loops[0].workflow.lastTransition.admission.observations = Array.from({ length: 9 }, () => "monitor@1");
+    writeFileSync(filePath, JSON.stringify(data));
+    rmSync(`${filePath}.prev`, { force: true });
+
+    expect(() => new LoopStore(filePath)).toThrow("Corrupt store");
   });
 
   it("persists deletions", () => {

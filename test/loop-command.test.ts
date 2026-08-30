@@ -420,7 +420,18 @@ describe("registerLoopCommand", () => {
         },
       },
     });
-    h.store.transitionWorkflow("1", { outcome: "blocked" });
+    h.store.transitionWorkflow("1", {
+      outcome: "blocked",
+      admission: {
+        claimClass: "environmental",
+        provider: "test",
+        subject: "release",
+        fact: "failed",
+        expected: true,
+        observations: ["test@1"],
+        decidedAt: 1,
+      },
+    });
     h.store.pause("1");
 
     const actionChoices: string[][] = [];
