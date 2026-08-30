@@ -41,6 +41,8 @@ export type { TaskClaimInput, TaskClaimResult } from "./task-store.js";
 export { TaskStore } from "./task-store.js";
 export type { TaskClaim, TaskEntry, TaskStatus, TaskStoreData } from "./task-types.js";
 export type {
+  LoopPauseKind,
+  LoopPauseRecord,
   MonitorOutcome,
   OrchestrationActor,
   OrchestrationConsumeStatus,
@@ -55,6 +57,7 @@ export type {
   OrchestrationWakeReason,
   OrchestrationWorkItem,
   OrchestrationWorkStatus,
+  WorkflowAdmissionRecord,
   WorkflowDefinition,
   WorkflowDefinitionRevision,
   WorkflowMonitorWait,

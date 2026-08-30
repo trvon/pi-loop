@@ -33,13 +33,11 @@ function buildLoopState(): LoopReducerState {
 const loopState = buildLoopState();
 const loopEvents: LoopReducerEvent[] = Array.from({ length: 1_000 }, (_, index) => {
   const id = String((index % 25) + 1);
-  const type = ["LOOP_FIRED", "LOOP_PAUSED", "LOOP_RESUMED"] as const;
-  return {
-    type: type[index % type.length] ?? "LOOP_FIRED",
-    at: 1_000 + index,
-    source: "system",
-    payload: { id },
-  };
+  const types = ["LOOP_FIRED", "LOOP_PAUSED", "LOOP_RESUMED"] as const;
+  const type = types[index % types.length] ?? "LOOP_FIRED";
+  return type === "LOOP_PAUSED"
+    ? { type, at: 1_000 + index, source: "system", payload: { id, kind: "administrative" } }
+    : { type, at: 1_000 + index, source: "system", payload: { id } };
 });
 
 function buildTaskState(): TaskReducerState {

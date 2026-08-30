@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { type LoopReducerEffect, type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { applyOrchestrationEvent, type OrchestrationEvent, validateOrchestrationDefinition, validatePersistedOrchestration } from "./orchestration-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopStoreData, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopPauseKind, LoopPauseRecord, LoopStoreData, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
 import { validateWorkflowDefinition } from "./workflow-definition.js";
-import { isTerminalWorkflowRun, transitionWorkflowRun, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
+import { isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowAdmissionRecord, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 import { validatePersistedWorkflowRevision, type WorkflowRevisionInput, type WorkflowRevisionSummary } from "./workflow-revision.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
@@ -19,6 +19,9 @@ const LOOPS_DIR = join(homedir(), ".pi", "loops");
  */
 function normalizeWorkflowRunState(workflow: WorkflowRunState): WorkflowRunState {
   const legacy = workflow as WorkflowRunState & { activeTaskId?: string };
+  if (workflow.lastTransition?.admission && validateWorkflowAdmissionRecord(workflow.lastTransition.admission)) {
+    throw new Error("Malformed workflow admission provenance");
+  }
   const hasRevision = Object.hasOwn(workflow, "definitionRevision");
   const hasHistory = Object.hasOwn(workflow, "revisionHistory");
   if (hasRevision !== hasHistory) throw new Error("Malformed workflow revision metadata: revision and history must appear together");
@@ -61,9 +64,30 @@ function normalizeWorkflowRunState(workflow: WorkflowRunState): WorkflowRunState
     } : {}),
   };
 }
+const LOOP_PAUSE_KINDS = new Set<LoopPauseKind>([
+  "administrative",
+  "controller_limit",
+  "semantic_terminal",
+  "orchestration_settlement",
+]);
+
+function normalizePauseRecord(entry: LoopEntry): LoopPauseRecord | undefined {
+  const pause = entry.pause;
+  if (!pause) return undefined;
+  if (entry.status !== "paused"
+    || !LOOP_PAUSE_KINDS.has(pause.kind)
+    || !Number.isFinite(pause.at)
+    || (pause.reason !== undefined && (typeof pause.reason !== "string" || pause.reason.length > 512))) {
+    throw new Error("Malformed loop pause provenance");
+  }
+  return pause;
+}
+
 function normalizeLoopEntry(entry: LoopEntry): LoopEntry {
+  const pause = normalizePauseRecord(entry);
   return {
     ...entry,
+    ...(pause ? { pause } : {}),
     ...(entry.workflow ? { workflow: normalizeWorkflowRunState(entry.workflow) } : {}),
     ...(entry.orchestration ? { orchestration: validatePersistedOrchestration(entry.orchestration) } : {}),
   };
@@ -151,17 +175,19 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     });
   }
 
-  pause(id: string): LoopEntry | undefined {
+  pause(id: string, kind: LoopPauseKind = "administrative", reason?: string): LoopEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
       if (!entry) return undefined;
+      if (entry.status === "paused") return entry;
+      const boundedReason = reason?.trim().slice(0, 512);
       this.applyReducerEvent({
         type: "LOOP_PAUSED",
         at: Date.now(),
         source: "tool",
         entityType: "loop",
         entityId: id,
-        payload: { id },
+        payload: { id, kind, ...(boundedReason ? { reason: boundedReason } : {}) },
       });
       return this.entries.get(id);
     });
@@ -306,14 +332,24 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         || entry.status !== expected.status
         || entry.dynamic.iteration !== expected.iteration
         || entry.updatedAt !== expected.updatedAt) return false;
-      this.applyReducerEvent({
-        type: status === "completed" ? "LOOP_DELETED" : "LOOP_PAUSED",
-        at: Date.now(),
-        source: "tool",
-        entityType: "loop",
-        entityId: id,
-        payload: { id },
-      });
+      const at = Date.now();
+      this.applyReducerEvent(status === "completed"
+        ? {
+            type: "LOOP_DELETED",
+            at,
+            source: "tool",
+            entityType: "loop",
+            entityId: id,
+            payload: { id },
+          }
+        : {
+            type: "LOOP_PAUSED",
+            at,
+            source: "tool",
+            entityType: "loop",
+            entityId: id,
+            payload: { id, kind: "administrative" },
+          });
       return true;
     });
   }
@@ -392,6 +428,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           id,
           outcome: input.outcome,
           evidence: input.evidence,
+          admission: input.admission,
           actor: input.actor,
           ...(result.terminal ? { terminal: result.terminal } : {}),
         },
@@ -400,6 +437,9 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         const terminalEntry: LoopEntry = {
           ...entry,
           status: result.terminal === "paused" ? "paused" : entry.status,
+          ...(result.terminal === "paused"
+            ? { pause: { kind: "semantic_terminal" as const, at: result.run.stateEnteredAt } }
+            : {}),
           updatedAt: result.run.stateEnteredAt,
           dynamic: {
             goal: entry.dynamic?.goal ?? entry.prompt,
@@ -571,7 +611,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
               source: "system",
               entityType: "loop",
               entityId: id,
-              payload: { id },
+              payload: { id, kind: "controller_limit", reason: "loop expiry reached" },
             }
           : {
               type: "LOOP_EXPIRED",
@@ -621,7 +661,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
               source: "system",
               entityType: "loop",
               entityId: entry.id,
-              payload: { id: entry.id },
+              payload: { id: entry.id, kind: "administrative", reason: "store cleared with workflow preservation" },
             }
           : {
               type: "LOOP_DELETED",

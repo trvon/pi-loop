@@ -41,7 +41,7 @@ Project scope shares durable state but does not yet elect one scheduler owner ac
 
 ## Loop model
 
-`LoopEntry.status` is `active` or `paused`. Triggers are:
+`LoopEntry.status` is `active` or `paused`. New pauses persist optional provenance as `pause:{kind,at,reason?}`. Kinds distinguish `administrative`, `controller_limit`, `semantic_terminal`, and `orchestration_settlement`; older paused snapshots may remain unattributed. Resume clears the record. Triggers are:
 
 - cron: `{type:"cron", schedule}`
 - event: `{type:"event", source, filter?}`
@@ -81,7 +81,9 @@ A run persists current state, transition sequence, attempts, state fire counts, 
 
 The initial task execution is leased to the creating runtime. Every destination execution, including self-loop retries, starts unowned. `WorkflowClaim` claims unowned work, renews the same owner, or takes over an expired lease. Live foreign ownership fails closed.
 
-`WorkflowTransition` validates the current lease, declared available outcome, attempt limit, active execution, and definition revision. One locked write settles source work, records evidence, advances state, and creates the destination execution. A missing or exhausted route is handled through `WorkflowRevise`, not a fabricated transition. Completed terminal states delete the controller; paused terminal states preserve it for inspection and represent a declared blocker or required user authority—not a progress notification.
+`WorkflowTransition` validates the current lease, declared available outcome, attempt limit, active execution, and definition revision. Ordinary transitions proceed directly. A transition into a `paused` terminal state additionally requires `claim:{class,provider,subject,fact,expected}`. A trusted provider observes the fact outside the LoopStore lock; admission rejects missing, unavailable, stale, expired, conflicting, contradicted, or cross-context observations without writing. The built-in `monitor` provider exposes only `status`, `exitCode`, and `stopReason`; monitor output is never evidence. Admission confirms the exact fact, not whether workflow policy should treat that fact as a blocker—the declared edge remains the workflow author's policy. No user-authority provider is built in, and machine providers cannot grant `user_authority`, so those claims fail closed. After confirmation, the existing state/revision/execution CAS protects the locked transition.
+
+No pending claim or general evidence ledger is persisted. A confirmed transition stores only a bounded admission receipt on `lastTransition` (claim class/provider/subject/fact/expected value, provider versions, and decision time). After restart, callers inspect current state and explicitly resubmit; stale context is rejected. One locked transition write settles source work, records evidence and the receipt, advances state, and creates the destination execution. A missing or exhausted route is handled through `WorkflowRevise`, not a fabricated transition. Completed terminals delete the controller; paused terminals preserve it with `semantic_terminal` pause provenance and represent a declared blocker—not a progress notification.
 
 ### Adaptive revision
 

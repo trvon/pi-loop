@@ -11,6 +11,7 @@ function setup() {
   const scheduler = { nextFire: vi.fn(() => undefined) };
   const monitorManager = { get: vi.fn(() => undefined) };
   const onDynamicLoopActivated = vi.fn();
+  const admissionProviders: import("../src/workflow-admission.js").WorkflowAdmissionProvider[] = [];
   const maybeBootstrapTaskLoop = vi.fn(async () => false);
   const isTaskSystemReady = vi.fn(() => true);
   const cancelOrchestration = vi.fn(async (id: string, action: "pause" | "delete") => {
@@ -34,12 +35,14 @@ function setup() {
     getStore: () => store,
     getTriggerSystem: () => triggerSystem,
     getActor: () => ({ sessionId: "test-session", runtimeId: "test-runtime" }),
+    getAdmissionContextDigest: () => "workspace-A",
+    getAdmissionProviders: () => admissionProviders,
     updateWidget: vi.fn(),
     onDynamicLoopActivated,
   });
   const result = async (name: string, args: any) => await toolMap.get(name)!.execute!("t", args);
   const text = async (name: string, args: any) => (await result(name, args)).content[0].text as string;
-  return { store, triggerSystem, text, result, toolMap, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated, cancelOrchestration };
+  return { store, triggerSystem, text, result, toolMap, admissionProviders, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated, cancelOrchestration };
 }
 
 describe("LoopCreate", () => {
@@ -549,6 +552,64 @@ describe("Workflow tools", () => {
     expect(h.store.get("1")?.workflow?.activeExecution?.lease).toBeUndefined();
   });
 
+  it("requires trusted blocker admission before a paused terminal transition", async () => {
+    const definition = JSON.stringify({
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Check release.", on: { blocked: "blocked" } },
+        blocked: { prompt: "Report blocker.", terminal: "paused" },
+      },
+    });
+    await h.text("WorkflowCreate", { goal: "Check release", definition });
+
+    const rejected = await h.text("WorkflowTransition", { id: "1", outcome: "blocked" });
+
+    expect(rejected).toContain("Admission: unresolved (claim_required)");
+    expect(h.store.get("1")).toMatchObject({ status: "active", workflow: { currentState: "work" } });
+  });
+
+  it("admits a paused terminal transition through a trusted provider", async () => {
+    const definition = JSON.stringify({
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Check release.", on: { blocked: "blocked" } },
+        blocked: { prompt: "Report blocker.", terminal: "paused" },
+      },
+    });
+    h.admissionProviders.push({
+      id: "test",
+      sourceClass: "environmental",
+      async observe({ claim, context, now }) {
+        return [{
+          fact: claim.fact,
+          actual: true,
+          sourceClass: "environmental",
+          provider: "test",
+          providerVersion: "1",
+          observedAt: now,
+          expiresAt: now + 1_000,
+          context,
+          status: "observed",
+        }];
+      },
+    });
+    await h.text("WorkflowCreate", { goal: "Check release", definition });
+
+    const admitted = await h.text("WorkflowTransition", {
+      id: "1",
+      outcome: "blocked",
+      claim: { class: "environmental", provider: "test", subject: "release", fact: "failed", expected: true },
+    });
+
+    expect(admitted).toContain("Workflow #1 paused");
+    expect(h.store.get("1")?.pause?.kind).toBe("semantic_terminal");
+    const listed = await h.text("LoopList", {});
+    expect(listed).toContain("Pause cause: semantic_terminal");
+    expect(listed).toContain("Admission: environmental · test:release.failed = true · test@1");
+  });
+
   it("exposes typed workflow revision changes without replacement or ownership fields", () => {
     const revise = h.toolMap.get("WorkflowRevise") as any;
 
@@ -737,7 +798,11 @@ describe("Workflow tools", () => {
     const create = h.toolMap.get("WorkflowCreate") as any;
     expect(create.description).toContain("embedded atomically");
     expect(create.promptGuidelines.join("\n")).toContain("maxAttempts");
-    expect((h.toolMap.get("WorkflowTransition") as any).parameters.properties.evidence).toBeDefined();
+    const transition = h.toolMap.get("WorkflowTransition") as any;
+    expect(transition.parameters.properties.evidence).toBeDefined();
+    expect(transition.parameters.properties.claim).toBeDefined();
+    expect(transition.parameters.properties.contextDigest).toBeUndefined();
+    expect(transition.parameters.properties.claim.properties.context).toBeUndefined();
     expect(await h.text("WorkflowCreate", { goal: "Fix the regression", definition })).toContain("Definition revision: 1");
     expect(await h.text("LoopList", {})).toContain("Transition sequence: 0");
   });
@@ -760,7 +825,8 @@ describe("LoopDelete", () => {
   it("pauses a loop without removing it", async () => {
     const out = await h.text("LoopDelete", { id: "1", action: "pause" });
     expect(out).toBe("Loop #1 paused");
-    expect(h.store.get("1")?.status).toBe("paused");
+    expect(h.store.get("1")).toMatchObject({ status: "paused", pause: { kind: "administrative" } });
+    expect(await h.text("LoopList", {})).toContain("[pause:administrative]");
   });
 
   it("delegates orchestration cancellation before deletion", async () => {

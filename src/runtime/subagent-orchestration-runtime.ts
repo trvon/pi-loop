@@ -453,7 +453,7 @@ export function createSubagentOrchestrationRuntime(
       if (wakeQueued.has(key)) continue;
       wakeQueued.add(key);
       if (state.status === "completed" || (state.status === "needs_attention" && getOrchestrationCounts(state).active === 0)) {
-        getStore().pause(entry.id);
+        getStore().pause(entry.id, "orchestration_settlement", `orchestration ${state.status}`);
       }
       emitWake(getStore().get(entry.id) ?? entry, wake);
     }
@@ -597,7 +597,7 @@ export function createSubagentOrchestrationRuntime(
     await Promise.all(agentIds.map((agentId) => stopCancelledAgent(id, agentId)));
     await drainDispatches(id);
     if (action === "delete") getStore().delete(id);
-    else getStore().pause(id);
+    else getStore().pause(id, "administrative", "orchestration cancelled by operator");
     for (const key of wakeQueued) {
       if (key.startsWith(`${id}:`)) wakeQueued.delete(key);
     }

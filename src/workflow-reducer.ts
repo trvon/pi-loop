@@ -1,4 +1,5 @@
 import type {
+  WorkflowAdmissionRecord,
   WorkflowDefinition,
   WorkflowExecutionRecord,
   WorkflowRunState,
@@ -8,9 +9,29 @@ import type {
   WorkflowTransitionRecord,
 } from "./types.js";
 
+export function validateWorkflowAdmissionRecord(record: WorkflowAdmissionRecord | undefined): string | undefined {
+  if (!record) return "Paused terminal transitions require trusted admission";
+  const validValue = record.expected === null
+    || (typeof record.expected === "string" && record.expected.length <= 1_024)
+    || typeof record.expected === "boolean"
+    || (typeof record.expected === "number" && Number.isFinite(record.expected));
+  if ((record.claimClass !== "environmental" && record.claimClass !== "user_authority")
+    || !record.provider || record.provider.length > 64
+    || !record.subject || record.subject.length > 256
+    || !record.fact || record.fact.length > 64
+    || !validValue
+    || !Array.isArray(record.observations) || record.observations.length < 1 || record.observations.length > 8
+    || record.observations.some((observation) => typeof observation !== "string" || !observation || observation.length > 129)
+    || !Number.isFinite(record.decidedAt)) {
+    return "Paused terminal transition admission is malformed";
+  }
+  return undefined;
+}
+
 export interface WorkflowTransitionInput {
   outcome: string;
   evidence?: string;
+  admission?: WorkflowAdmissionRecord;
   actor?: WorkflowRuntimeActor;
 }
 
@@ -187,6 +208,10 @@ export function transitionWorkflowRun(
   const target = resolved.target;
   const targetState = run.definition.states[target];
   if (!targetState) return { applied: false, error: `Transition target "${target}" is not defined` };
+  if (targetState.terminal === "paused" || input.admission) {
+    const admissionError = validateWorkflowAdmissionRecord(input.admission);
+    if (admissionError) return { applied: false, error: admissionError };
+  }
   const sequence = run.transitionSeq + 1;
   const settled = settleExecution(run.activeExecution, input.evidence, at);
   const destination = targetState.task && !targetState.terminal
@@ -197,6 +222,7 @@ export function transitionWorkflowRun(
     to: target,
     outcome: input.outcome,
     evidence: input.evidence,
+    admission: input.admission,
     at,
     sequence,
   };

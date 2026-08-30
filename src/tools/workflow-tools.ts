@@ -1,9 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { formatLastTransitionLines } from "../loop-format.js";
-import type { LoopEntry, Trigger, WorkflowDefinition, WorkflowRevisionChange, WorkflowRevisionFailure, WorkflowRuntimeActor } from "../types.js";
+import type { LoopEntry, Trigger, WorkflowAdmissionRecord, WorkflowDefinition, WorkflowRevisionChange, WorkflowRevisionFailure, WorkflowRuntimeActor } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { workflowAttemptLabel, workflowDisplayDetails } from "../ui/workflow-presentation.js";
+import { admitWorkflowTransition, type WorkflowAdmissionProvider } from "../workflow-admission.js";
 import { validateWorkflowDefinition } from "../workflow-definition.js";
 import { getActiveWorkflowStateLoop, getWorkflowOutcomeAvailability, type WorkflowTransitionFailure } from "../workflow-reducer.js";
 import type { WorkflowRevisionSummary } from "../workflow-revision.js";
@@ -68,7 +69,7 @@ interface WorkflowStoreLike {
   };
   transitionWorkflow(
     id: string,
-    input: { outcome: string; evidence?: string; actor?: WorkflowRuntimeActor },
+    input: { outcome: string; evidence?: string; admission?: WorkflowAdmissionRecord; actor?: WorkflowRuntimeActor },
     expected?: { currentState: string; transitionSeq: number; definitionRevision: number; activeExecutionId?: string },
   ): {
     entry?: LoopEntry;
@@ -94,6 +95,8 @@ export interface WorkflowToolsOptions {
   getStore: () => WorkflowStoreLike;
   getTriggerSystem: () => TriggerSystemLike;
   getActor: () => WorkflowRuntimeActor | undefined;
+  getAdmissionContextDigest: () => string;
+  getAdmissionProviders: () => WorkflowAdmissionProvider[];
   updateWidget: () => void;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
 }
@@ -112,6 +115,15 @@ function parseWorkflowDefinition(input: string): { definition?: WorkflowDefiniti
 
 const WORKFLOW_DEFINITION_EXAMPLE =
   '{"version":1,"initialState":"collect","states":{"collect":{"prompt":"Collect evidence.","on":{"ready":"publish"}},"publish":{"prompt":"Publish the result.","terminal":"completed"}}}';
+
+const WorkflowFactValueSchema = Type.Union([Type.String({ maxLength: 1_024 }), Type.Number(), Type.Boolean(), Type.Null()]);
+const WorkflowBlockerClaimSchema = Type.Object({
+  class: Type.Union([Type.Literal("environmental"), Type.Literal("user_authority")]),
+  provider: Type.String({ minLength: 1, maxLength: 64, description: "Provider ID (built-in: monitor)" }),
+  subject: Type.String({ minLength: 1, maxLength: 256, description: "Provider subject or monitor ID" }),
+  fact: Type.String({ minLength: 1, maxLength: 64, description: "Fact; monitor: status, exitCode, stopReason" }),
+  expected: WorkflowFactValueSchema,
+});
 
 function workflowDefaultMaxFires(definition: WorkflowDefinition): number {
   const loopBudget = Object.values(definition.states).reduce((total, state) => total + (state.loop?.maxFires ?? 0), 0);
@@ -138,6 +150,7 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   const attempt = workflow.attemptsByState[workflow.currentState] ?? 1;
   const attemptLabel = state?.maxAttempts ? `${attempt}/${state.maxAttempts}` : String(attempt);
   let message = `${heading}\nGoal: ${entry.prompt}\nDefinition revision: ${workflow.definitionRevision ?? 1}\nCurrent state: ${workflow.currentState}\nTransition sequence: ${workflow.transitionSeq}\nAttempt: ${attemptLabel}`;
+  if (entry.pause) message += `\nPause cause: ${entry.pause.kind}${entry.pause.reason ? ` — ${entry.pause.reason}` : ""}`;
   if (workflow.lastTransition) message += `\n${formatLastTransitionLines(workflow.lastTransition).join("\n")}`;
   if (state?.prompt) message += `\nInstruction: ${state.prompt}`;
   const execution = workflow.activeExecution;
@@ -169,7 +182,16 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
 }
 
 export function registerWorkflowTools(options: WorkflowToolsOptions): void {
-  const { pi, getStore, getTriggerSystem, getActor, updateWidget, onDynamicLoopActivated } = options;
+  const {
+    pi,
+    getStore,
+    getTriggerSystem,
+    getActor,
+    getAdmissionContextDigest,
+    getAdmissionProviders,
+    updateWidget,
+    onDynamicLoopActivated,
+  } = options;
 
   pi.registerTool({
     name: "WorkflowCreate",
@@ -352,27 +374,57 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     label: "WorkflowTransition",
     renderCall: renderToolCall("Workflow", (args) => `transition · #${String(toolArg(args, "id") ?? "?")} → ${String(toolArg(args, "outcome") ?? "?")}`),
     renderResult: renderToolResult,
-    description: "Advance one declared workflow outcome. The controller authorizes the current runtime lease; it never accepts a claim token.",
+    description: "Advance a declared outcome; it never accepts a claim token. Paused terminal outcomes require trusted blocker admission outside LoopStore.",
     promptGuidelines: [
-      "WorkflowTransition uses id, outcome, and optional evidence; claimId is invalid. Outcome must be available and declared; inspect LoopList first.",
-      "If no outcome fits or the plan changed, use WorkflowRevise first—never fabricate an outcome or terminal-pause merely to report progress.",
+      "WorkflowTransition uses id, outcome, and optional evidence; paused terminal outcomes require a typed claim; claimId is invalid.",
+      "Machine evidence cannot grant user authority. If no outcome fits, use WorkflowRevise; never fabricate an outcome or terminal pause.",
     ],
     parameters: Type.Object({
       id: Type.String({ description: "Workflow loop ID" }),
       outcome: Type.String({ description: "Declared outcome for the current workflow state" }),
       evidence: Type.Optional(Type.String({ description: "Concise evidence supporting this transition" })),
+      claim: Type.Optional(WorkflowBlockerClaimSchema),
     }),
     async execute(_toolCallId, params) {
       const store = getStore();
-      const current = store.get(params.id);
       const actor = getActor();
-      const expected = current?.workflow ? {
-        currentState: current.workflow.currentState,
-        transitionSeq: current.workflow.transitionSeq,
-        definitionRevision: current.workflow.definitionRevision,
-        activeExecutionId: current.workflow.activeExecution?.id,
-      } : undefined;
-      const result = store.transitionWorkflow(params.id, { outcome: params.outcome, evidence: params.evidence, actor }, expected);
+      const contextDigest = getAdmissionContextDigest();
+      const admission = await admitWorkflowTransition({
+        store,
+        workflowId: params.id,
+        outcome: params.outcome,
+        evidence: params.evidence,
+        actor,
+        claim: params.claim,
+        contextDigest,
+        providers: getAdmissionProviders(),
+        isContextCurrent: () => {
+          const currentActor = getActor();
+          return getStore() === store
+            && getAdmissionContextDigest() === contextDigest
+            && currentActor?.sessionId === actor?.sessionId
+            && currentActor?.runtimeId === actor?.runtimeId;
+        },
+      });
+      const result = admission.transition;
+      if (!result) {
+        const entry = store.get(params.id);
+        const next = admission.decision.decision === "requires_user_authority"
+          ? "Ask the user for the explicit decision and keep the workflow active; this runtime has no authority provider."
+          : admission.decision.reason === "claim_required"
+            ? "Retry with a typed claim backed by a trusted provider."
+            : "Refresh the scoped evidence and retry; unresolved or contradicted claims never mutate workflow state.";
+        const message = `Workflow #${params.id} did not transition\nAdmission: ${admission.decision.decision} (${admission.decision.reason})\nNext: ${next}`;
+        return textResult(message, entry?.workflow
+          ? workflowDisplayDetails({
+              entry,
+              action: "transition",
+              tone: "error",
+              summary: `Workflow #${params.id} transition admission rejected`,
+              extra: [`Admission: ${admission.decision.decision} (${admission.decision.reason})`, `Next: ${next}`],
+            })
+          : { kind: "workflow", action: "transition", tone: "error", summary: `Workflow #${params.id} transition admission rejected`, expanded: message.split("\n").slice(1) });
+      }
       if (!result.applied || !result.entry) {
         const entry = store.get(params.id);
         const error = result.error ?? "unknown transition error";

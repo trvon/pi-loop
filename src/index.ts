@@ -32,6 +32,7 @@ import { isStaleExtensionContextError } from "./runtime/stale-context.js";
 import { createSubagentOrchestrationRuntime, type SubagentOrchestrationRuntime } from "./runtime/subagent-orchestration-runtime.js";
 import { createTaskBacklogRuntime } from "./runtime/task-backlog-runtime.js";
 import { createTaskProviderRuntime, type TaskProviderRuntime } from "./runtime/task-provider-runtime.js";
+import { createMonitorWorkflowAdmissionProvider } from "./runtime/workflow-admission-providers.js";
 import { CronScheduler } from "./scheduler.js";
 import { LoopStore } from "./store.js";
 import { registerLoopTools } from "./tools/loop-tools.js";
@@ -64,6 +65,7 @@ export default function (pi: ExtensionAPI) {
   let store = new LoopStore(resolveLoopStorePath(getScopeOptions()));
   const memoryLoopStores = new Map<string, LoopStore>();
   const monitorManager = new MonitorManager(pi);
+  const monitorWorkflowAdmissionProvider = createMonitorWorkflowAdmissionProvider((id) => monitorManager.get(id));
   let scheduler: CronScheduler;
   let triggerSystem: TriggerSystem;
   const widget = new LoopWidget(store, monitorManager);
@@ -256,7 +258,7 @@ export default function (pi: ExtensionAPI) {
     if (atMaxFires(current)) {
       debug(`loop #${current.id} — reached maxFires ${current.maxFires}, retiring`);
       triggerSystem.remove(current.id);
-      if (current.workflow || current.taskBacklog) store.pause(current.id);
+      if (current.workflow || current.taskBacklog) store.pause(current.id, "controller_limit", "loop fire cap reached");
       else store.delete(current.id);
       widget.update();
       return;
@@ -280,14 +282,14 @@ export default function (pi: ExtensionAPI) {
 
     if (atMaxFires(firedEntry)) {
       triggerSystem.remove(firedEntry.id);
-      if (firedEntry.workflow || firedEntry.taskBacklog) store.pause(firedEntry.id);
+      if (firedEntry.workflow || firedEntry.taskBacklog) store.pause(firedEntry.id, "controller_limit", "loop fire cap reached");
       else store.delete(firedEntry.id);
       widget.update();
     }
 
     if (firedEntry.workflow && atWorkflowStateFireLimit(firedEntry.workflow)) {
       triggerSystem.remove(firedEntry.id);
-      store.pause(firedEntry.id);
+      store.pause(firedEntry.id, "controller_limit", "workflow state fire cap reached");
       widget.update();
     }
 
@@ -443,6 +445,9 @@ export default function (pi: ExtensionAPI) {
       onLoopFire(entry);
     },
     getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId } : undefined,
+    getAdmissionContextDigest: () => resolveLoopStorePath(getScopeOptions(), _sessionId)
+      ?? `memory:${process.cwd()}:${_sessionId ?? "unbound"}`,
+    getAdmissionProviders: () => [monitorWorkflowAdmissionProvider],
   });
 
   function handleMonitorDoneLoop(doneLoop: LoopEntry, monitorId: string): void {

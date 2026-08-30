@@ -106,7 +106,7 @@ export class TriggerSystem {
 
   private retire(entry: LoopEntry): void {
     this.remove(entry.id);
-    if (entry.workflow || entry.taskBacklog) this.store.pause(entry.id);
+    if (entry.workflow || entry.taskBacklog) this.store.pause(entry.id, "controller_limit", "trigger fire cap reached");
     else this.store.delete(entry.id);
   }
 

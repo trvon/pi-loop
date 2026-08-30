@@ -12,6 +12,14 @@ export type LoopDeletionTombstoneInput = Omit<LoopDeletionTombstone, "id" | "del
 
 export type LoopStatus = "active" | "paused";
 
+export type LoopPauseKind = "administrative" | "controller_limit" | "semantic_terminal" | "orchestration_settlement";
+
+export interface LoopPauseRecord {
+  kind: LoopPauseKind;
+  at: number;
+  reason?: string;
+}
+
 export type LoopFireOrigin = "scheduler" | "event" | "dynamic" | "monitor";
 
 export interface CronTrigger {
@@ -263,11 +271,22 @@ export interface WorkflowExecutionRecord {
   lease?: WorkflowExecutionLease;
 }
 
+export interface WorkflowAdmissionRecord {
+  claimClass: "environmental" | "user_authority";
+  provider: string;
+  subject: string;
+  fact: string;
+  expected: string | number | boolean | null;
+  observations: string[];
+  decidedAt: number;
+}
+
 export interface WorkflowTransitionRecord {
   from: string;
   to: string;
   outcome: string;
   evidence?: string;
+  admission?: WorkflowAdmissionRecord;
   at: number;
   sequence: number;
 }
@@ -301,6 +320,7 @@ export interface LoopEntry {
   readOnly?: boolean;
   maxFires?: number;
   fireCount?: number;
+  pause?: LoopPauseRecord;
   dynamic?: DynamicLoopState;
   workflow?: WorkflowRunState;
   orchestration?: OrchestrationState;

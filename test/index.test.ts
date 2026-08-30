@@ -62,6 +62,7 @@ describe("workflow runtime wiring", () => {
     const wake = sentMessages.find((item) => item.message.content.includes("fired (workflow)"));
 
     expect(loops.content[0].text).toContain("[paused]");
+    expect(loops.content[0].text).toContain("Pause cause: controller_limit");
     expect(wake?.message.content).toContain("has reached its fire cap; this workflow is paused and no next cadence is scheduled");
     expect(wake?.message.content).toContain("Otherwise add a bounded recovery state/route with WorkflowRevise, then transition and claim it");
     expect(wake?.message.content).not.toContain("leave the workflow active for its next cadence");

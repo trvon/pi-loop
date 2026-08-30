@@ -22,7 +22,7 @@ function eventFor(command: LoopCommand, at: number): LoopReducerEvent {
     case "fire":
       return { type: "LOOP_FIRED", at, source: "system", payload: { id: "1" } };
     case "pause":
-      return { type: "LOOP_PAUSED", at, source: "system", payload: { id: "1" } };
+      return { type: "LOOP_PAUSED", at, source: "system", payload: { id: "1", kind: "administrative" } };
     case "resume":
       return { type: "LOOP_RESUMED", at, source: "system", payload: { id: "1" } };
     case "update":

@@ -7,6 +7,14 @@ export function formatLastTransitionLines(lastTransition: WorkflowTransitionReco
   const { from, to, outcome, evidence } = lastTransition;
   const lines = [`Last transition: ${from} → ${to} via ${outcome}`];
   if (evidence) lines.push(`Evidence: ${evidence.replace(/\s+/g, " ")}`);
+  if (lastTransition.admission) {
+    const admission = lastTransition.admission;
+    const provider = admission.provider.replace(/\s+/g, " ");
+    const subject = admission.subject.replace(/\s+/g, " ");
+    const fact = admission.fact.replace(/\s+/g, " ");
+    const observations = admission.observations.map((observation) => observation.replace(/\s+/g, " ")).join(", ");
+    lines.push(`Admission: ${admission.claimClass} · ${provider}:${subject}.${fact} = ${JSON.stringify(admission.expected)} · ${observations}`);
+  }
   return lines;
 }
 

@@ -283,7 +283,7 @@ describe("loop reducer", () => {
       source: "tool",
       entityType: "loop",
       entityId: "1",
-      payload: { id: "1" },
+      payload: { id: "1", kind: "administrative" },
     });
 
     expect(state.loopsById["1"].status).toBe("paused");
@@ -522,7 +522,7 @@ describe("loop reducer", () => {
       source: "tool",
       entityType: "loop",
       entityId: "99",
-      payload: { id: "99" },
+      payload: { id: "99", kind: "administrative" },
     });
 
     expect(state).toEqual(initial);

@@ -397,6 +397,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
         if (entry.status === "active") {
           line += ` age: ${formatRemaining(Math.max(0, Date.now() - entry.createdAt))}`;
         }
+        if (entry.pause) line += ` [pause:${entry.pause.kind}]`;
         if (entry.autoTask) line += " [auto-task]";
         if (entry.taskBacklog) line += " [backlog-worker]";
         if (entry.orchestration) {
