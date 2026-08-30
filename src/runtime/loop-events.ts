@@ -1,4 +1,4 @@
-import type { LoopEntry, LoopExpiryDisposition, LoopExpirySource } from "../types.js";
+import type { LoopEntry, LoopExpiryDisposition, LoopExpiryReason, LoopExpirySource } from "../types.js";
 
 export type LoopAutoDeleteReason = "task_backlog_empty";
 
@@ -30,7 +30,7 @@ export interface LoopExpiredPayload {
   expiredAt: number;
   disposition: LoopExpiryDisposition;
   source: LoopExpirySource;
-  reason: "expires_at";
+  reason: LoopExpiryReason;
 }
 
 export interface TaskBacklogEmptyPayload {
@@ -66,6 +66,7 @@ export function buildLoopExpiredPayload(
   entry: LoopEntry,
   disposition: LoopExpiryDisposition,
   source: LoopExpirySource,
+  reason: LoopExpiryReason,
   expiredAt: number,
 ): LoopExpiredPayload {
   return {
@@ -78,7 +79,7 @@ export function buildLoopExpiredPayload(
     expiredAt,
     disposition,
     source,
-    reason: "expires_at",
+    reason,
   };
 }
 

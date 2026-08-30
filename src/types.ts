@@ -12,6 +12,7 @@ export type LoopDeletionTombstoneInput = Omit<LoopDeletionTombstone, "id" | "del
 
 export type LoopStatus = "active" | "paused";
 export type LoopExpiryDisposition = "deleted" | "paused";
+export type LoopExpiryReason = "expires_at" | "resume_event_stale";
 export type LoopExpirySource = "scheduler" | "session_recovery";
 
 export type LoopPauseKind = "administrative" | "controller_limit" | "semantic_terminal" | "orchestration_settlement";

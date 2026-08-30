@@ -41,7 +41,7 @@ import { registerMonitorTools } from "./tools/monitor-tools.js";
 import { registerSubagentOrchestrationTools } from "./tools/subagent-orchestration-tools.js";
 import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
-import type { LoopEntry, LoopExpiryDisposition, LoopExpirySource, LoopFireOrigin, MonitorEntry, Trigger } from "./types.js";
+import type { LoopEntry, LoopExpiryDisposition, LoopExpiryReason, LoopExpirySource, LoopFireOrigin, MonitorEntry, Trigger } from "./types.js";
 import { LoopWidget } from "./ui/widget.js";
 import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop, isTerminalWorkflowRun } from "./workflow-reducer.js";
 
@@ -78,7 +78,7 @@ export default function (pi: ExtensionAPI) {
     return new CronScheduler(
       loopStore,
       (entry, origin) => onLoopFire(entry, undefined, origin),
-      (entry, disposition) => emitLoopExpired(entry, disposition, "scheduler"),
+      (entry, disposition) => emitLoopExpired(entry, disposition, "scheduler", "expires_at"),
       isCurrentExtensionContext,
     );
   }
@@ -216,11 +216,12 @@ export default function (pi: ExtensionAPI) {
     entry: LoopEntry,
     disposition: LoopExpiryDisposition,
     source: LoopExpirySource,
+    reason: LoopExpiryReason,
     generation = sessionGeneration,
   ): void {
     if (generation !== sessionGeneration || !isCurrentExtensionContext()) return;
     triggerSystem.remove(entry.id);
-    const payload = buildLoopExpiredPayload(entry, disposition, source, Date.now());
+    const payload = buildLoopExpiredPayload(entry, disposition, source, reason, Date.now());
     try {
       pi.events.emit("loops:expired", payload);
     } catch (error) {
@@ -394,8 +395,8 @@ export default function (pi: ExtensionAPI) {
     hasPendingTasks,
     cleanDoneTasks,
     isContextCurrent: isCurrentExtensionContext,
-    emitLoopExpired: (entry, disposition, generation) => {
-      emitLoopExpired(entry, disposition, "session_recovery", generation);
+    emitLoopExpired: (entry, disposition, reason, generation) => {
+      emitLoopExpired(entry, disposition, "session_recovery", reason, generation);
     },
   });
 

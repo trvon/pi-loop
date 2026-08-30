@@ -15,7 +15,7 @@ LoopCreate trigger="0 9 * * 1-5" prompt="Review weekday alerts" maxFires=10
 
 Intervals such as `5m`, `2h`, and `1d` are converted to cron expressions. Full five-field cron expressions are also accepted. Cron and hybrid loops track their next fire time and deliver only when the agent is idle.
 
-Use `maxFires` for polling or other bounded work so a loop cannot run indefinitely. Recurring loops expire after seven days. `LoopList` exposes each controller's exact `expiresAt` boundary; expiry emits `loops:expired` and a hidden Pi wake that reports whether the controller was deleted or paused. Renewal is explicit: recreate the loop only when its schedule is still required.
+Use `maxFires` for polling or other bounded work so a loop cannot run indefinitely. Recurring loops expire after seven days. `LoopList` exposes each controller's exact `expiresAt` boundary. Seven-day expiry and stale event/hybrid retirement during session recovery emit `loops:expired` and a hidden Pi wake that reports whether the controller was deleted or paused. Renewal is explicit: recreate the loop only when its schedule is still required.
 
 ### Event loops
 
@@ -246,7 +246,7 @@ Monitor events:
 
 Loop lifecycle events:
 
-- `loops:expired` — `{loopId, prompt, trigger, recurring, createdAt, expiresAt, expiredAt, disposition, source, reason}`
+- `loops:expired` — `{loopId, prompt, trigger, recurring, createdAt, expiresAt, expiredAt, disposition, source, reason}` where `reason` is `expires_at` or `resume_event_stale`
 - `loops:autodeleted`
 
 Native task lifecycle events:

@@ -33,6 +33,33 @@ describe("notification runtime session boundary", () => {
     expect(sentMessages[0].message.content).toContain("Recreate it explicitly if this controller is still required");
   });
 
+  it("explains stale event-loop retirement during session recovery", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: vi.fn(async () => 0),
+      cleanDoneTasks: vi.fn(async () => {}),
+      getHasPendingMessages: () => false,
+    });
+
+    await runtime.queueOrDeliverLoopExpired({
+      loopId: "9",
+      prompt: "Wait for deploy",
+      trigger: { type: "event", source: "deploy:finished" },
+      recurring: true,
+      createdAt: 100,
+      expiresAt: 10_000,
+      expiredAt: 201,
+      disposition: "deleted",
+      source: "session_recovery",
+      reason: "resume_event_stale",
+    });
+
+    expect(sentMessages[0].message.content).toContain("retired during session recovery and was deleted");
+    expect(sentMessages[0].message.content).toContain("Event and hybrid subscriptions do not resume across sessions");
+    expect(sentMessages[0].message.content).not.toContain("Expiry boundary");
+  });
+
   it("drops an expiry notification from a stale session generation", async () => {
     const { pi, sentMessages } = createMockPi();
     const runtime = createNotificationRuntime({

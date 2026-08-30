@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { LoopStore } from "../store.js";
-import type { LoopEntry, LoopExpiryDisposition } from "../types.js";
+import type { LoopEntry, LoopExpiryDisposition, LoopExpiryReason } from "../types.js";
 import type { NotificationRuntime } from "./notification-runtime.js";
 import type { LoopScope } from "./scope.js";
 
@@ -40,7 +40,12 @@ export interface SessionRuntimeOptions {
   hasPendingTasks: () => Promise<number>;
   cleanDoneTasks: () => Promise<void>;
   isContextCurrent: () => boolean;
-  emitLoopExpired: (entry: LoopEntry, disposition: LoopExpiryDisposition, generation: number) => void;
+  emitLoopExpired: (
+    entry: LoopEntry,
+    disposition: LoopExpiryDisposition,
+    reason: LoopExpiryReason,
+    generation: number,
+  ) => void;
 }
 
 export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): void {
@@ -126,9 +131,14 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     const expired = store.expireEntries(sessionStartedAt);
     for (const record of expired) {
       if (!isCurrentGeneration(generation)) return;
-      emitLoopExpired(record.entry, record.disposition, generation);
+      emitLoopExpired(record.entry, record.disposition, record.reason, generation);
     }
-    store.expireEventLoops(sessionStartedAt);
+    if (!isCurrentGeneration(generation) || !isContextCurrent()) return;
+    const staleEventLoops = store.expireEventLoopEntries(sessionStartedAt);
+    for (const record of staleEventLoops) {
+      if (!isCurrentGeneration(generation)) return;
+      emitLoopExpired(record.entry, record.disposition, record.reason, generation);
+    }
     await recoverOrchestrations();
     if (!isCurrentGeneration(generation)) return;
     const triggerSystem = getTriggerSystem();

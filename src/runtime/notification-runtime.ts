@@ -299,6 +299,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   function buildLoopExpiredNotification(
     data: LoopExpiredPayload & { sessionGeneration?: number },
   ): PendingNotification {
+    const isStaleEvent = data.reason === "resume_event_stale";
     return {
       sessionGeneration: data.sessionGeneration ?? sessionGeneration,
       loopId: data.loopId,
@@ -308,10 +309,14 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       recurring: data.recurring,
       key: `loop:${data.loopId}:expired:${data.expiresAt}`,
       message: [
-        `[pi-loop] Loop #${data.loopId} expired and was ${data.disposition}.`,
+        isStaleEvent
+          ? `[pi-loop] Loop #${data.loopId} retired during session recovery and was ${data.disposition}.`
+          : `[pi-loop] Loop #${data.loopId} expired and was ${data.disposition}.`,
         data.prompt,
-        `Expiry boundary: ${new Date(data.expiresAt).toISOString()}`,
-        "Recreate it explicitly if this controller is still required; expiry does not imply consent to renew indefinitely.",
+        isStaleEvent
+          ? "Event and hybrid subscriptions do not resume across sessions."
+          : `Expiry boundary: ${new Date(data.expiresAt).toISOString()}`,
+        "Recreate it explicitly if this controller is still required; retirement does not imply consent to renew indefinitely.",
       ].join("\n"),
     };
   }

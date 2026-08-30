@@ -275,9 +275,9 @@ describe("LoopStore (in-memory)", () => {
     backlog.expiresAt = 10;
 
     expect(store.expireEntries(10)).toEqual([
-      { entry: ordinary, disposition: "deleted" },
-      { entry: workflow, disposition: "paused" },
-      { entry: backlog, disposition: "paused" },
+      { entry: ordinary, disposition: "deleted", reason: "expires_at" },
+      { entry: workflow, disposition: "paused", reason: "expires_at" },
+      { entry: backlog, disposition: "paused", reason: "expires_at" },
     ]);
     expect(store.get(ordinary.id)).toBeUndefined();
     expect(store.get(workflow.id)?.status).toBe("paused");
@@ -328,14 +328,17 @@ describe("LoopStore (in-memory)", () => {
     const eventTrigger = { type: "event" as const, source: "monitor:done" };
     const cronT = { type: "cron" as const, schedule: "*/5 * * * *" };
 
-    s.create(eventTrigger, "event loop", { recurring: false });
+    const first = s.create(eventTrigger, "event loop", { recurring: false });
     s.create(cronT, "cron loop", { recurring: true });
-    s.create(eventTrigger, "another event", { recurring: true });
+    const second = s.create(eventTrigger, "another event", { recurring: true });
     s.create({ type: "event", source: "tasks:created" }, "backlog worker", { recurring: true, taskBacklog: true });
 
     // sessionStartedAt is set after creation — simulating loop persisted from prior session
     const sessionStartedAt = Date.now() + 1;
-    expect(s.expireEventLoops(sessionStartedAt)).toBe(2);
+    expect(s.expireEventLoopEntries(sessionStartedAt)).toEqual([
+      { entry: first, disposition: "deleted", reason: "resume_event_stale" },
+      { entry: second, disposition: "deleted", reason: "resume_event_stale" },
+    ]);
 
     expect(s.get("2")!.status).toBe("active"); // cron loop untouched
     expect(s.get("1")).toBeUndefined(); // ordinary event loops deleted

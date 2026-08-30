@@ -43,6 +43,7 @@ export { TaskStore } from "./task-store.js";
 export type { TaskClaim, TaskEntry, TaskStatus, TaskStoreData } from "./task-types.js";
 export type {
   LoopExpiryDisposition,
+  LoopExpiryReason,
   LoopExpirySource,
   LoopPauseKind,
   LoopPauseRecord,
