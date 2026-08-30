@@ -61,9 +61,11 @@ export class CronScheduler {
     this.armTimer(entry);
   }
 
-  expire(entry: LoopEntry, now = Date.now()): void {
+  expire(entry: LoopEntry, now = Date.now()): boolean {
     const current = this.store.get(entry.id);
-    if (current?.status === "active" && now >= current.expiresAt) this.retireExpired(current, now);
+    if (current?.status !== "active") return true;
+    if (now < current.expiresAt) return false;
+    return this.retireExpired(current, now);
   }
 
   remove(id: string): void {
@@ -81,17 +83,21 @@ export class CronScheduler {
     this.remove(entry.id);
   }
 
-  private retireExpired(entry: LoopEntry, now = Date.now()): void {
-    if (!this.canExpire()) return;
+  private retireExpired(entry: LoopEntry, now = Date.now()): boolean {
+    if (!this.canExpire()) return false;
     const record = this.store.expireEntry(entry.id, now);
     if (!record) {
       const current = this.store.get(entry.id);
-      if (current?.status === "active") this.expiryTimes.set(entry.id, current.expiresAt);
-      else this.remove(entry.id);
-      return;
+      if (current?.status === "active") {
+        this.expiryTimes.set(entry.id, current.expiresAt);
+        return false;
+      }
+      this.remove(entry.id);
+      return true;
     }
     this.remove(entry.id);
     this.onExpired?.(record.entry, record.disposition);
+    return true;
   }
 
   private armTimer(entry: LoopEntry): void {

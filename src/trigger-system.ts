@@ -117,7 +117,7 @@ export class TriggerSystem {
 
     const now = Date.now();
     if (now >= current.expiresAt) {
-      this.scheduler.expire(current, now);
+      if (this.scheduler.expire(current, now)) this.remove(current.id);
       return;
     }
 
