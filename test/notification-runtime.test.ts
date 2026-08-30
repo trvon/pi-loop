@@ -4,6 +4,89 @@ import { createNotificationRuntime } from "../src/runtime/notification-runtime.j
 import { createMockPi } from "./helpers/mock-pi.js";
 
 describe("notification runtime session boundary", () => {
+  it("delivers an explicit recurring-loop expiry notification", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: vi.fn(async () => 0),
+      cleanDoneTasks: vi.fn(async () => {}),
+      getHasPendingMessages: () => false,
+    });
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+
+    await runtime.queueOrDeliverLoopExpired({
+      loopId: "7",
+      prompt: "Daily release check",
+      trigger: { type: "cron", schedule: "0 8 * * *" },
+      recurring: true,
+      createdAt: 100,
+      expiresAt: 200,
+      expiredAt: 201,
+      disposition: "deleted",
+      source: "scheduler",
+      reason: "expires_at",
+    });
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0].message.content).toContain("Loop #7 expired and was deleted");
+    expect(sentMessages[0].message.content).toContain("Daily release check");
+    expect(sentMessages[0].message.content).toContain("Recreate it explicitly if this controller is still required");
+  });
+
+  it("explains stale event-loop retirement during session recovery", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: vi.fn(async () => 0),
+      cleanDoneTasks: vi.fn(async () => {}),
+      getHasPendingMessages: () => false,
+    });
+
+    await runtime.queueOrDeliverLoopExpired({
+      loopId: "9",
+      prompt: "Wait for deploy",
+      trigger: { type: "event", source: "deploy:finished" },
+      recurring: true,
+      createdAt: 100,
+      expiresAt: 10_000,
+      expiredAt: 201,
+      disposition: "deleted",
+      source: "session_recovery",
+      reason: "resume_event_stale",
+    });
+
+    expect(sentMessages[0].message.content).toContain("retired during session recovery and was deleted");
+    expect(sentMessages[0].message.content).toContain("Event and hybrid subscriptions do not resume across sessions");
+    expect(sentMessages[0].message.content).not.toContain("Expiry boundary");
+  });
+
+  it("drops an expiry notification from a stale session generation", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: vi.fn(async () => 0),
+      cleanDoneTasks: vi.fn(async () => {}),
+      getHasPendingMessages: () => false,
+    });
+    runtime.clear("session_switch");
+
+    await runtime.queueOrDeliverLoopExpired({
+      loopId: "7",
+      prompt: "Old schedule",
+      trigger: { type: "cron", schedule: "0 8 * * *" },
+      recurring: true,
+      createdAt: 100,
+      expiresAt: 200,
+      expiredAt: 201,
+      disposition: "deleted",
+      source: "scheduler",
+      reason: "expires_at",
+      sessionGeneration: 0,
+    });
+
+    expect(sentMessages).toEqual([]);
+  });
+
   it("drops a wake whose task lookup completes after session shutdown", async () => {
     const { pi, sentMessages } = createMockPi();
     let resolvePending: ((pending: number) => void) | undefined;

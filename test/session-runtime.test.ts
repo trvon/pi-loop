@@ -14,7 +14,11 @@ function setup(overrides: Partial<SessionRuntimeOptions> = {}) {
     advanceSessionGeneration: () => ++sessionGeneration,
     recreateSessionStore: vi.fn(),
     clearAllLoops: vi.fn(),
-    getStore: () => ({ list: () => [], clearExpired: vi.fn(), expireEventLoops: vi.fn() }) as any,
+    getStore: () => ({
+      list: () => [],
+      expireEntries: vi.fn(() => []),
+      expireEventLoopEntries: vi.fn(() => []),
+    }) as any,
     getScheduler: () => scheduler as any,
     getTriggerSystem: () => ({ start: vi.fn(), stop: vi.fn() }),
     setLatestCtx: vi.fn(),
@@ -23,6 +27,7 @@ function setup(overrides: Partial<SessionRuntimeOptions> = {}) {
     notificationRuntime: {
       syncRuntimeState: vi.fn(),
       queueOrDeliverNotification: vi.fn(async () => {}),
+      queueOrDeliverLoopExpired: vi.fn(async () => {}),
       queueOrDeliverMonitorStarted: vi.fn(async () => {}),
       discardMonitorStarted: vi.fn(),
       flushPendingNotifications: vi.fn(async () => {}),
@@ -40,6 +45,8 @@ function setup(overrides: Partial<SessionRuntimeOptions> = {}) {
     shutdownMonitors: vi.fn(async () => {}),
     hasPendingTasks: vi.fn(async () => 0),
     cleanDoneTasks: vi.fn(async () => {}),
+    isContextCurrent: () => true,
+    emitLoopExpired: vi.fn(),
     ...overrides,
   };
   registerSessionRuntimeHooks(options);
@@ -83,8 +90,8 @@ describe("session-runtime heartbeat lifecycle", () => {
       recoverOrchestrations: vi.fn(async () => { calls.push("recover orchestrations"); }),
       getStore: () => ({
         list: () => [{ id: "8", status: "active" }],
-        clearExpired: vi.fn(() => { calls.push("clear expired"); }),
-        expireEventLoops: vi.fn(() => { calls.push("expire events"); }),
+        expireEntries: vi.fn(() => { calls.push("clear expired"); return []; }),
+        expireEventLoopEntries: vi.fn(() => { calls.push("expire events"); return []; }),
       }) as any,
       getTriggerSystem: () => triggerSystem,
     });
@@ -93,6 +100,78 @@ describe("session-runtime heartbeat lifecycle", () => {
 
     expect(migrateTaskBacklogLoops).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(["migrate", "clear monitor waits", "clear expired", "expire events", "recover orchestrations", "start"]);
+  });
+
+  it("does not consume persisted expiry under a stale extension context", async () => {
+    const expireEntries = vi.fn(() => []);
+    const { drive } = setup({
+      getStore: () => ({
+        list: () => [],
+        expireEntries,
+        expireEventLoopEntries: vi.fn(() => []),
+      }) as any,
+      isContextCurrent: () => false,
+    });
+
+    await drive("session_start");
+
+    expect(expireEntries).not.toHaveBeenCalled();
+  });
+
+  it("emits recovered expiries after store cleanup", async () => {
+    const expired = {
+      id: "8",
+      prompt: "Daily release check",
+      trigger: { type: "cron", schedule: "0 8 * * *" },
+      status: "active",
+      recurring: true,
+      createdAt: 1,
+      updatedAt: 1,
+      expiresAt: 2,
+    };
+    const emitLoopExpired = vi.fn();
+    const { drive } = setup({
+      getStore: () => ({
+        list: () => [],
+        expireEntries: vi.fn(() => [{ entry: expired, disposition: "deleted", reason: "expires_at" }]),
+        expireEventLoopEntries: vi.fn(() => []),
+      }) as any,
+      emitLoopExpired,
+    });
+
+    await drive("session_start");
+
+    expect(emitLoopExpired).toHaveBeenCalledWith(expired, "deleted", "expires_at", 0);
+  });
+
+  it("emits stale event-loop retirement found during session recovery", async () => {
+    const stale = {
+      id: "9",
+      prompt: "Wait for deploy",
+      trigger: { type: "event", source: "deploy:finished" },
+      status: "active",
+      recurring: true,
+      createdAt: 1,
+      updatedAt: 1,
+      expiresAt: Date.now() + 60_000,
+    };
+    const emitLoopExpired = vi.fn();
+    const { drive } = setup({
+      getStore: () => ({
+        list: () => [],
+        expireEntries: vi.fn(() => []),
+        expireEventLoopEntries: vi.fn(() => [{
+          entry: stale,
+          disposition: "deleted",
+          reason: "resume_event_stale",
+        }]),
+      }) as any,
+      emitLoopExpired,
+    });
+
+    await drive("session_start");
+
+    expect(emitLoopExpired).toHaveBeenCalledWith(stale, "deleted", "resume_event_stale", 0);
   });
 
   it("repaints the widget on session_start after the harness resets extension UI", async () => {
@@ -164,8 +243,8 @@ describe("session-runtime heartbeat lifecycle", () => {
       setSessionId,
       getStore: () => ({
         list: () => [{ id: "8", status: "active" }],
-        clearExpired: vi.fn(),
-        expireEventLoops: vi.fn(),
+        expireEntries: vi.fn(() => []),
+        expireEventLoopEntries: vi.fn(() => []),
       }) as any,
       getTriggerSystem: () => triggerSystem,
     });
@@ -241,8 +320,8 @@ describe("session-runtime heartbeat lifecycle", () => {
           autoTask: true,
           trigger: { type: "cron", schedule: "*/5 * * * *" },
         }],
-        clearExpired: vi.fn(),
-        expireEventLoops: vi.fn(),
+        expireEntries: vi.fn(() => []),
+        expireEventLoopEntries: vi.fn(() => []),
       }) as any,
       getScheduler: () => scheduler as any,
       hasPendingTasks: vi.fn(() => {

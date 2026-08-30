@@ -231,6 +231,19 @@ describe("LoopList", () => {
     expect(out).toContain("cron:");
   });
 
+  it("shows the stable expiry boundary for recurring loops", async () => {
+    const h = setup();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      await h.text("LoopCreate", { trigger: "5m", prompt: "build check", triggerType: "cron" });
+      const out = await h.text("LoopList", {});
+      expect(out).toContain("expiresAt: 2026-01-08T00:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows wall-clock age for active loops", async () => {
     const h = setup();
     vi.useFakeTimers();
@@ -390,6 +403,17 @@ describe("LoopUpdate", () => {
     expect(beyondLifetime.content[0].text).toContain("exceeds loop #1's remaining lifetime");
     expect(beyondLifetime.details).toMatchObject({ tone: "error" });
     expect(h.store.get("1")).toEqual(before);
+  });
+
+  it("rejects continuing an expired dynamic controller", async () => {
+    h.store.get("1")!.expiresAt = Date.now();
+    h.triggerSystem.add.mockClear();
+
+    const out = await h.text("LoopUpdate", { id: "1", status: "continue" });
+
+    expect(out).toContain("has expired; recreate it explicitly");
+    expect(h.store.get("1")?.dynamic?.iteration).toBe(0);
+    expect(h.triggerSystem.add).not.toHaveBeenCalled();
   });
 
   it("resumes a paused dynamic loop when it continues", async () => {

@@ -35,12 +35,16 @@ export {
   rpcCall,
   rpcProbe,
 } from "./rpc/cross-extension-rpc.js";
+export type { LoopExpiredPayload } from "./runtime/loop-events.js";
 export { NATIVE_TASKS_PROVIDER } from "./runtime/native-task-rpc.js";
 export { resolveLoopStorePath, resolveTaskStorePath } from "./runtime/scope.js";
 export type { TaskClaimInput, TaskClaimResult } from "./task-store.js";
 export { TaskStore } from "./task-store.js";
 export type { TaskClaim, TaskEntry, TaskStatus, TaskStoreData } from "./task-types.js";
 export type {
+  LoopExpiryDisposition,
+  LoopExpiryReason,
+  LoopExpirySource,
   LoopPauseKind,
   LoopPauseRecord,
   MonitorOutcome,

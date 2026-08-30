@@ -15,6 +15,7 @@ import {
 import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { DynamicLoopState, MonitorOutcome, OrchestrationState, Trigger, WorkflowRunState } from "../types.js";
 import { getWorkflowOutcomeAvailability } from "../workflow-reducer.js";
+import type { LoopExpiredPayload } from "./loop-events.js";
 import { TASK_BACKLOG_ACTION_CONTRACT } from "./task-backlog-runtime.js";
 
 const MAX_ORCHESTRATION_WAKE_CHARS = 12_288;
@@ -64,6 +65,7 @@ export interface NotificationRuntimeOptions {
 export interface NotificationRuntime {
   syncRuntimeState(options?: { agentRunning?: boolean; hasPendingMessages?: boolean }): void;
   queueOrDeliverNotification(data: LoopFireEvent): Promise<void>;
+  queueOrDeliverLoopExpired(data: LoopExpiredPayload & { sessionGeneration?: number }): Promise<void>;
   queueOrDeliverMonitorStarted(data: MonitorStartedEvent): Promise<void>;
   discardMonitorStarted(monitorId: string): void;
   flushPendingNotifications(options?: { ignorePendingMessages?: boolean }): Promise<void>;
@@ -294,6 +296,31 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     };
   }
 
+  function buildLoopExpiredNotification(
+    data: LoopExpiredPayload & { sessionGeneration?: number },
+  ): PendingNotification {
+    const isStaleEvent = data.reason === "resume_event_stale";
+    return {
+      sessionGeneration: data.sessionGeneration ?? sessionGeneration,
+      loopId: data.loopId,
+      prompt: data.prompt,
+      trigger: data.trigger,
+      timestamp: data.expiredAt,
+      recurring: data.recurring,
+      key: `loop:${data.loopId}:expired:${data.expiresAt}`,
+      message: [
+        isStaleEvent
+          ? `[pi-loop] Loop #${data.loopId} retired during session recovery and was ${data.disposition}.`
+          : `[pi-loop] Loop #${data.loopId} expired and was ${data.disposition}.`,
+        data.prompt,
+        isStaleEvent
+          ? "Event and hybrid subscriptions do not resume across sessions."
+          : `Expiry boundary: ${new Date(data.expiresAt).toISOString()}`,
+        "Recreate it explicitly if this controller is still required; retirement does not imply consent to renew indefinitely.",
+      ].join("\n"),
+    };
+  }
+
   function buildMonitorStartedNotification(data: MonitorStartedEvent): PendingNotification {
     const label = data.description ?? data.command.slice(0, 80);
     return {
@@ -402,6 +429,25 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     await flushPendingNotifications();
   }
 
+  async function queueOrDeliverLoopExpired(
+    data: LoopExpiredPayload & { sessionGeneration?: number },
+  ): Promise<void> {
+    if (data.sessionGeneration !== undefined && data.sessionGeneration !== sessionGeneration) {
+      debug?.(`loops:expired #${data.loopId} — stale session generation, dropping wake`);
+      return;
+    }
+    const notification = buildLoopExpiredNotification(data);
+    applyNotificationEvent({
+      type: "NOTIFICATION_QUEUED",
+      at: notification.timestamp,
+      source: "system",
+      entityType: "notification",
+      entityId: notification.key,
+      payload: { notification },
+    });
+    await flushPendingNotifications();
+  }
+
   async function queueOrDeliverMonitorStarted(data: MonitorStartedEvent): Promise<void> {
     if (data.sessionGeneration !== undefined && data.sessionGeneration !== sessionGeneration) {
       debug?.(`monitor:started #${data.monitorId} — stale session generation, dropping wake`);
@@ -455,6 +501,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   return {
     syncRuntimeState,
     queueOrDeliverNotification,
+    queueOrDeliverLoopExpired,
     queueOrDeliverMonitorStarted,
     discardMonitorStarted,
     flushPendingNotifications,

@@ -147,6 +147,42 @@ describe("TriggerSystem", () => {
     });
   });
 
+  it("retires and unsubscribes an event loop at its expiry boundary", () => {
+    const eventTrigger: Trigger = { type: "event", source: "expired_event" };
+    const entry = store.create(eventTrigger, "expired event", { recurring: true });
+    entry.expiresAt = Date.now();
+    system.add(entry);
+    const remove = vi.spyOn(system, "remove");
+
+    pi.events.emit("expired_event", {});
+
+    expect(store.get(entry.id)).toBeUndefined();
+    expect(remove).toHaveBeenCalledWith(entry.id);
+    const fireCalls = (pi.events.emit as any).mock.calls.filter(
+      (call: string[]) => call[0] === "loop:fire",
+    );
+    expect(fireCalls).toEqual([]);
+  });
+
+  it("keeps an expired event subscription when stale context denies settlement", () => {
+    const staleScheduler = new CronScheduler(store, vi.fn(), undefined, () => false);
+    const staleSystem = new TriggerSystem(pi, staleScheduler, store, vi.fn());
+    const entry = store.create({ type: "event", source: "stale_expired_event" }, "stale expiry", {
+      recurring: true,
+    });
+    entry.expiresAt = Date.now();
+    staleSystem.add(entry);
+    const remove = vi.spyOn(staleSystem, "remove");
+
+    try {
+      pi.events.emit("stale_expired_event", {});
+      expect(store.get(entry.id)?.status).toBe("active");
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      staleSystem.stop();
+    }
+  });
+
   it("deletes one-shot event loops immediately after the first fire", () => {
     const eventTrigger: Trigger = { type: "event", source: "fire_once" };
     const entry = store.create(eventTrigger, "one-shot", { recurring: false });

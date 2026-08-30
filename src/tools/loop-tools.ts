@@ -150,9 +150,12 @@ function continueDynamicLoop(
   store: LoopStoreLike,
   triggerSystem: TriggerSystemLike,
 ): { applied: boolean; message: string } {
+  if (Date.now() >= entry.expiresAt) {
+    return { applied: false, message: `Loop #${params.id} has expired; recreate it explicitly if work remains.` };
+  }
   const { nextWakeAt, error } = resolveNextWakeAt(params.nextInterval);
   if (error) return { applied: false, message: error };
-  if (nextWakeAt !== undefined && nextWakeAt > entry.expiresAt) {
+  if (nextWakeAt !== undefined && nextWakeAt >= entry.expiresAt) {
     return { applied: false, message: `nextInterval exceeds loop #${params.id}'s remaining lifetime.` };
   }
 
@@ -390,6 +393,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
         const statusIcon = entry.status === "active" ? "*" : entry.status === "paused" ? "-" : "x";
         let line = `${statusIcon} #${entry.id} [${entry.status}] ${entry.prompt.slice(0, 60)}`;
         line += ` (${triggerDesc})`;
+        line += ` expiresAt: ${new Date(entry.expiresAt).toISOString()}`;
         if (nextFire) {
           const remaining = Math.max(0, nextFire - Date.now());
           line += ` next: ${formatRemaining(remaining)}`;

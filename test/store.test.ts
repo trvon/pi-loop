@@ -102,6 +102,15 @@ describe("LoopStore (in-memory)", () => {
     expect(entry?.pause).toBeUndefined();
   });
 
+  it("rejects resuming a controller after its expiry boundary", () => {
+    const created = store.create(cronTrigger, "expired", { recurring: true });
+    const paused = store.pause(created.id)!;
+    paused.expiresAt = Date.now();
+
+    expect(store.resume(created.id)).toBeUndefined();
+    expect(store.get(created.id)?.status).toBe("paused");
+  });
+
   it("rejects a paused terminal transition without trusted admission", () => {
     store.create({ type: "dynamic" }, "Investigate", {
       recurring: true,
@@ -247,6 +256,35 @@ describe("LoopStore (in-memory)", () => {
     expect(store2.list()).toHaveLength(0);
   });
 
+  it("returns bounded retirement records for recovered expiries", () => {
+    const ordinary = store.create(cronTrigger, "ordinary", { recurring: true });
+    const workflow = store.create({ type: "dynamic" }, "workflow", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: { work: { prompt: "Work.", on: { done: "done" } }, done: { prompt: "Done.", terminal: "completed" } },
+      },
+    });
+    const backlog = store.create({ type: "event", source: "tasks:created" }, "backlog", {
+      recurring: true,
+      taskBacklog: true,
+    });
+    ordinary.expiresAt = 10;
+    workflow.expiresAt = 10;
+    backlog.expiresAt = 10;
+
+    expect(store.expireEntries(10)).toEqual([
+      { entry: ordinary, disposition: "deleted", reason: "expires_at" },
+      { entry: workflow, disposition: "paused", reason: "expires_at" },
+      { entry: backlog, disposition: "paused", reason: "expires_at" },
+    ]);
+    expect(store.get(ordinary.id)).toBeUndefined();
+    expect(store.get(workflow.id)?.status).toBe("paused");
+    expect(store.get(backlog.id)?.status).toBe("paused");
+    expect(store.expireEntries(11)).toEqual([]);
+  });
+
   it("pauses expired workflows instead of deleting them", () => {
     const workflow = store.create({ type: "dynamic" }, "workflow", {
       recurring: true,
@@ -290,14 +328,17 @@ describe("LoopStore (in-memory)", () => {
     const eventTrigger = { type: "event" as const, source: "monitor:done" };
     const cronT = { type: "cron" as const, schedule: "*/5 * * * *" };
 
-    s.create(eventTrigger, "event loop", { recurring: false });
+    const first = s.create(eventTrigger, "event loop", { recurring: false });
     s.create(cronT, "cron loop", { recurring: true });
-    s.create(eventTrigger, "another event", { recurring: true });
+    const second = s.create(eventTrigger, "another event", { recurring: true });
     s.create({ type: "event", source: "tasks:created" }, "backlog worker", { recurring: true, taskBacklog: true });
 
     // sessionStartedAt is set after creation — simulating loop persisted from prior session
     const sessionStartedAt = Date.now() + 1;
-    expect(s.expireEventLoops(sessionStartedAt)).toBe(2);
+    expect(s.expireEventLoopEntries(sessionStartedAt)).toEqual([
+      { entry: first, disposition: "deleted", reason: "resume_event_stale" },
+      { entry: second, disposition: "deleted", reason: "resume_event_stale" },
+    ]);
 
     expect(s.get("2")!.status).toBe("active"); // cron loop untouched
     expect(s.get("1")).toBeUndefined(); // ordinary event loops deleted
@@ -383,6 +424,15 @@ describe("LoopStore (in-memory)", () => {
     expect(store.get(entry.id)?.dynamic?.state).toBe("newer");
   });
 
+  it("rejects dynamic continuation at the authoritative expiry boundary", () => {
+    const entry = store.create({ type: "dynamic" }, "ship", { recurring: true });
+    entry.expiresAt = Date.now();
+
+    expect(store.continueDynamic(entry.id, { dynamic: { state: "too late", iteration: 1 } })).toBeUndefined();
+    expect(store.get(entry.id)?.dynamic?.state).toBeUndefined();
+    expect(store.get(entry.id)?.status).toBe("active");
+  });
+
   it("defaults dynamic goal to the prompt", () => {
     const l = store.create({ type: "dynamic" }, "ship the fix", { recurring: true });
     expect(l.dynamic?.goal).toBe("ship the fix");
@@ -453,6 +503,29 @@ describe("LoopStore (file-backed)", () => {
     const loops = store2.list();
     expect(loops).toHaveLength(1);
     expect(loops[0].prompt).toBe("persist test");
+  });
+
+  it("settles expiry once across stores sharing a project snapshot", () => {
+    const store1 = new LoopStore(filePath);
+    const workflow = store1.create({ type: "dynamic" }, "workflow", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: { work: { prompt: "Work.", on: { done: "done" } }, done: { prompt: "Done.", terminal: "completed" } },
+      },
+    });
+    const store2 = new LoopStore(filePath);
+
+    expect(store1.expireEntry(workflow.id, workflow.expiresAt)).toMatchObject({
+      entry: { id: workflow.id },
+      disposition: "paused",
+    });
+    expect(store2.expireEntry(workflow.id, workflow.expiresAt)).toBeUndefined();
+    expect(store2.get(workflow.id)).toMatchObject({
+      status: "paused",
+      pause: { kind: "controller_limit", reason: "loop expiry reached" },
+    });
   });
 
   it("persists dynamic loop state to disk", () => {

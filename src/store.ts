@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { type LoopReducerEffect, type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { applyOrchestrationEvent, type OrchestrationEvent, validateOrchestrationDefinition, validatePersistedOrchestration } from "./orchestration-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopFireOrigin, LoopPauseKind, LoopPauseRecord, LoopStoreData, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopExpiryDisposition, LoopExpiryReason, LoopFireOrigin, LoopPauseKind, LoopPauseRecord, LoopStoreData, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
 import { validateWorkflowDefinition } from "./workflow-definition.js";
 import { isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowAdmissionRecord, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 import { validatePersistedWorkflowRevision, type WorkflowRevisionInput, type WorkflowRevisionSummary } from "./workflow-revision.js";
@@ -91,6 +91,12 @@ function normalizeLoopEntry(entry: LoopEntry): LoopEntry {
     ...(entry.workflow ? { workflow: normalizeWorkflowRunState(entry.workflow) } : {}),
     ...(entry.orchestration ? { orchestration: validatePersistedOrchestration(entry.orchestration) } : {}),
   };
+}
+
+export interface ExpiredLoopRecord {
+  entry: LoopEntry;
+  disposition: LoopExpiryDisposition;
+  reason: LoopExpiryReason;
 }
 
 const MAX_LOOPS = 25;
@@ -196,7 +202,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   resume(id: string): LoopEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
-      if (!entry || isTerminalWorkflowRun(entry.workflow)) return undefined;
+      if (!entry || Date.now() >= entry.expiresAt || isTerminalWorkflowRun(entry.workflow)) return undefined;
       this.applyReducerEvent({
         type: "LOOP_RESUMED",
         at: Date.now(),
@@ -299,6 +305,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         || entry.updatedAt !== expected.updatedAt
       )) return undefined;
       const now = Date.now();
+      if (now >= entry.expiresAt) return undefined;
       if (entry.status === "paused") {
         this.applyReducerEvent({
           type: "LOOP_RESUMED",
@@ -598,38 +605,57 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     });
   }
 
-  clearExpired(): number {
+  private expireEntryUnlocked(id: string, now: number): ExpiredLoopRecord | undefined {
+    const entry = this.entries.get(id);
+    if (!entry || now < entry.expiresAt) return undefined;
+    if (
+      entry.status === "paused"
+      && entry.pause?.kind === "controller_limit"
+      && entry.pause.reason === "loop expiry reached"
+    ) return undefined;
+    const disposition = entry.workflow || entry.orchestration || entry.taskBacklog ? "paused" : "deleted";
+    this.applyReducerEvent(disposition === "paused"
+      ? {
+          type: "LOOP_PAUSED",
+          at: now,
+          source: "system",
+          entityType: "loop",
+          entityId: id,
+          payload: { id, kind: "controller_limit", reason: "loop expiry reached" },
+        }
+      : {
+          type: "LOOP_EXPIRED",
+          at: now,
+          source: "system",
+          entityType: "loop",
+          entityId: id,
+          payload: { id, reason: "expires_at" },
+        });
+    return { entry, disposition, reason: "expires_at" };
+  }
+
+  expireEntry(id: string, now = Date.now()): ExpiredLoopRecord | undefined {
+    return this.withLock(() => this.expireEntryUnlocked(id, now));
+  }
+
+  expireEntries(now = Date.now()): ExpiredLoopRecord[] {
     return this.withLock(() => {
-      const now = Date.now();
-      let count = 0;
-      for (const [id, entry] of [...this.entries.entries()]) {
-        if (now < entry.expiresAt) continue;
-        this.applyReducerEvent(entry.workflow || entry.orchestration
-          ? {
-              type: "LOOP_PAUSED",
-              at: now,
-              source: "system",
-              entityType: "loop",
-              entityId: id,
-              payload: { id, kind: "controller_limit", reason: "loop expiry reached" },
-            }
-          : {
-              type: "LOOP_EXPIRED",
-              at: now,
-              source: "system",
-              entityType: "loop",
-              entityId: id,
-              payload: { id, reason: "expires_at" },
-            });
-        count++;
+      const expired: ExpiredLoopRecord[] = [];
+      for (const id of [...this.entries.keys()]) {
+        const record = this.expireEntryUnlocked(id, now);
+        if (record) expired.push(record);
       }
-      return count;
+      return expired;
     });
   }
 
-  expireEventLoops(sessionStartedAt: number): number {
+  clearExpired(): number {
+    return this.expireEntries().length;
+  }
+
+  expireEventLoopEntries(sessionStartedAt: number): ExpiredLoopRecord[] {
     return this.withLock(() => {
-      let count = 0;
+      const expired: ExpiredLoopRecord[] = [];
       for (const [id, entry] of [...this.entries.entries()]) {
         if (entry.status !== "active") continue;
         if (entry.trigger.type !== "event" && entry.trigger.type !== "hybrid") continue;
@@ -644,10 +670,14 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           entityId: id,
           payload: { id, reason: "resume_event_stale" },
         });
-        count++;
+        expired.push({ entry, disposition: "deleted", reason: "resume_event_stale" });
       }
-      return count;
+      return expired;
     });
+  }
+
+  expireEventLoops(sessionStartedAt: number): number {
+    return this.expireEventLoopEntries(sessionStartedAt).length;
   }
 
   clearAll(options?: { preserveWorkflows?: boolean }): number {
