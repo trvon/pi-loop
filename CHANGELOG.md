@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.10](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.9...pi-loop-v0.7.10) (2026-08-30)
+
+
+### Features
+
+* **workflow:** ground blocker transitions ([#68](https://github.com/trvon/pi-loop/issues/68)) ([87040a3](https://github.com/trvon/pi-loop/commit/87040a3e7df96bc2556a229d60705d77b591991c))
+* **workflow:** show activity and age ([#70](https://github.com/trvon/pi-loop/issues/70)) ([ca2c35d](https://github.com/trvon/pi-loop/commit/ca2c35d7536fc2339327382787b21ea515a89431))
+
+
+### Bug Fixes
+
+* **loop:** make recurring expiry observable ([#69](https://github.com/trvon/pi-loop/issues/69)) ([65dd735](https://github.com/trvon/pi-loop/commit/65dd735e2890ae91924c6c3c74ce2f87019671b9))
+* **routing:** handle child stdin errors ([#65](https://github.com/trvon/pi-loop/issues/65)) ([af6dfd4](https://github.com/trvon/pi-loop/commit/af6dfd4897c74abff82fe610f08d8118f6a7be4d))
+
 ## [0.7.9](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.8...pi-loop-v0.7.9) (2026-08-26)
 
 
