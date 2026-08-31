@@ -418,7 +418,12 @@ describe("CronScheduler", () => {
     });
     scheduler.add(entry);
 
-    vi.advanceTimersByTime(5 * 60 * 1000);
+    // Advance past one full cron step plus the worst-case per-ID jitter
+    // (computeJitter can add up to half the step); a single boundary + jitter
+    // must land inside the advance window regardless of the real start time.
+    // maxFires=1 retires the loop after the first fire, so a second boundary
+    // inside the window cannot fire.
+    vi.advanceTimersByTime(6 * 60 * 1000);
     scheduler.pump(Date.now());
 
     expect(store.get(entry.id)?.status).toBe("paused");
