@@ -257,6 +257,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       getTriggerSystem().add(entry);
       if (stateShouldWakeImmediately(entry)) onDynamicLoopActivated?.(entry);
       const current = store.get(entry.id) ?? entry;
+      if (current.status !== "active") getTriggerSystem().remove(current.id);
       updateWidget();
       const wake = workflowWakeDescription(current);
       return textResult(
@@ -364,12 +365,14 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       }
       const summary = result.summary;
       const reissued = summary.reissuedStates.length > 0;
-      if (reissued && result.entry.status === "active") {
+      const activated = reissued && result.entry.status === "active";
+      if (activated) {
         getTriggerSystem().remove(result.entry.id);
         getTriggerSystem().add(result.entry);
         onDynamicLoopActivated?.(result.entry);
       }
       const current = getStore().get(result.entry.id) ?? result.entry;
+      if (activated && current.status !== "active") getTriggerSystem().remove(current.id);
       updateWidget();
       const lines = [
         `Workflow #${params.id} revised: revision ${params.expectedRevision} → ${current.workflow?.definitionRevision}`,
@@ -518,6 +521,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         if (stateShouldWakeImmediately(entry)) onDynamicLoopActivated?.(entry);
       }
       const current = store.get(entry.id) ?? entry;
+      if (current.status !== "active") getTriggerSystem().remove(current.id);
       updateWidget();
       const transition = `${current.workflow?.lastTransition?.from ?? "?"} → ${current.workflow?.currentState ?? "?"}`;
       return textResult(

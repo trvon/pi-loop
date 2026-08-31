@@ -569,6 +569,7 @@ describe("Workflow tools", () => {
     expect(out).toContain("no next wake is scheduled");
     expect(out).not.toContain("Next: WorkflowClaim");
     expect(result.details).toMatchObject({ tone: "warning" });
+    expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
   });
 
   it("renders workflow lifecycle results as compact expandable rows", async () => {
@@ -863,6 +864,7 @@ describe("Workflow tools", () => {
 
   it("renders authoritative paused state when reissue activation reaches its cap", async () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition, maxFires: 1 });
+    h.triggerSystem.remove.mockClear();
     h.onDynamicLoopActivated.mockClear();
     h.onDynamicLoopActivated.mockImplementationOnce((entry) => {
       h.store.fire(entry.id);
@@ -883,6 +885,8 @@ describe("Workflow tools", () => {
     expect(out).toContain("Controller limit reached during activation");
     expect(out).not.toContain("resume through /loop");
     expect(result.details).toMatchObject({ tone: "warning" });
+    expect(h.triggerSystem.remove).toHaveBeenCalledTimes(2);
+    expect(h.triggerSystem.remove).toHaveBeenLastCalledWith("1");
   });
 
   it("requires the current execution lease before revising and preserves it after claim", async () => {
@@ -1070,6 +1074,7 @@ describe("Workflow tools", () => {
 
   it("renders authoritative paused state after synchronous activation", async () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    h.triggerSystem.remove.mockClear();
     h.onDynamicLoopActivated.mockClear();
     h.onDynamicLoopActivated.mockImplementationOnce((entry) => {
       h.store.pause(entry.id, "controller_limit", "loop fire cap reached");
@@ -1091,6 +1096,8 @@ describe("Workflow tools", () => {
       tone: "warning",
       expanded: expect.arrayContaining([expect.stringContaining("Activity: paused")]),
     });
+    expect(h.triggerSystem.remove).toHaveBeenCalledTimes(2);
+    expect(h.triggerSystem.remove).toHaveBeenLastCalledWith("1");
   });
 
   it("queues the next wake after transitioning into an ordinary no-loop phase", async () => {
