@@ -2,6 +2,7 @@ import { Check } from "typebox/value";
 import type {
   WorkflowDefinition,
   WorkflowDefinitionRevision,
+  WorkflowExecutionRecord,
   WorkflowRevisionChange,
   WorkflowRevisionFailure,
   WorkflowRunState,
@@ -29,6 +30,7 @@ export interface AuthorizedWorkflowRevisionInput extends WorkflowRevisionInput {
 export interface WorkflowRevisionSummary {
   addedStates: string[];
   revisedStates: string[];
+  reissuedStates: string[];
   addedTransitions: Array<{ from: string; outcome: string; to: string }>;
   redirectedTransitions: Array<{ from: string; outcome: string; fromTarget: string; to: string }>;
 }
@@ -41,6 +43,7 @@ type RevisionRejection = Extract<WorkflowRevisionResult, { applied: false }>;
 
 type AddStateChange = Extract<WorkflowRevisionChange, { op: "add_state" }>;
 type ReviseStateChange = Extract<WorkflowRevisionChange, { op: "revise_state" }>;
+type ReissueStateChange = Extract<WorkflowRevisionChange, { op: "reissue_state" }>;
 type AddTransitionChange = Extract<WorkflowRevisionChange, { op: "add_transition" }>;
 type RedirectTransitionChange = Extract<WorkflowRevisionChange, { op: "redirect_transition" }>;
 
@@ -140,7 +143,7 @@ function validateChangeIdentity(
   stateChanges: Set<string>,
   edgeChanges: Set<string>,
 ): RevisionRejection | undefined {
-  if (change.op === "add_state" || change.op === "revise_state") {
+  if (change.op === "add_state" || change.op === "revise_state" || change.op === "reissue_state") {
     if (stateChanges.has(change.stateId)) {
       return rejected("invalid_patch", `Workflow revision changes state "${change.stateId}" more than once.`);
     }
@@ -201,6 +204,15 @@ function validateRevisedLimits(run: WorkflowRunState, change: ReviseStateChange)
   return undefined;
 }
 
+function validateReissueLimits(run: WorkflowRunState, change: ReissueStateChange): RevisionRejection | undefined {
+  if (change.maxAttempts !== undefined && change.maxAttempts < (run.attemptsByState[change.stateId] ?? 0)) {
+    return rejected("invalid_patch", `State "${change.stateId}" maxAttempts cannot be below its current attempt count.`, {
+      stateId: change.stateId,
+    });
+  }
+  return undefined;
+}
+
 function validateStateRevision(
   run: WorkflowRunState,
   state: WorkflowStateDefinition | undefined,
@@ -248,6 +260,34 @@ function reviseState(
   return undefined;
 }
 
+function reissueState(
+  run: WorkflowRunState,
+  definition: WorkflowDefinition,
+  change: ReissueStateChange,
+  summary: WorkflowRevisionSummary,
+): RevisionRejection | undefined {
+  if (change.stateId !== run.currentState) {
+    return rejected("state_conflict", `reissue_state must target active state "${run.currentState}", not "${change.stateId}".`, {
+      stateId: change.stateId,
+    });
+  }
+  const state = definition.states[change.stateId];
+  if (!state) return rejected("state_conflict", `Workflow state "${change.stateId}" does not exist.`, { stateId: change.stateId });
+  if (!state.task && run.activeExecution) {
+    return rejected("execution_missing", "Taskless active state has an unexpected workflow execution; repair the run before reissuing it.");
+  }
+  const limitError = validateReissueLimits(run, change);
+  if (limitError) return limitError;
+
+  const revised: WorkflowStateDefinition = { ...state, prompt: change.prompt };
+  if (change.task !== undefined) revised.task = structuredClone(change.task);
+  if (change.loop !== undefined) revised.loop = structuredClone(change.loop);
+  if (change.maxAttempts !== undefined) revised.maxAttempts = change.maxAttempts;
+  definition.states[change.stateId] = revised;
+  summary.reissuedStates.push(change.stateId);
+  return undefined;
+}
+
 function applyStateChanges(
   run: WorkflowRunState,
   definition: WorkflowDefinition,
@@ -262,6 +302,11 @@ function applyStateChanges(
   const revisions = changes.filter((change): change is ReviseStateChange => change.op === "revise_state");
   for (const change of revisions) {
     const error = reviseState(run, definition, change, summary);
+    if (error) return error;
+  }
+  const reissues = changes.filter((change): change is ReissueStateChange => change.op === "reissue_state");
+  for (const change of reissues) {
+    const error = reissueState(run, definition, change, summary);
     if (error) return error;
   }
   return undefined;
@@ -372,6 +417,46 @@ function validateGraph(
   return undefined;
 }
 
+function replaceCurrentExecution(
+  run: WorkflowRunState,
+  definition: WorkflowDefinition,
+  nextRevision: number,
+  reason: string,
+  at: number,
+): Pick<WorkflowRunState, "activeExecution" | "executionHistory" | "stateEnteredAt" | "stateFireCounts"> {
+  const prior = run.activeExecution;
+  const cancelled: WorkflowExecutionRecord | undefined = prior
+    ? {
+        ...prior,
+        status: "cancelled",
+        updatedAt: at,
+        settledAt: at,
+        evidence: `Reissued: ${reason}`,
+        lease: undefined,
+      }
+    : undefined;
+  const task = definition.states[run.currentState]?.task;
+  const activeExecution: WorkflowExecutionRecord | undefined = task
+    ? {
+        id: `${run.currentState}:${run.transitionSeq}:r${nextRevision}`,
+        stateId: run.currentState,
+        transitionSeq: run.transitionSeq,
+        subject: task.subject,
+        description: task.description,
+        status: "active",
+        createdAt: at,
+        updatedAt: at,
+        lease: prior?.lease ? structuredClone(prior.lease) : undefined,
+      }
+    : undefined;
+  return {
+    activeExecution,
+    executionHistory: cancelled ? [...(run.executionHistory ?? []), cancelled] : run.executionHistory,
+    stateEnteredAt: at,
+    stateFireCounts: { ...run.stateFireCounts, [run.currentState]: 0 },
+  };
+}
+
 export function reviseWorkflowRun(
   run: WorkflowRunState,
   input: AuthorizedWorkflowRevisionInput,
@@ -394,6 +479,7 @@ export function reviseWorkflowRun(
   const summary: WorkflowRevisionSummary = {
     addedStates: [],
     revisedStates: [],
+    reissuedStates: [],
     addedTransitions: [],
     redirectedTransitions: [],
   };
@@ -403,13 +489,20 @@ export function reviseWorkflowRun(
   if (edgeError) return edgeError;
   const graphError = validateGraph(run, definition, summary);
   if (graphError) return graphError;
-  if (JSON.stringify(definition) === JSON.stringify(run.definition)) return rejected("invalid_patch", "Workflow revision is a no-op.");
+  const reissued = summary.reissuedStates.length > 0;
+  if (!reissued && JSON.stringify(definition) === JSON.stringify(run.definition)) {
+    return rejected("invalid_patch", "Workflow revision is a no-op.");
+  }
 
   const currentRevision = run.definitionRevision ?? 1;
+  const replacement = reissued
+    ? replaceCurrentExecution(run, definition, currentRevision + 1, reason, at)
+    : {};
   return {
     applied: true,
     run: {
       ...run,
+      ...replacement,
       definition,
       definitionRevision: currentRevision + 1,
       revisionHistory: [

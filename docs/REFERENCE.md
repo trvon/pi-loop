@@ -91,12 +91,13 @@ No pending claim or general evidence ledger is persisted. A confirmed transition
 
 - `add_state`
 - `revise_state` for non-current state content
+- `reissue_state` for explicit replacement of current instructions
 - `add_transition`
 - `redirect_transition` with `expectedTo`
 
-Revision is additive: no remove, rename, full replacement, or current-state content mutation. Added states must be reachable and rejoin prior or terminal work. Redirected routes must retain a path to their prior target.
+Graph revision is additive: no remove, rename, or full-definition replacement. Added states must be reachable and rejoin prior or terminal work. Redirected routes must retain a path to their prior target. `revise_state` still rejects the current state; callers must choose `reissue_state` explicitly rather than mutating instructions beneath an execution.
 
-Acceptance appends the prior definition, reason, actor, timestamp, and patch to immutable history, then increments `definitionRevision`. Current execution, lease, counters, and scheduler state remain unchanged. Persist actionable plan gaps, then continue through the revised transition and claim while work remains actionable; revision never creates standalone workflow tasks. Maximum definition size is 65,536 UTF-8 bytes and maximum revision count is 32.
+Acceptance appends the prior definition, reason, actor, timestamp, and patch to immutable history, then increments `definitionRevision`. Ordinary revisions preserve the current execution, lease, counters, and scheduler state. `reissue_state` is the bounded exception: it targets only the current nonterminal state. On an active controller it cancels any old execution into `executionHistory`, creates a fresh execution ID under the still-valid owner lease, resets state-entry/fire timing, keeps transition sequence and attempt count unchanged, then re-arms the active trigger and queues a fresh idle wake after persistence. Through an administrative pause it performs the same replacement atomically but leaves the controller paused with no trigger or wake, so `/loop` resume delivers only the fresh instruction. `controller_limit` and other non-administrative pauses reject reissue; semantic terminals reject revision entirely. Reissuing taskless work may create an unowned task execution that must be claimed. Reissued `maxAttempts` may equal but never undercut the current attempt; state-local fire limits apply to the reset fire count. The revision and fresh execution ID fence stale transition attempts. Revision never creates standalone workflow tasks. Maximum definition size is 65,536 UTF-8 bytes and maximum revision count is 32.
 
 Revision and transition race through the same LoopStore lock. Revision-first makes a stale transition fail its definition CAS; transition-first makes a stale revision fail state/sequence CAS.
 

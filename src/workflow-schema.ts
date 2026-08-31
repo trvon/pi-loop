@@ -41,6 +41,14 @@ export const WorkflowRevisionChangeSchema = Type.Union([
     maxAttempts: Type.Optional(Type.Integer({ minimum: 1 })),
   }),
   Type.Object({
+    op: Type.Literal("reissue_state"),
+    stateId: Type.String({ minLength: 1 }),
+    prompt: Type.String({ minLength: 1 }),
+    task: Type.Optional(WorkflowTaskSchema),
+    loop: Type.Optional(WorkflowLoopSchema),
+    maxAttempts: Type.Optional(Type.Integer({ minimum: 1 })),
+  }),
+  Type.Object({
     op: Type.Literal("add_transition"),
     from: Type.String({ minLength: 1 }),
     outcome: Type.String({ minLength: 1 }),

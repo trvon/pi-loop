@@ -688,9 +688,20 @@ describe("Workflow tools", () => {
     const listed = await h.text("LoopList", {});
     expect(listed).toContain("Pause cause: semantic_terminal");
     expect(listed).toContain("Admission: environmental · test:release.failed = true · test@1");
+
+    const reissue = await h.text("WorkflowRevise", {
+      id: "1",
+      expectedRevision: 1,
+      expectedState: "blocked",
+      expectedTransitionSeq: 1,
+      reason: "Do not reopen terminal work.",
+      changes: [{ op: "reissue_state", stateId: "blocked", prompt: "Changed." }],
+    });
+    expect(reissue).toContain("Code: terminal_workflow");
+    expect(reissue).not.toContain("Resume the workflow through /loop");
   });
 
-  it("exposes typed workflow revision changes without replacement or ownership fields", () => {
+  it("exposes typed workflow revision changes without raw replacement or ownership fields", () => {
     const revise = h.toolMap.get("WorkflowRevise") as any;
 
     expect(revise).toBeDefined();
@@ -704,10 +715,112 @@ describe("Workflow tools", () => {
     expect(revise.parameters.properties.definition).toBeUndefined();
     expect(revise.parameters.properties.actor).toBeUndefined();
     expect(revise.parameters.properties.claimId).toBeUndefined();
-    expect(revise.description).toContain("typed additive changes");
+    expect(revise.description).toContain("typed CAS changes");
+    expect(JSON.stringify(revise.parameters.properties.changes)).toContain("reissue_state");
     expect(revise.promptGuidelines.join("\n")).toContain("Non-task WorkflowRevise needs no claim");
     expect(revise.promptGuidelines.join("\n")).toContain("use WorkflowClaim only for unowned/expired task work");
     expect(revise.promptGuidelines.join("\n")).toContain("Never create standalone tasks");
+    expect(revise.promptGuidelines.join("\n")).toContain("Never park under ignored instructions");
+  });
+
+  it("routes attempted current-state mutation to explicit reissue", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+
+    const out = await h.text("WorkflowRevise", {
+      id: "1",
+      expectedRevision: 1,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
+      reason: "The current prompt is stale.",
+      changes: [{ op: "revise_state", stateId: "investigate", prompt: "Wait for Brick." }],
+    });
+
+    expect(out).toContain("Code: current_state_immutable");
+    expect(out).toContain("Use reissue_state to atomically replace active instructions");
+    expect(h.store.get("1")?.workflow?.definitionRevision).toBe(1);
+  });
+
+  it("reissues administrative pauses without waking, but rejects exhausted controllers", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    h.store.pause("1", "administrative", "Hold.");
+    h.triggerSystem.add.mockClear();
+    h.triggerSystem.remove.mockClear();
+    h.onDynamicLoopActivated.mockClear();
+
+    const out = await h.text("WorkflowRevise", {
+      id: "1",
+      expectedRevision: 1,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
+      reason: "Replace paused instructions.",
+      changes: [{ op: "reissue_state", stateId: "investigate", prompt: "Changed." }],
+    });
+
+    expect(out).toContain("Reissued active state: investigate");
+    expect(out).toContain("resume through /loop to wake the fresh instruction");
+    expect(out).toContain("superseded prompt will not run");
+    expect(h.store.get("1")).toMatchObject({
+      status: "paused",
+      workflow: { definitionRevision: 2, activeExecution: { id: "investigate:0:r2" } },
+    });
+    expect(h.triggerSystem.add).not.toHaveBeenCalled();
+    expect(h.triggerSystem.remove).not.toHaveBeenCalled();
+    expect(h.onDynamicLoopActivated).not.toHaveBeenCalled();
+
+    h.store.resume("1");
+    h.store.pause("1", "controller_limit", "loop fire cap reached");
+    const capped = await h.text("WorkflowRevise", {
+      id: "1",
+      expectedRevision: 2,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
+      reason: "Do not renew bounded work implicitly.",
+      changes: [{ op: "reissue_state", stateId: "investigate", prompt: "Changed again." }],
+    });
+    expect(capped).toContain("controller fire cap is exhausted");
+    expect(capped).toContain("Resuming does not renew the cap");
+    expect(capped).not.toContain("Resume the workflow through /loop");
+  });
+
+  it("reissues active instructions, histories stale work, and wakes the fresh execution", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    const original = structuredClone(h.store.get("1")?.workflow?.activeExecution);
+    h.triggerSystem.add.mockClear();
+    h.triggerSystem.remove.mockClear();
+    h.onDynamicLoopActivated.mockClear();
+
+    const out = await h.text("WorkflowRevise", {
+      id: "1",
+      expectedRevision: 1,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
+      reason: "Wait for the upstream Brick change.",
+      changes: [{
+        op: "reissue_state",
+        stateId: "investigate",
+        prompt: "Wait for Brick; do not push.",
+        task: { subject: "Wait for Brick", description: "Hold until the user confirms Brick is done." },
+      }],
+    });
+
+    const entry = h.store.get("1");
+    expect(out).toContain("Reissued active state: investigate");
+    expect(out).toContain("Current execution replaced: investigate (investigate:0:r2)");
+    expect(out).toContain("do not execute the superseded prompt");
+    expect(entry?.workflow).toMatchObject({
+      definitionRevision: 2,
+      stateEnteredAt: expect.any(Number),
+      definition: { states: { investigate: { prompt: "Wait for Brick; do not push." } } },
+      activeExecution: {
+        id: "investigate:0:r2",
+        subject: "Wait for Brick",
+        lease: original?.lease,
+      },
+      executionHistory: [{ id: "investigate:0", status: "cancelled", lease: undefined }],
+    });
+    expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
+    expect(h.triggerSystem.add).toHaveBeenCalledWith(entry);
+    expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(entry);
   });
 
   it("requires the current execution lease before revising and preserves it after claim", async () => {

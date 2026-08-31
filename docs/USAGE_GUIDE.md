@@ -121,7 +121,15 @@ WorkflowRevise id="1" expectedRevision=1 expectedState="investigate" expectedTra
 ]'
 ```
 
-`WorkflowRevise` stores the prior definition, reason, accepted changes, timestamp, and runtime actor as immutable history. It preserves current execution and lease state, changes only future work or current outgoing edges, and rejects stale revisions or transitions. It never creates standalone tasks. See the [reference](./REFERENCE.md#adaptive-revision) for operation and graph rules.
+`WorkflowRevise` stores the prior definition, reason, accepted changes, timestamp, and runtime actor as immutable history. Ordinary changes preserve current execution and lease state while changing future work or current outgoing edges. When the active prompt itself is stale, use the explicit `reissue_state` operation instead of leaving a note that future agents must ignore it:
+
+```text
+WorkflowRevise id="1" expectedRevision=2 expectedState="open-pr" expectedTransitionSeq=1 reason="Wait for the Brick work before pushing" changes='[
+  {"op":"reissue_state","stateId":"open-pr","prompt":"Wait until Brick is done; do not push yet.","task":{"subject":"Wait for Brick","description":"Hold the branch until the user confirms Brick is complete."}}
+]'
+```
+
+Reissue atomically cancels the superseded execution into history, creates fresh current work under the still-valid lease, resets state timing, and queues a fresh wake without fabricating a transition. An administrative pause can be reissued in place: the replacement waits paused, and `/loop` resume wakes only the fresh instruction. `controller_limit` and other non-administrative pauses reject reissue because resuming them does not renew the exhausted controller; semantic terminals cannot be revised. Taskless work that gains a task starts unowned and requires `WorkflowClaim`. Stale revision, state, sequence, lease, and execution authority fail closed. Workflow revision never creates standalone tasks. See the [reference](./REFERENCE.md#adaptive-revision) for operation and graph rules.
 
 A missing prerequisite, missing route, or exhausted route is a plan gap—not automatically a blocker. Persist an actionable recovery route with `WorkflowRevise`, then continue through the revised transition and claim while work remains actionable. Call `WorkflowTransition` only when an available declared outcome is supported by evidence; never fabricate one. Do not stop or move the controller to terminal `paused` merely to report progress. Environmental blockers require trusted admission. If user authority is required, report the exact decision needed; machine observations cannot authorize the transition.
 

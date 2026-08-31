@@ -108,6 +108,71 @@ describe("workflow properties", () => {
     );
   });
 
+  it("reissues active work without changing transition or lease authority", () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.stringMatching(/^[A-Za-z][A-Za-z0-9 ._-]{0,40}$/).filter((prompt) => prompt.trim() !== ""),
+          { minLength: 1, maxLength: 10 },
+        ),
+        (prompts) => {
+          const actor = { sessionId: "property-session", runtimeId: "property-runtime" };
+          const taskDefinition: WorkflowDefinition = {
+            version: 1,
+            initialState: "work",
+            states: {
+              work: {
+                prompt: "Original.",
+                task: { subject: "Original", description: "Original work." },
+                on: { done: "complete" },
+              },
+              complete: { prompt: "Complete.", terminal: "completed" },
+            },
+          };
+          let run = createWorkflowRun(taskDefinition, 0, actor);
+
+          prompts.forEach((prompt, index) => {
+            const before = structuredClone(run);
+            const result = reviseWorkflowRun(run, {
+              expectedRevision: index + 1,
+              expectedState: "work",
+              expectedTransitionSeq: 0,
+              reason: `Reissue ${index + 1}`,
+              changes: [{
+                op: "reissue_state",
+                stateId: "work",
+                prompt,
+                task: { subject: `Work ${index + 1}`, description: prompt },
+              }],
+              actor,
+            }, index + 1);
+
+            expect(result.applied).toBe(true);
+            if (!result.applied) return;
+            expect(result.run).toMatchObject({
+              currentState: "work",
+              transitionSeq: 0,
+              definitionRevision: index + 2,
+              activeExecution: {
+                id: `work:0:r${index + 2}`,
+                lease: before.activeExecution?.lease,
+              },
+            });
+            expect(result.run.executionHistory).toHaveLength(index + 1);
+            expect(result.run.executionHistory?.at(-1)).toMatchObject({
+              id: before.activeExecution?.id,
+              status: "cancelled",
+              lease: undefined,
+            });
+            expect(run).toEqual(before);
+            run = result.run;
+          });
+        },
+      ),
+      propertyOptions(),
+    );
+  });
+
   it("never exceeds generated max-attempt limits", () => {
     fc.assert(
       fc.property(fc.integer({ min: 1, max: 50 }), fc.integer({ min: 0, max: 100 }), (limit, attempts) => {

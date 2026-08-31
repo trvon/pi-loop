@@ -51,8 +51,8 @@ A workflow is one dynamic `LoopEntry` with a version-1 named-state definition.
 - `WorkflowTransition` validates the live owner, settles source work, records evidence, advances state, and creates destination work in one locked write.
 - Paused terminal outcomes require a typed blocker claim; trusted providers run outside the LoopStore lock, then the transition uses exact state/revision/execution CAS.
 - Machine observations never grant user authority. Rejected, stale, or contradicted claims are state-preserving; restart recovery is explicit resubmission, not a persisted proposal.
-- `WorkflowRevise` applies typed additive changes with definition/state/sequence CAS, immutable prior-definition history, and no scheduler or TaskStore effect.
-- Current materialized state content is immutable. Current outgoing edges and future state content may be revised.
+- `WorkflowRevise` applies typed definition changes with definition/state/sequence CAS and immutable prior-definition history; it never touches TaskStore.
+- Active instructions are never mutated in place. `reissue_state` cancels the prior execution into history, creates fresh current work under the still-valid lease, and wakes the replacement after the locked write; through an administrative pause it parks the replacement instead of waking it. Current outgoing edges and future state content remain directly revisable.
 - Transition CAS includes definition revision so transition/revision races fail closed in either order.
 - Terminal completed workflows are deleted; terminal paused workflows remain inspectable with bounded admission and pause provenance.
 
