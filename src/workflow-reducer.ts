@@ -35,12 +35,18 @@ export interface WorkflowTransitionInput {
   actor?: WorkflowRuntimeActor;
 }
 
-export interface WorkflowTransitionFailure {
-  code: "target_exhausted";
-  outcome: string;
-  targetState: string;
-  maxAttempts: number;
-}
+export type WorkflowTransitionFailure =
+  | {
+      code: "target_exhausted";
+      outcome: string;
+      targetState: string;
+      maxAttempts: number;
+    }
+  | {
+      code: "unbounded_self_loop";
+      outcome: string;
+      targetState: string;
+    };
 
 export type WorkflowTransitionResult =
   | { applied: true; run: WorkflowRunState; terminal?: WorkflowTerminalStatus }
@@ -48,7 +54,10 @@ export type WorkflowTransitionResult =
 
 export interface WorkflowOutcomeAvailability {
   available: string[];
-  unavailable: Array<{ outcome: string; targetState: string; maxAttempts: number }>;
+  unavailable: Array<
+    | { outcome: string; targetState: string; maxAttempts: number }
+    | { outcome: string; targetState: string; reason: "unbounded_self_loop" }
+  >;
 }
 
 export function getActiveWorkflowStateLoop(run: WorkflowRunState): WorkflowStateLoopDefinition | undefined {
@@ -67,7 +76,9 @@ export function getWorkflowOutcomeAvailability(run: WorkflowRunState): WorkflowO
   for (const [outcome, targetState] of Object.entries(state?.on ?? {})) {
     const target = run.definition.states[targetState];
     const nextAttempt = (run.attemptsByState[targetState] ?? 0) + 1;
-    if (target?.maxAttempts !== undefined && nextAttempt > target.maxAttempts) {
+    if (targetState === run.currentState && target?.maxAttempts === undefined) {
+      unavailable.push({ outcome, targetState, reason: "unbounded_self_loop" });
+    } else if (target?.maxAttempts !== undefined && nextAttempt > target.maxAttempts) {
       unavailable.push({ outcome, targetState, maxAttempts: target.maxAttempts });
     } else {
       available.push(outcome);
@@ -164,6 +175,16 @@ function resolveTarget(
   if (!target) return { error: `Outcome "${outcome}" is not allowed from state "${run.currentState}"` };
   const targetState = run.definition.states[target];
   if (!targetState) return { error: `Transition target "${target}" is not defined` };
+  if (target === run.currentState && targetState.maxAttempts === undefined) {
+    return {
+      error: `State "${target}" self-loop "${outcome}" is unbounded; revise it with maxAttempts before retrying`,
+      failure: {
+        code: "unbounded_self_loop",
+        outcome,
+        targetState: target,
+      },
+    };
+  }
   const nextAttempt = (run.attemptsByState[target] ?? 0) + 1;
   if (targetState.maxAttempts !== undefined && nextAttempt > targetState.maxAttempts) {
     return {

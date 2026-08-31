@@ -141,6 +141,12 @@ function stateShouldWakeImmediately(entry: LoopEntry): boolean {
   return !entry.workflow || !getActiveWorkflowStateLoop(entry.workflow) || stateLoopStartsImmediately(entry);
 }
 
+function workflowWakeDescription(entry: LoopEntry): string {
+  if (entry.status === "paused") return "no next wake is scheduled while the controller is paused.";
+  if (entry.workflow && getActiveWorkflowStateLoop(entry.workflow)) return "scheduled from the active state cadence.";
+  return "the state instruction will be delivered when the agent becomes idle.";
+}
+
 function formatWorkflowDefinitionError(error: string | undefined): string {
   return `Workflow definition rejected: ${error ?? "unknown validation error"}\nRequired fields: version: 1, initialState, and states.\nExample definition:\n${WORKFLOW_DEFINITION_EXAMPLE}\nNext: correct the JSON and call WorkflowCreate again.`;
 }
@@ -166,8 +172,21 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
     message += "\nWorkflow work: none configured for this state.";
   }
   if (workflow.waitingMonitor) return `${message}\nWaiting on monitor #${workflow.waitingMonitor.monitorId}.`;
+  if (entry.status === "paused") {
+    const next = entry.pause?.kind === "controller_limit"
+      ? "Do not resume or repeat a self-transition. Leave a state-local cadence cap through an evidenced transition to a different state; a workflow-wide cap permits only a terminal transition."
+      : "Resume the workflow explicitly before continuing; transitions do not bypass pauses.";
+    return `${message}\nController paused. ${next}`;
+  }
+  if (failure?.code === "unbounded_self_loop") {
+    return `${message}\nUnsafe self-loop: ${failure.outcome} → ${failure.targetState} has no attempt bound. Use WorkflowRevise to add maxAttempts or redirect the outcome before retrying.`;
+  }
   const unavailable = availability.unavailable.sort((left, right) => Number(right.outcome === failure?.outcome) - Number(left.outcome === failure?.outcome));
-  if (unavailable.length > 0) message += `\nUnavailable outcomes: ${unavailable.map((item) => `${item.outcome} — ${item.targetState} exhausted ${item.maxAttempts} attempt(s)`).join("; ")}.`;
+  if (unavailable.length > 0) {
+    message += `\nUnavailable outcomes: ${unavailable.map((item) => "reason" in item
+      ? `${item.outcome} — ${item.targetState} is an unbounded self-loop`
+      : `${item.outcome} — ${item.targetState} exhausted ${item.maxAttempts} attempt(s)`).join("; ")}.`;
+  }
   if (state?.terminal) return `${message}\nTerminal: ${state.terminal}`;
   const cas = `revision=${workflow.definitionRevision ?? 1}, state=${workflow.currentState}, transition sequence=${workflow.transitionSeq}`;
   if (availability.available.length === 0 && unavailable.length === 0) {
@@ -203,7 +222,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     description: "Create a durable named-state controller for one goal. Definition: {version:1,initialState,states:{id:{prompt,on,task?:{subject,description},maxAttempts?,loop?,terminal?}}}. State work is embedded atomically; terminal is completed or paused.",
     promptGuidelines: [
       "Use WorkflowCreate instead of TaskCreate when one goal has ordered phases, conditional outcomes, rework, or durable handoff—even if the user calls the phases tasks.",
-      "Embed phase work as task:{subject,description}; use concise outcomes and maxAttempts. Workflow work never uses TaskClaim/TaskUpdate.",
+      "Embed task work; every self-loop needs maxAttempts. Workflow work never uses TaskClaim/TaskUpdate.",
       "Persist in the correct owner: TaskUpdate for unfinished standalone tasks, LoopUpdate for dynamic loops, and WorkflowRevise or WorkflowTransition for workflow plan changes or completed phases.",
     ],
     parameters: Type.Object({
@@ -227,7 +246,8 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
           kind: "workflow", action: "create", tone: "error", summary: "Workflow runtime unavailable", expanded: [message],
         });
       }
-      const entry = getStore().create({ type: "dynamic" }, params.goal, {
+      const store = getStore();
+      const entry = store.create({ type: "dynamic" }, params.goal, {
         recurring: true,
         maxFires: params.maxFires ?? workflowDefaultMaxFires(parsed.definition),
         dynamic: { goal: params.goal, state: parsed.definition.initialState, iteration: 0 },
@@ -235,18 +255,17 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         actor,
       });
       getTriggerSystem().add(entry);
-      updateWidget();
       if (stateShouldWakeImmediately(entry)) onDynamicLoopActivated?.(entry);
-      const wake = entry.workflow && getActiveWorkflowStateLoop(entry.workflow)
-        ? "scheduled from the active state cadence."
-        : "the state instruction will be delivered when the agent becomes idle.";
+      const current = store.get(entry.id) ?? entry;
+      updateWidget();
+      const wake = workflowWakeDescription(current);
       return textResult(
-        `${formatWorkflowSummary(entry, `Workflow #${entry.id} created — ${entry.status}`)}\nWake: ${wake}`,
+        `${formatWorkflowSummary(current, `Workflow #${current.id} created — ${current.status}`)}\nWake: ${wake}`,
         workflowDisplayDetails({
-          entry,
+          entry: current,
           action: "create",
-          tone: "success",
-          summary: `Workflow #${entry.id} active · ${entry.workflow?.currentState ?? "unknown"} · attempt ${workflowAttemptLabel(entry)}`,
+          tone: current.status === "paused" ? "warning" : "success",
+          summary: `Workflow #${current.id} ${current.status} · ${current.workflow?.currentState ?? "unknown"} · attempt ${workflowAttemptLabel(current)}`,
           extra: [`Wake: ${wake}`],
         }),
       );
@@ -350,9 +369,10 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         getTriggerSystem().add(result.entry);
         onDynamicLoopActivated?.(result.entry);
       }
+      const current = getStore().get(result.entry.id) ?? result.entry;
       updateWidget();
       const lines = [
-        `Workflow #${params.id} revised: revision ${params.expectedRevision} → ${result.entry.workflow?.definitionRevision}`,
+        `Workflow #${params.id} revised: revision ${params.expectedRevision} → ${current.workflow?.definitionRevision}`,
         `Reason: ${params.reason.trim()}`,
       ];
       if (summary.addedStates.length > 0) lines.push(`Added states: ${summary.addedStates.join(", ")}`);
@@ -364,29 +384,31 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       if (summary.redirectedTransitions.length > 0) {
         lines.push(`Redirected edges: ${summary.redirectedTransitions.map((edge) => `${edge.from}.${edge.outcome}: ${edge.fromTarget} → ${edge.to}`).join("; ")}`);
       }
-      const execution = result.entry.workflow?.activeExecution;
+      const execution = current.workflow?.activeExecution;
       if (reissued) {
-        lines.push(`Current execution replaced: ${result.entry.workflow?.currentState}${execution ? ` (${execution.id})` : " (taskless)"}`);
-        if (result.entry.status === "paused") {
+        lines.push(`Current execution replaced: ${current.workflow?.currentState}${execution ? ` (${execution.id})` : " (taskless)"}`);
+        if (current.pause?.kind === "controller_limit") {
+          lines.push("Controller limit reached during activation; do not resume it to renew the exhausted budget.");
+        } else if (current.status === "paused") {
           lines.push(execution && !execution.lease
-            ? `Next: WorkflowClaim({ id: "${result.entry.id}" }), then resume through /loop to wake the fresh instruction.`
+            ? `Next: WorkflowClaim({ id: "${current.id}" }), then resume through /loop to wake the fresh instruction.`
             : "Next: resume through /loop to wake the fresh instruction; the superseded prompt will not run.");
         } else {
           lines.push(execution && !execution.lease
-            ? `Next: WorkflowClaim({ id: "${result.entry.id}" }), then follow the fresh instruction.`
+            ? `Next: WorkflowClaim({ id: "${current.id}" }), then follow the fresh instruction.`
             : "Next: follow the fresh instruction; do not execute the superseded prompt.");
         }
       } else {
-        lines.push(`Current execution preserved: ${result.entry.workflow?.currentState}${execution ? ` (${execution.id})` : ""}`);
+        lines.push(`Current execution preserved: ${current.workflow?.currentState}${execution ? ` (${execution.id})` : ""}`);
         lines.push("Next: complete the active work and transition through the revised outcome.");
       }
       return textResult(
         lines.join("\n"),
         workflowDisplayDetails({
-          entry: result.entry,
+          entry: current,
           action: "revise",
-          tone: "success",
-          summary: `Workflow #${params.id} revised · r${params.expectedRevision} → r${result.entry.workflow?.definitionRevision ?? "?"}`,
+          tone: current.status === "paused" ? "warning" : "success",
+          summary: `Workflow #${params.id} revised · r${params.expectedRevision} → r${current.workflow?.definitionRevision ?? "?"}`,
           extra: lines.slice(1),
         }),
       );
@@ -491,17 +513,20 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
           }),
         );
       }
-      const resumed = entry.status === "paused" ? store.resume(entry.id) ?? entry : entry;
-      getTriggerSystem().add(resumed);
-      if (stateShouldWakeImmediately(resumed)) onDynamicLoopActivated?.(resumed);
-      const transition = `${resumed.workflow?.lastTransition?.from ?? "?"} → ${resumed.workflow?.currentState ?? "?"}`;
+      if (entry.status === "active") {
+        getTriggerSystem().add(entry);
+        if (stateShouldWakeImmediately(entry)) onDynamicLoopActivated?.(entry);
+      }
+      const current = store.get(entry.id) ?? entry;
+      updateWidget();
+      const transition = `${current.workflow?.lastTransition?.from ?? "?"} → ${current.workflow?.currentState ?? "?"}`;
       return textResult(
-        `Workflow #${resumed.id} advanced: ${transition}\n${formatWorkflowSummary(resumed, `Workflow #${resumed.id} — ${resumed.status}`)}`,
+        `Workflow #${current.id} advanced: ${transition}\n${formatWorkflowSummary(current, `Workflow #${current.id} — ${current.status}`)}`,
         workflowDisplayDetails({
-          entry: resumed,
+          entry: current,
           action: "transition",
-          tone: "success",
-          summary: `Workflow #${resumed.id} advanced · ${transition}`,
+          tone: current.status === "paused" ? "warning" : "success",
+          summary: `Workflow #${current.id} advanced · ${transition}`,
         }),
       );
     },

@@ -1,11 +1,11 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type LoopReducerEffect, type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
+import { atMaxFires, type LoopReducerEffect, type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { applyOrchestrationEvent, type OrchestrationEvent, validateOrchestrationDefinition, validatePersistedOrchestration } from "./orchestration-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
 import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopExpiryDisposition, LoopExpiryReason, LoopFireOrigin, LoopPauseKind, LoopPauseRecord, LoopStoreData, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
 import { validateWorkflowDefinition } from "./workflow-definition.js";
-import { isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowAdmissionRecord, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
+import { atWorkflowStateFireLimit, isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowAdmissionRecord, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 import { validatePersistedWorkflowRevision, type WorkflowRevisionInput, type WorkflowRevisionSummary } from "./workflow-revision.js";
 
 const LOOPS_DIR = join(homedir(), ".pi", "loops");
@@ -97,6 +97,44 @@ export interface ExpiredLoopRecord {
   entry: LoopEntry;
   disposition: LoopExpiryDisposition;
   reason: LoopExpiryReason;
+}
+
+function workflowTransitionPausePolicy(
+  entry: LoopEntry,
+  input: WorkflowTransitionInput,
+): { error?: string; resumeAfterStateLimitExit: boolean } {
+  if (entry.status !== "paused") return { resumeAfterStateLimitExit: false };
+  if (!entry.workflow) return { error: `Loop #${entry.id} is not a workflow loop`, resumeAfterStateLimitExit: false };
+  if (entry.pause?.kind !== "controller_limit") {
+    const reason = entry.pause?.kind === "administrative"
+      ? "is administratively paused; resume it before transitioning"
+      : "is paused; inspect its pause cause before transitioning";
+    return { error: `Workflow #${entry.id} ${reason}`, resumeAfterStateLimitExit: false };
+  }
+
+  const workflow = entry.workflow;
+  const target = workflow.definition.states[workflow.currentState]?.on?.[input.outcome];
+  if (target === undefined) return { resumeAfterStateLimitExit: false };
+  if (target === workflow.currentState) {
+    return {
+      error: `Workflow #${entry.id} self-transition "${input.outcome}" cannot bypass the controller limit`,
+      resumeAfterStateLimitExit: false,
+    };
+  }
+  if (workflow.definition.states[target]?.terminal) return { resumeAfterStateLimitExit: false };
+  if (atMaxFires(entry) || !atWorkflowStateFireLimit(workflow)) {
+    return {
+      error: `Workflow #${entry.id} controller limit is exhausted; only a terminal transition may proceed`,
+      resumeAfterStateLimitExit: false,
+    };
+  }
+  if (!input.evidence?.trim()) {
+    return {
+      error: `Workflow #${entry.id} requires evidence to leave a state whose cadence limit is exhausted`,
+      resumeAfterStateLimitExit: false,
+    };
+  }
+  return { resumeAfterStateLimitExit: true };
 }
 
 const MAX_LOOPS = 25;
@@ -203,6 +241,10 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     return this.withLock(() => {
       const entry = this.entries.get(id);
       if (!entry || Date.now() >= entry.expiresAt || isTerminalWorkflowRun(entry.workflow)) return undefined;
+      if (entry.pause?.kind === "controller_limit"
+        && (atMaxFires(entry) || (entry.workflow && atWorkflowStateFireLimit(entry.workflow)))) {
+        return undefined;
+      }
       this.applyReducerEvent({
         type: "LOOP_RESUMED",
         at: Date.now(),
@@ -418,6 +460,8 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       )) {
         return { applied: false, error: `Workflow #${id} changed; inspect LoopList and retry the transition.` };
       }
+      const pausePolicy = workflowTransitionPausePolicy(entry, input);
+      if (pausePolicy.error) return { applied: false, error: pausePolicy.error };
 
       const result = transitionWorkflowRun(entry.workflow, input, Date.now());
       if (!result.applied) {
@@ -443,10 +487,10 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       if (result.terminal) {
         const terminalEntry: LoopEntry = {
           ...entry,
-          status: result.terminal === "paused" ? "paused" : entry.status,
-          ...(result.terminal === "paused"
-            ? { pause: { kind: "semantic_terminal" as const, at: result.run.stateEnteredAt } }
-            : {}),
+          status: result.terminal === "paused" ? "paused" : "active",
+          pause: result.terminal === "paused"
+            ? { kind: "semantic_terminal" as const, at: result.run.stateEnteredAt }
+            : undefined,
           updatedAt: result.run.stateEnteredAt,
           dynamic: {
             goal: entry.dynamic?.goal ?? entry.prompt,
@@ -461,6 +505,16 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           workflow: result.run,
         };
         return { entry: terminalEntry, applied: true, terminal: result.terminal };
+      }
+      if (pausePolicy.resumeAfterStateLimitExit) {
+        this.applyReducerEvent({
+          type: "LOOP_RESUMED",
+          at: Date.now(),
+          source: "tool",
+          entityType: "loop",
+          entityId: id,
+          payload: { id },
+        });
       }
       return { entry: this.entries.get(id), applied: true };
     });

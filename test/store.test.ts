@@ -528,6 +528,140 @@ describe("LoopStore (file-backed)", () => {
     });
   });
 
+  it.each([
+    ["administrative", "operator hold", "administratively paused"],
+    ["controller_limit", "loop fire cap reached", "cannot bypass the controller limit"],
+  ] as const)("rejects %s-paused self-transitions without changing persisted bytes", (kind, reason, expectedError) => {
+    const store1 = new LoopStore(filePath);
+    const workflow = store1.create({ type: "dynamic" }, "Await authority", {
+      recurring: true,
+      maxFires: 1,
+      workflow: {
+        version: 1,
+        initialState: "wait",
+        states: {
+          wait: { prompt: "Wait.", maxAttempts: 3, on: { still_missing: "wait", received: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+    store1.pause(workflow.id, kind, reason);
+    const before = readFileSync(filePath);
+
+    const result = store1.transitionWorkflow(workflow.id, {
+      outcome: "still_missing",
+      evidence: "No authority change.",
+    });
+
+    expect(result).toMatchObject({ applied: false, error: expect.stringContaining(expectedError) });
+    expect(readFileSync(filePath)).toEqual(before);
+    expect(store1.get(workflow.id)).toMatchObject({
+      status: "paused",
+      pause: { kind, reason },
+      workflow: { currentState: "wait", transitionSeq: 0, attemptsByState: { wait: 1 } },
+    });
+  });
+
+  it("atomically resumes only an evidenced exit from a state-local cadence cap", () => {
+    const store1 = new LoopStore(filePath);
+    const workflow = store1.create({ type: "dynamic" }, "Poll release", {
+      recurring: true,
+      maxFires: 10,
+      workflow: {
+        version: 1,
+        initialState: "poll",
+        states: {
+          poll: {
+            prompt: "Poll once.",
+            loop: { schedule: "* * * * *", maxFires: 1 },
+            on: { ready: "finish" },
+          },
+          finish: { prompt: "Finish the work.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+    store1.fire(workflow.id, "scheduler");
+    store1.pause(workflow.id, "controller_limit", "workflow state fire cap reached");
+    expect(store1.resume(workflow.id)).toBeUndefined();
+    expect(store1.get(workflow.id)?.status).toBe("paused");
+    const before = readFileSync(filePath);
+
+    expect(store1.transitionWorkflow(workflow.id, { outcome: "ready" })).toMatchObject({
+      applied: false,
+      error: expect.stringContaining("requires evidence"),
+    });
+    expect(readFileSync(filePath)).toEqual(before);
+
+    expect(store1.transitionWorkflow(workflow.id, {
+      outcome: "ready",
+      evidence: "Release endpoint reports ready.",
+    })).toMatchObject({ applied: true, entry: { status: "active" } });
+    expect(store1.get(workflow.id)).toMatchObject({
+      status: "active",
+      workflow: { currentState: "finish", transitionSeq: 1 },
+    });
+    expect(store1.get(workflow.id)?.pause).toBeUndefined();
+  });
+
+  it("rejects a nonterminal exit after the workflow-wide cap is exhausted", () => {
+    const store1 = new LoopStore(filePath);
+    const workflow = store1.create({ type: "dynamic" }, "Await release", {
+      recurring: true,
+      maxFires: 1,
+      workflow: {
+        version: 1,
+        initialState: "wait",
+        states: {
+          wait: { prompt: "Wait.", on: { ready: "finish" } },
+          finish: { prompt: "Finish.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+    store1.fire(workflow.id);
+    store1.pause(workflow.id, "controller_limit", "loop fire cap reached");
+    expect(store1.resume(workflow.id)).toBeUndefined();
+    const before = readFileSync(filePath);
+
+    expect(store1.transitionWorkflow(workflow.id, {
+      outcome: "ready",
+      evidence: "Release is ready.",
+    })).toMatchObject({
+      applied: false,
+      error: expect.stringContaining("only a terminal transition may proceed"),
+    });
+    expect(readFileSync(filePath)).toEqual(before);
+  });
+
+  it("allows a completed terminal transition after the workflow-wide cap", () => {
+    const store1 = new LoopStore(filePath);
+    const workflow = store1.create({ type: "dynamic" }, "Finish release", {
+      recurring: true,
+      maxFires: 1,
+      workflow: {
+        version: 1,
+        initialState: "finish",
+        states: {
+          finish: { prompt: "Finish.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+    store1.fire(workflow.id);
+    store1.pause(workflow.id, "controller_limit", "loop fire cap reached");
+
+    expect(store1.transitionWorkflow(workflow.id, {
+      outcome: "done",
+      evidence: "Acceptance checks passed before the cap.",
+    })).toMatchObject({
+      applied: true,
+      terminal: "completed",
+      entry: { status: "active", pause: undefined },
+    });
+    expect(store1.get(workflow.id)).toBeUndefined();
+  });
+
   it("persists dynamic loop state to disk", () => {
     const store1 = new LoopStore(filePath);
     store1.create({ type: "dynamic" }, "finish dynamic loop", {

@@ -1,9 +1,16 @@
 import { formatLastTransitionLines } from "../loop-format.js";
 import { displayRows, type ToolDisplayDetails, type ToolDisplayTone } from "../tools/tool-result.js";
 import type { LoopEntry } from "../types.js";
-import { getWorkflowOutcomeAvailability } from "../workflow-reducer.js";
+import { getWorkflowOutcomeAvailability, type WorkflowOutcomeAvailability } from "../workflow-reducer.js";
 
 export type WorkflowActivityStatus = "running" | "paused" | "idle" | "stopped";
+
+type UnavailableOutcome = WorkflowOutcomeAvailability["unavailable"][number];
+
+function unavailableOutcomeLabel(item: UnavailableOutcome): string {
+  if ("reason" in item) return `${item.outcome} (${item.targetState} unbounded self-loop)`;
+  return `${item.outcome} (${item.targetState} exhausted ${item.maxAttempts})`;
+}
 
 export interface WorkflowActivity {
   status: WorkflowActivityStatus;
@@ -161,7 +168,7 @@ export function formatWorkflowInspection(entry: LoopEntry): string {
     `Lease: ${workflowLeaseLabel(entry, now)}`,
     availability.available.length > 0 ? `Outcomes: ${availability.available.join(", ")}` : "Outcomes: none",
     availability.unavailable.length > 0
-      ? `Unavailable: ${availability.unavailable.map((item) => `${item.outcome} (${item.targetState} exhausted ${item.maxAttempts})`).join(", ")}`
+      ? `Unavailable: ${availability.unavailable.map(unavailableOutcomeLabel).join(", ")}`
       : undefined,
     state?.prompt ? `Instruction: ${state.prompt}` : undefined,
     workflow.waitingMonitor ? `Waiting on monitor #${workflow.waitingMonitor.monitorId}` : undefined,

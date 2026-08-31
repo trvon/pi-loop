@@ -14,11 +14,18 @@ import {
 } from "../notification-reducer.js";
 import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { DynamicLoopState, MonitorOutcome, OrchestrationState, Trigger, WorkflowRunState } from "../types.js";
-import { getWorkflowOutcomeAvailability } from "../workflow-reducer.js";
+import { getWorkflowOutcomeAvailability, type WorkflowOutcomeAvailability } from "../workflow-reducer.js";
 import type { LoopExpiredPayload } from "./loop-events.js";
 import { TASK_BACKLOG_ACTION_CONTRACT } from "./task-backlog-runtime.js";
 
 const MAX_ORCHESTRATION_WAKE_CHARS = 12_288;
+
+type UnavailableOutcome = WorkflowOutcomeAvailability["unavailable"][number];
+
+function unavailableOutcomeWakeLabel(item: UnavailableOutcome): string {
+  if ("reason" in item) return `${item.outcome} (unbounded self-loop)`;
+  return `${item.outcome} (attempt limit reached)`;
+}
 
 export interface LoopFireEvent {
   loopId: string;
@@ -212,7 +219,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
         );
       }
       if (availability.unavailable.length > 0) {
-        lines.push(`Unavailable outcomes: ${availability.unavailable.map((item) => item.outcome).join(", ")} (attempt limit reached)`);
+        lines.push(`Unavailable outcomes: ${availability.unavailable.map(unavailableOutcomeWakeLabel).join(", ")}`);
         if (outcomes.length === 0 && !state?.terminal) {
           lines.push(
             `Route gap: no declared outcome is currently available. Use WorkflowRevise with revision=${data.workflow.definitionRevision ?? 1}, state=${data.workflow.currentState}, transition sequence=${data.workflow.transitionSeq} to add a bounded recovery route when actionable work remains.`,

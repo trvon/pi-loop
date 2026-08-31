@@ -45,6 +45,7 @@ function validateTransitions(
   definition: WorkflowDefinition,
   stateId: string,
   state: WorkflowStateDefinition,
+  allowUnboundedSelfLoops: boolean,
 ): string | undefined {
   if (state.on !== undefined && (typeof state.on !== "object" || Array.isArray(state.on))) {
     return `State "${stateId}" transitions must be an object`;
@@ -55,6 +56,9 @@ function validateTransitions(
     if (typeof target !== "string") return `Transition "${stateId}.${outcome}" target must be a state ID`;
     if (!Object.hasOwn(definition.states, target)) {
       return `Transition "${stateId}.${outcome}" targets unknown state "${target}"`;
+    }
+    if (!allowUnboundedSelfLoops && target === stateId && state.maxAttempts === undefined) {
+      return `State "${stateId}" self-loop "${outcome}" requires maxAttempts`;
     }
   }
   return undefined;
@@ -75,6 +79,7 @@ function validateState(
   definition: WorkflowDefinition,
   stateId: string,
   state: WorkflowStateDefinition,
+  allowUnboundedSelfLoops: boolean,
 ): string | undefined {
   const keyError = validateWorkflowKey(stateId, "state");
   if (keyError) return keyError;
@@ -86,7 +91,7 @@ function validateState(
   return validateTerminal(stateId, state)
     ?? validateTask(stateId, state.task)
     ?? validateLoop(stateId, state.loop)
-    ?? validateTransitions(definition, stateId, state);
+    ?? validateTransitions(definition, stateId, state, allowUnboundedSelfLoops);
 }
 
 function definitionBytes(definition: WorkflowDefinition): number {
@@ -97,7 +102,10 @@ function definitionBytes(definition: WorkflowDefinition): number {
   }
 }
 
-export function validateWorkflowDefinition(definition: WorkflowDefinition): string | undefined {
+export function validateWorkflowDefinition(
+  definition: WorkflowDefinition,
+  options: { allowUnboundedSelfLoops?: boolean } = {},
+): string | undefined {
   if (definition?.version !== 1) return "Workflow version must be 1";
   if (!definition.states || typeof definition.states !== "object" || Array.isArray(definition.states)) {
     return "Workflow states must be an object";
@@ -114,7 +122,7 @@ export function validateWorkflowDefinition(definition: WorkflowDefinition): stri
     return `Initial state "${definition.initialState}" cannot be terminal`;
   }
   for (const [stateId, state] of Object.entries(definition.states)) {
-    const error = validateState(definition, stateId, state);
+    const error = validateState(definition, stateId, state, options.allowUnboundedSelfLoops === true);
     if (error) return error;
   }
   return undefined;

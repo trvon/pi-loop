@@ -61,7 +61,7 @@ export function validatePersistedWorkflowRevision(
 ): string | undefined {
   if (!Check(WorkflowDefinitionRevisionSchema, revision)) return "history record is invalid";
   if (revision.revision !== expectedRevision) return "history is not contiguous";
-  const definitionError = validateWorkflowDefinition(revision.definition);
+  const definitionError = validateWorkflowDefinition(revision.definition, { allowUnboundedSelfLoops: true });
   return definitionError ? `history definition is invalid: ${definitionError}` : undefined;
 }
 
