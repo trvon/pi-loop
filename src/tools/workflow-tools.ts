@@ -23,8 +23,10 @@ function revisionRecovery(code: WorkflowRevisionFailure["code"] | undefined): st
       return "The active runtime owns this phase; wait for handoff or inspect LoopList after its lease expires.";
     case "monitor_wait_active":
       return "Wait for the attached monitor to settle before revising the workflow.";
+    case "workflow_paused":
+      return "This pause cannot be bypassed by reissue; inspect its provenance and choose an explicit bounded recovery.";
     case "current_state_immutable":
-      return "Preserve current work; revise only future states or outgoing transitions.";
+      return "Use reissue_state to atomically replace active instructions, or revise only future states and outgoing transitions.";
     case "revision_limit_reached":
     case "terminal_workflow":
       return "This workflow no longer accepts revisions; inspect LoopList before choosing a new controller.";
@@ -298,10 +300,10 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     label: "WorkflowRevise",
     renderCall: renderToolCall("Workflow", (args) => `revise · #${String(toolArg(args, "id") ?? "?")} · r${String(toolArg(args, "expectedRevision") ?? "?")}`),
     renderResult: renderToolResult,
-    description: "Revise a running workflow with typed additive changes while preserving current work and history.",
+    description: "Revise a workflow through typed CAS changes; reissue_state safely replaces active instructions.",
     promptGuidelines: [
       "Non-task WorkflowRevise needs no claim. Pass exact CAS; use WorkflowClaim only for unowned/expired task work.",
-      "Persist actionable plan gaps with WorkflowRevise, then continue through the normal transition/claim; add_state + redirect_transition inserts prerequisites. Never create standalone tasks for workflow work.",
+      "For stale current work use reissue_state; it histories old execution and wakes fresh work. For prerequisites use add_state + redirect_transition. Never park under ignored instructions. Never create standalone tasks.",
     ],
     parameters: Type.Object({
       id: Type.String({ description: "Workflow loop ID" }),
@@ -310,7 +312,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       expectedTransitionSeq: Type.Integer({ description: "Transition sequence reported by LoopList", minimum: 0 }),
       reason: Type.String({ description: "Why this revision is required", minLength: 1, maxLength: 1000 }),
       changes: Type.Array(WorkflowRevisionChangeSchema, {
-        description: "Atomic typed changes: add_state, revise_state, add_transition, or redirect_transition",
+        description: "Typed atomic changes; reissue_state replaces current work",
         minItems: 1,
         maxItems: 64,
       }),
@@ -326,9 +328,11 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       if (!result.applied || !result.entry || !result.summary) {
         const failure = result.failure;
         const reason = result.error ?? "unknown revision error";
-        const next = revisionRecovery(failure?.code);
-        const message = `Workflow #${params.id} was not revised\nCode: ${failure?.code ?? "unknown"}\nReason: ${reason}\nNext: ${next}`;
         const current = getStore().get(params.id);
+        const next = failure?.code === "workflow_paused" && current?.pause?.kind === "controller_limit"
+          ? "The controller fire cap is exhausted; inspect it and create a new bounded workflow if work must continue. Resuming does not renew the cap."
+          : revisionRecovery(failure?.code);
+        const message = `Workflow #${params.id} was not revised\nCode: ${failure?.code ?? "unknown"}\nReason: ${reason}\nNext: ${next}`;
         return textResult(message, current?.workflow
           ? workflowDisplayDetails({
               entry: current,
@@ -339,14 +343,21 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
             })
           : { kind: "workflow", action: "revise", tone: "error", summary: `Workflow #${params.id} revision rejected`, expanded: [`Reason: ${reason}`, `Next: ${next}`] });
       }
-      updateWidget();
       const summary = result.summary;
+      const reissued = summary.reissuedStates.length > 0;
+      if (reissued && result.entry.status === "active") {
+        getTriggerSystem().remove(result.entry.id);
+        getTriggerSystem().add(result.entry);
+        onDynamicLoopActivated?.(result.entry);
+      }
+      updateWidget();
       const lines = [
         `Workflow #${params.id} revised: revision ${params.expectedRevision} → ${result.entry.workflow?.definitionRevision}`,
         `Reason: ${params.reason.trim()}`,
       ];
       if (summary.addedStates.length > 0) lines.push(`Added states: ${summary.addedStates.join(", ")}`);
       if (summary.revisedStates.length > 0) lines.push(`Revised state work: ${summary.revisedStates.join(", ")}`);
+      if (summary.reissuedStates.length > 0) lines.push(`Reissued active state: ${summary.reissuedStates.join(", ")}`);
       if (summary.addedTransitions.length > 0) {
         lines.push(`Added edges: ${summary.addedTransitions.map((edge) => `${edge.from}.${edge.outcome} → ${edge.to}`).join("; ")}`);
       }
@@ -354,8 +365,21 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         lines.push(`Redirected edges: ${summary.redirectedTransitions.map((edge) => `${edge.from}.${edge.outcome}: ${edge.fromTarget} → ${edge.to}`).join("; ")}`);
       }
       const execution = result.entry.workflow?.activeExecution;
-      lines.push(`Current execution preserved: ${result.entry.workflow?.currentState}${execution ? ` (${execution.id})` : ""}`);
-      lines.push("Next: complete the active work and transition through the revised outcome.");
+      if (reissued) {
+        lines.push(`Current execution replaced: ${result.entry.workflow?.currentState}${execution ? ` (${execution.id})` : " (taskless)"}`);
+        if (result.entry.status === "paused") {
+          lines.push(execution && !execution.lease
+            ? `Next: WorkflowClaim({ id: "${result.entry.id}" }), then resume through /loop to wake the fresh instruction.`
+            : "Next: resume through /loop to wake the fresh instruction; the superseded prompt will not run.");
+        } else {
+          lines.push(execution && !execution.lease
+            ? `Next: WorkflowClaim({ id: "${result.entry.id}" }), then follow the fresh instruction.`
+            : "Next: follow the fresh instruction; do not execute the superseded prompt.");
+        }
+      } else {
+        lines.push(`Current execution preserved: ${result.entry.workflow?.currentState}${execution ? ` (${execution.id})` : ""}`);
+        lines.push("Next: complete the active work and transition through the revised outcome.");
+      }
       return textResult(
         lines.join("\n"),
         workflowDisplayDetails({

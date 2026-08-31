@@ -318,6 +318,25 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
 
   if (event.type === "LOOP_WORKFLOW_REVISED") {
     if (!loop.workflow) return { state, effects: [] };
+    const currentWorkflowState = loop.workflow.definition.states[loop.workflow.currentState];
+    const reissuesCurrentState = event.payload.changes.some((change) => change.op === "reissue_state");
+    if (
+      loop.status === "paused"
+      && loop.pause?.kind !== "administrative"
+      && !currentWorkflowState?.terminal
+      && reissuesCurrentState
+    ) {
+      const message = "This paused workflow cannot replace current work; inspect its pause provenance before choosing a new controller.";
+      return {
+        state,
+        effects: [{
+          type: "WORKFLOW_REVISION_REJECTED",
+          entityType: "loop",
+          entityId: id,
+          payload: { error: message, failure: { code: "workflow_paused", message } },
+        }],
+      };
+    }
     const result = reviseWorkflowRun(loop.workflow, {
       expectedRevision: event.payload.expectedRevision,
       expectedState: event.payload.expectedState,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkflowDefinition } from "../src/types.js";
+import type { WorkflowDefinition, WorkflowRevisionChange } from "../src/types.js";
 import { validateWorkflowDefinition } from "../src/workflow-definition.js";
 import { createWorkflowRun, transitionWorkflowRun } from "../src/workflow-reducer.js";
 import { MAX_WORKFLOW_REVISIONS, reviseWorkflowRun } from "../src/workflow-revision.js";
@@ -355,6 +355,203 @@ describe("workflow reducer", () => {
     taskDefinition.states.implement.prompt = "Mutated original";
     expect(result.run.revisionHistory[0].changes[0]).toMatchObject({ state: { prompt: "Validate." } });
     expect(result.run.revisionHistory[0].definition.states.implement.prompt).toBe("Implement.");
+  });
+
+  it("atomically reissues the active state with fresh instructions under the current lease", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "open-pr",
+      states: {
+        "open-pr": {
+          prompt: "Push now and open the PR.",
+          task: { subject: "Open PR", description: "Push now and open the PR." },
+          on: { opened: "done" },
+        },
+        done: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, actor);
+    run.stateFireCounts["open-pr"] = 3;
+    const before = structuredClone(run);
+    const originalExecution = structuredClone(run.activeExecution);
+    const originalLease = structuredClone(run.activeExecution?.lease);
+    const changes: WorkflowRevisionChange[] = [{
+      op: "reissue_state",
+      stateId: "open-pr",
+      prompt: "Wait until the Brick work is done; do not push yet.",
+      task: { subject: "Wait for Brick", description: "Hold the branch until the user confirms Brick is done." },
+    }];
+
+    const result = reviseWorkflowRun(run, {
+      expectedRevision: 1,
+      expectedState: "open-pr",
+      expectedTransitionSeq: 0,
+      reason: "The user deferred the push until Brick work finishes.",
+      changes,
+      actor,
+    }, 200);
+    if (!result.applied) throw new Error(result.error);
+
+    expect(result.run).toMatchObject({
+      definitionRevision: 2,
+      currentState: "open-pr",
+      transitionSeq: 0,
+      stateEnteredAt: 200,
+      stateFireCounts: { "open-pr": 0 },
+      definition: {
+        states: {
+          "open-pr": {
+            prompt: "Wait until the Brick work is done; do not push yet.",
+            task: { subject: "Wait for Brick", description: "Hold the branch until the user confirms Brick is done." },
+          },
+        },
+      },
+      activeExecution: {
+        id: "open-pr:0:r2",
+        stateId: "open-pr",
+        transitionSeq: 0,
+        status: "active",
+        subject: "Wait for Brick",
+        description: "Hold the branch until the user confirms Brick is done.",
+        lease: originalLease,
+      },
+      executionHistory: [{
+        ...originalExecution,
+        status: "cancelled",
+        updatedAt: 200,
+        settledAt: 200,
+        evidence: "Reissued: The user deferred the push until Brick work finishes.",
+        lease: undefined,
+      }],
+    });
+    expect(result.run.revisionHistory[0]).toMatchObject({
+      revision: 1,
+      definition: taskDefinition,
+      changes,
+    });
+    expect(run).toEqual(before);
+  });
+
+  it("can reissue taskless current instructions into fresh unowned work", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const taskless: WorkflowDefinition = {
+      version: 1,
+      initialState: "wait",
+      states: {
+        wait: { prompt: "Wait.", on: { ready: "done" } },
+        done: { prompt: "Done.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskless, 100);
+    const result = reviseWorkflowRun(run, {
+      expectedRevision: 1,
+      expectedState: "wait",
+      expectedTransitionSeq: 0,
+      reason: "New work is now actionable.",
+      changes: [{
+        op: "reissue_state",
+        stateId: "wait",
+        prompt: "Implement the now-ready change.",
+        task: { subject: "Implement", description: "Apply the ready change." },
+      }],
+      actor,
+    }, 200);
+    if (!result.applied) throw new Error(result.error);
+
+    expect(result.summary.reissuedStates).toEqual(["wait"]);
+    expect(result.run).toMatchObject({
+      stateEnteredAt: 200,
+      transitionSeq: 0,
+      activeExecution: {
+        id: "wait:0:r2",
+        subject: "Implement",
+        lease: undefined,
+      },
+    });
+    expect(result.run.executionHistory).toBeUndefined();
+  });
+
+  it("validates reissue limits against reset fires and the unchanged current attempt", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const limited: WorkflowDefinition = {
+      version: 1,
+      initialState: "wait",
+      states: {
+        wait: {
+          prompt: "Wait.",
+          loop: { schedule: "*/5 * * * *", maxFires: 10 },
+          on: { done: "complete" },
+          maxAttempts: 1,
+        },
+        complete: { prompt: "Complete.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(limited, 100);
+    run.stateFireCounts.wait = 5;
+    const accepted = reviseWorkflowRun(run, {
+      expectedRevision: 1,
+      expectedState: "wait",
+      expectedTransitionSeq: 0,
+      reason: "Restart the current instruction window.",
+      changes: [{
+        op: "reissue_state",
+        stateId: "wait",
+        prompt: "Wait for new evidence.",
+        maxAttempts: 1,
+        loop: { schedule: "*/10 * * * *", maxFires: 3 },
+      }],
+      actor,
+    }, 200);
+    expect(accepted).toMatchObject({
+      applied: true,
+      run: { attemptsByState: { wait: 1 }, stateFireCounts: { wait: 0 } },
+    });
+
+    run.attemptsByState.wait = 2;
+    expect(reviseWorkflowRun(run, {
+      expectedRevision: 1,
+      expectedState: "wait",
+      expectedTransitionSeq: 0,
+      reason: "Do not erase attempt history.",
+      changes: [{ op: "reissue_state", stateId: "wait", prompt: "Changed.", maxAttempts: 1 }],
+      actor,
+    }, 200)).toMatchObject({ applied: false, failure: { code: "invalid_patch" } });
+  });
+
+  it("rejects reissuing a non-current state or combining two changes to active work", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const taskDefinition: WorkflowDefinition = {
+      version: 1,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", task: { subject: "Work", description: "Do it." }, on: { done: "future" } },
+        future: { prompt: "Future.", on: { done: "complete" } },
+        complete: { prompt: "Complete.", terminal: "completed" },
+      },
+    };
+    const run = createWorkflowRun(taskDefinition, 100, actor);
+    const before = structuredClone(run);
+    const base = {
+      expectedRevision: 1,
+      expectedState: "work",
+      expectedTransitionSeq: 0,
+      reason: "Replace instructions.",
+      actor,
+    };
+
+    expect(reviseWorkflowRun(run, {
+      ...base,
+      changes: [{ op: "reissue_state", stateId: "future", prompt: "Changed." }],
+    }, 200)).toMatchObject({ applied: false, failure: { code: "state_conflict" } });
+    expect(reviseWorkflowRun(run, {
+      ...base,
+      changes: [
+        { op: "reissue_state", stateId: "work", prompt: "Changed." },
+        { op: "revise_state", stateId: "work", prompt: "Changed twice." },
+      ],
+    }, 200)).toMatchObject({ applied: false, failure: { code: "invalid_patch" } });
+    expect(run).toEqual(before);
   });
 
   it("rejects stale, unauthorized, destructive, and disconnected revisions without mutation", () => {

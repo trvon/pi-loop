@@ -196,6 +196,14 @@ export type WorkflowRevisionChange =
       maxAttempts?: number;
     }
   | {
+      op: "reissue_state";
+      stateId: string;
+      prompt: string;
+      task?: WorkflowTaskDefinition;
+      loop?: WorkflowStateLoopDefinition;
+      maxAttempts?: number;
+    }
+  | {
       op: "add_transition";
       from: string;
       outcome: string;
@@ -224,6 +232,7 @@ export type WorkflowRevisionFailureCode =
   | "revision_conflict"
   | "run_conflict"
   | "terminal_workflow"
+  | "workflow_paused"
   | "monitor_wait_active"
   | "revision_limit_reached"
   | "actor_required"

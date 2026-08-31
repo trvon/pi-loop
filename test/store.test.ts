@@ -801,6 +801,106 @@ describe("LoopStore (file-backed)", () => {
     });
   });
 
+  it("persists reissued instructions, cancelled work, and the replacement lease atomically", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const store = new LoopStore(filePath);
+    const entry = store.create({ type: "dynamic" }, "Open the PR", {
+      recurring: true,
+      actor,
+      workflow: {
+        version: 1,
+        initialState: "open-pr",
+        states: {
+          "open-pr": {
+            prompt: "Push now.",
+            task: { subject: "Open PR", description: "Push now." },
+            on: { opened: "done" },
+          },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+    const lease = structuredClone(entry.workflow?.activeExecution?.lease);
+
+    expect(store.reviseWorkflow(entry.id, {
+      expectedRevision: 1,
+      expectedState: "open-pr",
+      expectedTransitionSeq: 0,
+      reason: "Wait for Brick.",
+      changes: [{
+        op: "reissue_state",
+        stateId: "open-pr",
+        prompt: "Wait for Brick; do not push.",
+        task: { subject: "Wait", description: "Wait for user confirmation." },
+      }],
+    }, actor)).toMatchObject({ applied: true, summary: { reissuedStates: ["open-pr"] } });
+    expect(store.transitionWorkflow(entry.id, { outcome: "opened", actor }, {
+      currentState: "open-pr",
+      transitionSeq: 0,
+      definitionRevision: 2,
+      activeExecutionId: "open-pr:0",
+    })).toMatchObject({ applied: false, error: expect.stringContaining("changed") });
+
+    const restarted = new LoopStore(filePath);
+    expect(restarted.get(entry.id)?.workflow).toMatchObject({
+      definitionRevision: 2,
+      definition: { states: { "open-pr": { prompt: "Wait for Brick; do not push." } } },
+      activeExecution: { id: "open-pr:0:r2", subject: "Wait", lease },
+      executionHistory: [{ id: "open-pr:0", status: "cancelled" }],
+      revisionHistory: [{ revision: 1, reason: "Wait for Brick." }],
+    });
+    expect(restarted.get(entry.id)?.workflow?.executionHistory?.[0]?.lease).toBeUndefined();
+  });
+
+  it("reissues through administrative pauses but rejects exhausted controllers", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const store = new LoopStore(filePath);
+    const entry = store.create({ type: "dynamic" }, "Paused work", {
+      recurring: true,
+      actor,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: {
+            prompt: "Work.",
+            task: { subject: "Work", description: "Do it." },
+            on: { done: "complete" },
+          },
+          complete: { prompt: "Complete.", terminal: "completed" },
+        },
+      },
+    });
+    store.pause(entry.id, "administrative", "Hold.");
+    const beforeBytes = readFileSync(filePath, "utf8");
+
+    expect(store.reviseWorkflow(entry.id, {
+      expectedRevision: 1,
+      expectedState: "work",
+      expectedTransitionSeq: 0,
+      reason: "Replace paused instructions.",
+      changes: [{ op: "reissue_state", stateId: "work", prompt: "Changed." }],
+    }, actor)).toMatchObject({ applied: true, summary: { reissuedStates: ["work"] } });
+    expect(store.get(entry.id)).toMatchObject({
+      status: "paused",
+      workflow: { definitionRevision: 2, activeExecution: { id: "work:0:r2" } },
+    });
+    expect(readFileSync(filePath, "utf8")).not.toBe(beforeBytes);
+
+    store.resume(entry.id);
+    store.pause(entry.id, "controller_limit", "loop fire cap reached");
+    const cappedBytes = readFileSync(filePath, "utf8");
+    expect(store.reviseWorkflow(entry.id, {
+      expectedRevision: 3,
+      expectedState: "work",
+      expectedTransitionSeq: 0,
+      reason: "Do not renew bounded work implicitly.",
+      changes: [{ op: "reissue_state", stateId: "work", prompt: "Changed again." }],
+    }, actor)).toMatchObject({ applied: false, failure: { code: "workflow_paused" } });
+    expect(store.get(entry.id)?.workflow?.definitionRevision).toBe(2);
+    expect(readFileSync(filePath, "utf8")).toBe(cappedBytes);
+  });
+
   it("does not arm a persisted legacy active terminal workflow after restart", () => {
     const store1 = new LoopStore(filePath);
     const workflow = store1.create({ type: "dynamic" }, "Finish", {

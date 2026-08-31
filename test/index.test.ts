@@ -26,7 +26,7 @@ function clearTestLoopStore(sessionId: string): void {
 }
 
 describe("workflow runtime wiring", () => {
-  const sessionIds = ["workflow-cap-session", "workflow-task-session"];
+  const sessionIds = ["workflow-cap-session", "workflow-task-session", "workflow-reissue-session"];
   beforeEach(() => sessionIds.forEach(clearTestLoopStore));
   afterEach(() => sessionIds.forEach(clearTestLoopStore));
   it("pauses an immediately fired workflow state at its local fire cap with recovery guidance", async () => {
@@ -66,6 +66,78 @@ describe("workflow runtime wiring", () => {
     expect(wake?.message.content).toContain("has reached its fire cap; this workflow is paused and no next cadence is scheduled");
     expect(wake?.message.content).toContain("Otherwise add a bounded recovery state/route with WorkflowRevise, then transition and claim it");
     expect(wake?.message.content).not.toContain("leave the workflow active for its next cadence");
+  });
+
+  it("persists reissued work and delivers only the fresh workflow instruction", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
+    extension(pi as any);
+    await flushAsync();
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "workflow-reissue-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) {
+      await handler(null, ctx);
+    }
+
+    const definition = JSON.stringify({
+      version: 1,
+      initialState: "open-pr",
+      states: {
+        "open-pr": {
+          prompt: "Push now and open the PR.",
+          task: { subject: "Open PR", description: "Push now." },
+          on: { opened: "complete" },
+        },
+        complete: { prompt: "Finished.", terminal: "completed" },
+      },
+    });
+    for (const handler of extensionHandlers.get("agent_start") ?? []) {
+      await handler(null, ctx);
+    }
+    await toolMap.get("WorkflowCreate")!.execute!("create", { goal: "Open the PR", definition });
+    await flushAsync();
+    expect(sentMessages).toHaveLength(0);
+
+    const revised = await toolMap.get("WorkflowRevise")!.execute!("reissue", {
+      id: "1",
+      expectedRevision: 1,
+      expectedState: "open-pr",
+      expectedTransitionSeq: 0,
+      reason: "Wait for Brick.",
+      changes: [{
+        op: "reissue_state",
+        stateId: "open-pr",
+        prompt: "Wait for Brick; do not push yet.",
+        task: { subject: "Wait for Brick", description: "Hold until the user confirms Brick is done." },
+      }],
+    });
+    expect(sentMessages).toHaveLength(0);
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, ctx);
+    }
+    await flushAsync();
+
+    expect(revised.content[0].text).toContain("Current execution replaced: open-pr (open-pr:0:r2)");
+    expect(sentMessages).toHaveLength(1);
+    const wake = sentMessages.find((item) => item.message.content.includes("Loop #1 fired (workflow)"));
+    expect(wake?.message.content).toContain("Definition revision: 2");
+    expect(wake?.message.content).toContain("State instructions: Wait for Brick; do not push yet.");
+    expect(wake?.message.content).toContain("Active workflow work: Wait for Brick (open-pr:0:r2)");
+    expect(wake?.message.content).not.toContain("State instructions: Push now and open the PR.");
+
+    const storePath = resolveLoopStorePath({ loopScope: "session" }, "workflow-reissue-session");
+    expect(storePath).toBeDefined();
+    const persisted = new LoopStore(storePath! as string).get("1");
+    expect(persisted?.workflow).toMatchObject({
+      definitionRevision: 2,
+      activeExecution: { id: "open-pr:0:r2", subject: "Wait for Brick" },
+      executionHistory: [{ id: "open-pr:0", status: "cancelled" }],
+    });
+    const taskPath = resolveTaskStorePath({ loopScope: "session" }, "workflow-reissue-session");
+    expect(new TaskStore(taskPath).list()).toEqual([]);
   });
 
   it("creates and completes task-bearing workflow work", async () => {
