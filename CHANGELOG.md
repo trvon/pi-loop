@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.11](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.10...pi-loop-v0.7.11) (2026-09-01)
+
+
+### Features
+
+* **workflow:** add reissue_state ([#71](https://github.com/trvon/pi-loop/issues/71)) ([50bda9e](https://github.com/trvon/pi-loop/commit/50bda9edf1835f1e043d2e1738084e1455124df0))
+
+
+### Bug Fixes
+
+* **test:** absorb scheduler jitter in hybrid cap test ([#73](https://github.com/trvon/pi-loop/issues/73)) ([77f06c1](https://github.com/trvon/pi-loop/commit/77f06c190dca74777812f901794a7ff512c074ac))
+* **workflow:** stop unbounded self-loop churn ([#74](https://github.com/trvon/pi-loop/issues/74)) ([11a1fcc](https://github.com/trvon/pi-loop/commit/11a1fccc4c72447eb8313116e8ecdab65d06ed51))
+
 ## [0.7.10](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.9...pi-loop-v0.7.10) (2026-08-30)
 
 
