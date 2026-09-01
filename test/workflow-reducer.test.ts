@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { WorkflowDefinition, WorkflowRevisionChange } from "../src/types.js";
 import { validateWorkflowDefinition } from "../src/workflow-definition.js";
-import { createWorkflowRun, transitionWorkflowRun } from "../src/workflow-reducer.js";
-import { MAX_WORKFLOW_REVISIONS, reviseWorkflowRun } from "../src/workflow-revision.js";
+import { createWorkflowRun, getWorkflowOutcomeAvailability, transitionWorkflowRun } from "../src/workflow-reducer.js";
+import { MAX_WORKFLOW_REVISIONS, reviseWorkflowRun, validatePersistedWorkflowRevision } from "../src/workflow-revision.js";
 
 const definition: WorkflowDefinition = {
   version: 1,
@@ -207,6 +207,44 @@ describe("workflow reducer", () => {
       applied: false,
       error: 'Outcome "ship_it" is not allowed from state "investigate"',
     });
+  });
+
+  it("rejects unbounded self-loops in new and legacy workflow definitions", () => {
+    const unbounded: WorkflowDefinition = {
+      version: 1,
+      initialState: "wait",
+      states: {
+        wait: { prompt: "Wait for authority.", on: { still_missing: "wait", received: "done" } },
+        done: { prompt: "Report.", terminal: "completed" },
+      },
+    };
+
+    expect(validateWorkflowDefinition(unbounded)).toBe(
+      'State "wait" self-loop "still_missing" requires maxAttempts',
+    );
+    expect(validatePersistedWorkflowRevision({
+      revision: 1,
+      definition: unbounded,
+      reason: "Legacy definition",
+      supersededAt: 100,
+      supersededBy: { sessionId: "legacy-session", runtimeId: "legacy-runtime" },
+      changes: [{ op: "revise_state", stateId: "done", prompt: "Report." }],
+    }, 1)).toBeUndefined();
+    const run = createWorkflowRun(unbounded, 100);
+    expect(getWorkflowOutcomeAvailability(run)).toEqual({
+      available: ["received"],
+      unavailable: [{ outcome: "still_missing", targetState: "wait", reason: "unbounded_self_loop" }],
+    });
+    expect(transitionWorkflowRun(run, { outcome: "still_missing", evidence: "No authority change." }, 200)).toEqual({
+      applied: false,
+      error: 'State "wait" self-loop "still_missing" is unbounded; revise it with maxAttempts before retrying',
+      failure: {
+        code: "unbounded_self_loop",
+        outcome: "still_missing",
+        targetState: "wait",
+      },
+    });
+    expect(run).toMatchObject({ currentState: "wait", transitionSeq: 0, attemptsByState: { wait: 1 } });
   });
 
   it("returns structured target exhaustion without hiding unrelated outcomes", () => {

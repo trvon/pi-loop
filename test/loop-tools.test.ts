@@ -524,6 +524,24 @@ describe("Workflow tools", () => {
     expect(h.store.list()).toHaveLength(0);
   });
 
+  it("rejects a self-loop without maxAttempts", async () => {
+    const out = await h.text("WorkflowCreate", {
+      goal: "Await authority",
+      definition: JSON.stringify({
+        version: 1,
+        initialState: "wait",
+        states: {
+          wait: { prompt: "Wait.", on: { still_missing: "wait", received: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      }),
+    });
+
+    expect(out).toContain('State "wait" self-loop "still_missing" requires maxAttempts');
+    expect(h.store.list()).toHaveLength(0);
+    expect((h.toolMap.get("WorkflowCreate") as any).promptGuidelines.join("\n")).toContain("every self-loop needs maxAttempts");
+  });
+
   it("creates and activates a workflow controller", async () => {
     const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition });
     expect(out).toContain("Workflow #1 created — active");
@@ -531,6 +549,27 @@ describe("Workflow tools", () => {
     expect(h.store.get("1")).toMatchObject({ trigger: { type: "dynamic" }, workflow: { currentState: "investigate", transitionSeq: 0 } });
     expect(h.triggerSystem.add).toHaveBeenCalledWith(h.store.get("1"));
     expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(h.store.get("1"));
+  });
+
+  it("renders authoritative paused state when creation activation reaches its cap", async () => {
+    h.onDynamicLoopActivated.mockImplementationOnce((entry) => {
+      h.store.fire(entry.id);
+      h.store.pause(entry.id, "controller_limit", "loop fire cap reached");
+    });
+
+    const result = await h.result("WorkflowCreate", {
+      goal: "Fix the regression",
+      definition: taskDefinition,
+      maxFires: 1,
+    });
+    const out = result.content[0].text as string;
+
+    expect(h.store.get("1")?.status).toBe("paused");
+    expect(out).toContain("Workflow #1 created — paused");
+    expect(out).toContain("no next wake is scheduled");
+    expect(out).not.toContain("Next: WorkflowClaim");
+    expect(result.details).toMatchObject({ tone: "warning" });
+    expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
   });
 
   it("renders workflow lifecycle results as compact expandable rows", async () => {
@@ -823,6 +862,33 @@ describe("Workflow tools", () => {
     expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(entry);
   });
 
+  it("renders authoritative paused state when reissue activation reaches its cap", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition, maxFires: 1 });
+    h.triggerSystem.remove.mockClear();
+    h.onDynamicLoopActivated.mockClear();
+    h.onDynamicLoopActivated.mockImplementationOnce((entry) => {
+      h.store.fire(entry.id);
+      h.store.pause(entry.id, "controller_limit", "loop fire cap reached");
+    });
+
+    const result = await h.result("WorkflowRevise", {
+      id: "1",
+      expectedRevision: 1,
+      expectedState: "investigate",
+      expectedTransitionSeq: 0,
+      reason: "Replace stale instructions.",
+      changes: [{ op: "reissue_state", stateId: "investigate", prompt: "Use the fresh instruction." }],
+    });
+    const out = result.content[0].text as string;
+
+    expect(h.store.get("1")?.status).toBe("paused");
+    expect(out).toContain("Controller limit reached during activation");
+    expect(out).not.toContain("resume through /loop");
+    expect(result.details).toMatchObject({ tone: "warning" });
+    expect(h.triggerSystem.remove).toHaveBeenCalledTimes(2);
+    expect(h.triggerSystem.remove).toHaveBeenLastCalledWith("1");
+  });
+
   it("requires the current execution lease before revising and preserves it after claim", async () => {
     await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     await h.text("WorkflowTransition", { id: "1", outcome: "found", evidence: "Investigation complete." });
@@ -926,6 +992,112 @@ describe("Workflow tools", () => {
     expect(message).toContain("Route gap: all declared outcomes are unavailable");
     expect(message).toContain("use WorkflowRevise");
     expect(message).not.toContain("Next: WorkflowTransition");
+  });
+
+  it("routes a legacy unbounded self-loop rejection to revision without another transition", () => {
+    const entry = {
+      id: "1",
+      prompt: "Await authority",
+      trigger: { type: "dynamic" },
+      status: "active",
+      recurring: true,
+      createdAt: 1,
+      updatedAt: 1,
+      expiresAt: 2,
+      workflow: {
+        definition: {
+          version: 1,
+          initialState: "wait",
+          states: {
+            wait: { prompt: "Wait.", on: { still_missing: "wait", received: "done" } },
+            done: { prompt: "Done.", terminal: "completed" },
+          },
+        },
+        definitionRevision: 1,
+        revisionHistory: [],
+        currentState: "wait",
+        transitionSeq: 0,
+        stateEnteredAt: 1,
+        attemptsByState: { wait: 1 },
+        stateFireCounts: {},
+      },
+    } as any;
+
+    const message = formatWorkflowSummary(entry, "heading", {
+      code: "unbounded_self_loop",
+      outcome: "still_missing",
+      targetState: "wait",
+    });
+
+    expect(message).toContain("Unsafe self-loop");
+    expect(message).toContain("Use WorkflowRevise to add maxAttempts or redirect the outcome");
+    expect(message).not.toContain("Next: WorkflowTransition");
+  });
+
+  it("does not let WorkflowTransition bypass a controller-limit self-loop pause", async () => {
+    const boundedSelfLoop = JSON.stringify({
+      version: 1,
+      initialState: "wait",
+      states: {
+        wait: {
+          prompt: "Wait for authority.",
+          maxAttempts: 3,
+          on: { still_missing: "wait", received: "done" },
+        },
+        done: { prompt: "Report.", terminal: "completed" },
+      },
+    });
+    await h.text("WorkflowCreate", { goal: "Await authority", definition: boundedSelfLoop, maxFires: 1 });
+    h.store.pause("1", "controller_limit", "loop fire cap reached");
+    h.triggerSystem.add.mockClear();
+    h.triggerSystem.remove.mockClear();
+    h.onDynamicLoopActivated.mockClear();
+
+    const out = await h.text("WorkflowTransition", {
+      id: "1",
+      outcome: "still_missing",
+      evidence: "No authority change.",
+    });
+
+    expect(out).toContain("did not transition");
+    expect(out).toContain("cannot bypass the controller limit");
+    expect(out).toContain("Pause cause: controller_limit");
+    expect(out).not.toContain("Next: WorkflowTransition");
+    expect(h.store.get("1")).toMatchObject({
+      status: "paused",
+      workflow: { currentState: "wait", transitionSeq: 0, attemptsByState: { wait: 1 } },
+    });
+    expect(h.triggerSystem.add).not.toHaveBeenCalled();
+    expect(h.triggerSystem.remove).not.toHaveBeenCalled();
+    expect(h.onDynamicLoopActivated).not.toHaveBeenCalled();
+  });
+
+  it("renders authoritative paused state after synchronous activation", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    h.triggerSystem.remove.mockClear();
+    h.onDynamicLoopActivated.mockClear();
+    h.onDynamicLoopActivated.mockImplementationOnce((entry) => {
+      h.store.pause(entry.id, "controller_limit", "loop fire cap reached");
+    });
+
+    const result = await h.result("WorkflowTransition", {
+      id: "1",
+      outcome: "found",
+      evidence: "Reproduced locally.",
+    });
+    const out = result.content[0].text as string;
+
+    expect(h.store.get("1")).toMatchObject({ status: "paused", workflow: { currentState: "fix", transitionSeq: 1 } });
+    expect(out).toContain("Workflow #1 — paused");
+    expect(out).toContain("Pause cause: controller_limit");
+    expect(out).not.toContain("Next: WorkflowClaim");
+    expect(out).not.toContain("Next: WorkflowTransition");
+    expect(result.details).toMatchObject({
+      tone: "warning",
+      expanded: expect.arrayContaining([expect.stringContaining("Activity: paused")]),
+    });
+    expect(h.triggerSystem.remove).toHaveBeenCalledTimes(2);
+    expect(h.triggerSystem.remove).toHaveBeenLastCalledWith("1");
   });
 
   it("queues the next wake after transitioning into an ordinary no-loop phase", async () => {

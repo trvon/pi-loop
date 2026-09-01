@@ -59,6 +59,46 @@ describe("workflow properties", () => {
     );
   });
 
+  it("never advances a self-loop beyond its declared attempt bound", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 20 }),
+        fc.integer({ min: 0, max: 50 }),
+        (maxAttempts, requestedTransitions) => {
+          const bounded: WorkflowDefinition = {
+            version: 1,
+            initialState: "retry",
+            states: {
+              retry: { prompt: "Retry.", maxAttempts, on: { again: "retry", done: "done" } },
+              done: { prompt: "Done.", terminal: "completed" },
+            },
+          };
+          let run = createWorkflowRun(bounded, 0);
+          let applied = 0;
+
+          for (let index = 0; index < requestedTransitions; index++) {
+            const before = structuredClone(run);
+            const result = transitionWorkflowRun(run, { outcome: "again" }, index + 1);
+            if (applied < maxAttempts - 1) {
+              expect(result.applied).toBe(true);
+              if (!result.applied) return;
+              run = result.run;
+              applied++;
+            } else {
+              expect(result).toMatchObject({ applied: false, failure: { code: "target_exhausted" } });
+              expect(run).toEqual(before);
+            }
+          }
+
+          expect(run.transitionSeq).toBe(applied);
+          expect(run.attemptsByState.retry).toBe(applied + 1);
+          expect(run.attemptsByState.retry).toBeLessThanOrEqual(maxAttempts);
+        },
+      ),
+      propertyOptions(),
+    );
+  });
+
   it("revision success changes only definition audit fields and rejection is immutable", () => {
     fc.assert(
       fc.property(
