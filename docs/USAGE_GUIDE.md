@@ -55,7 +55,7 @@ Free text passed to `/loop` creates a self-paced dynamic goal:
 /loop finish the release
 ```
 
-The first wake is immediate when the agent is idle. After each iteration, the agent calls `LoopUpdate`:
+The first wake is immediate when the agent is idle. Free-text dynamic goals have no implicit fire-count cap; they remain bounded by the recurring-loop lifetime and explicit completion or deletion. Use `LoopCreate maxFires=...` when a finite fire budget is required. After each iteration, the agent calls `LoopUpdate`:
 
 ```text
 LoopUpdate id="1" status="continue" state="Tests pass; reviewing package"

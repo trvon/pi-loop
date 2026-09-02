@@ -138,7 +138,6 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
     const trigger: Trigger = { type: "dynamic" };
     const entry = getStore().create(trigger, goal, {
       recurring: true,
-      maxFires: 20,
       dynamic: { goal, iteration: 0 },
     });
     getTriggerSystem().add(entry);
