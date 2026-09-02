@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.12](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.11...pi-loop-v0.7.12) (2026-09-02)
+
+
+### Bug Fixes
+
+* **lifecycle:** fence stale controller effects ([#76](https://github.com/trvon/pi-loop/issues/76)) ([7a3ddb4](https://github.com/trvon/pi-loop/commit/7a3ddb41c65013a48a6c24cc432853ad3a085d76))
+* **loop:** remove hidden dynamic fire cap ([#77](https://github.com/trvon/pi-loop/issues/77)) ([34d0f9c](https://github.com/trvon/pi-loop/commit/34d0f9c65e34cb9b0d2c710d84f100c8e8cf3013))
+
 ## [0.7.11](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.10...pi-loop-v0.7.11) (2026-09-01)
 
 
