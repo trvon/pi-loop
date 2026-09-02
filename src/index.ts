@@ -109,7 +109,7 @@ export default function (pi: ExtensionAPI) {
     deleteLoop: (id) => {
       store.delete(id);
     },
-    onLoopFire,
+    onLoopFire: (entry) => onLoopFire(entry, undefined, "monitor", entry.prompt),
     isContextCurrent: isCurrentExtensionContext,
     settleWorkflowMonitorWait: (id, expected, now) => {
       const settlement = store.settleWorkflowMonitorWait(id, expected, now);
@@ -273,6 +273,7 @@ export default function (pi: ExtensionAPI) {
     entry: LoopEntry,
     monitor?: MonitorEntry,
     origin: LoopFireOrigin = monitor ? "monitor" : "dynamic",
+    promptOverride?: string,
   ): void {
     if (!isCurrentExtensionContext()) return;
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
@@ -315,7 +316,7 @@ export default function (pi: ExtensionAPI) {
           },
         }) ?? fired
       : fired;
-    const firedEntry = { ...updatedEntry, prompt: entry.prompt };
+    const firedEntry = updatedEntry;
 
     if (atMaxFires(firedEntry)) {
       triggerSystem.remove(firedEntry.id);
@@ -337,7 +338,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     const authoritativeEntry = store.get(firedEntry.id) ?? firedEntry;
-    emitLoopFire({ ...authoritativeEntry, prompt: entry.prompt }, monitor);
+    emitLoopFire({
+      ...authoritativeEntry,
+      prompt: promptOverride ?? authoritativeEntry.prompt,
+    }, monitor);
   }
 
   // ── Session lifecycle ──
