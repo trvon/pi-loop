@@ -127,7 +127,7 @@ describe("subagent orchestration tools", () => {
     expect(work).toContain("Prompt: Inspect API compatibility");
     expect(work).toContain("Dispatch 1: completed · agent=agent-1");
     expect(work).toContain("Result: API is compatible");
-    expect(work).toContain("Consume: pending");
+    expect(work).toContain("Consume: provider_owned");
   });
 
   it("reports missing controllers and work without mutation", async () => {

@@ -131,6 +131,11 @@ export async function updateTask(
     return { applied: false, code: "no_changes", entry };
   }
 
+  if ((subject !== undefined || description !== undefined) && entry.claim) {
+    const rejection = claimRejection(entry, claimId, Date.now());
+    if (rejection) return { applied: false, code: rejection, entry };
+  }
+
   const previousStatus = entry.status;
   if (status === entry.status && (status === "pending" || status === "in_progress")) {
     if (status === "in_progress" && entry.claim) {
@@ -176,8 +181,20 @@ export async function updateTask(
 
   if (subject !== undefined || description !== undefined) {
     const statusAtEdit = entry.status;
-    entry = ctx.taskStore.updateDetails(id, { subject, description });
-    if (entry) emitNativeTaskEvent(ctx.pi, "tasks:updated", entry, statusAtEdit);
+    const expectedRevision = entry.revision;
+    entry = ctx.taskStore.updateDetails(
+      id,
+      { subject, description },
+      { claimId, expectedRevision, now: Date.now() },
+    );
+    if (!entry) {
+      const current = ctx.taskStore.get(id);
+      if (!current) return { applied: false, code: "not_found" };
+      const rejection = claimRejection(current, claimId, Date.now());
+      if (rejection) return { applied: false, code: rejection, entry: current };
+      return { applied: false, code: "mutation_conflict", entry: current };
+    }
+    emitNativeTaskEvent(ctx.pi, "tasks:updated", entry, statusAtEdit);
   }
   if (!entry) return { applied: false, code: "not_found" };
 

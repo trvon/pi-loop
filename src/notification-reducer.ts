@@ -1,4 +1,4 @@
-import type { DynamicLoopState, OrchestrationState, WorkflowRunState } from "./types.js";
+import type { DynamicLoopState, LoopEntry, OrchestrationState, WorkflowRunState } from "./types.js";
 
 type ReducerSource = "tool" | "command" | "scheduler" | "eventbus" | "monitor" | "session" | "coordinator" | "system";
 
@@ -15,6 +15,7 @@ export interface ReducerNotification {
   readOnly?: boolean;
   dynamic?: DynamicLoopState;
   workflow?: WorkflowRunState;
+  controllerStatus?: LoopEntry["status"];
   orchestration?: OrchestrationState;
   orchestrationWakeSequence?: number;
   sessionGeneration?: number;

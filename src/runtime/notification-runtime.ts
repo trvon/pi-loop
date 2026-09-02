@@ -13,7 +13,7 @@ import {
   reduceNotificationState,
 } from "../notification-reducer.js";
 import { getOrchestrationCounts } from "../orchestration-reducer.js";
-import type { DynamicLoopState, MonitorOutcome, OrchestrationState, Trigger, WorkflowRunState } from "../types.js";
+import type { DynamicLoopState, LoopEntry, MonitorOutcome, OrchestrationState, Trigger, WorkflowRunState } from "../types.js";
 import { getWorkflowOutcomeAvailability, type WorkflowOutcomeAvailability } from "../workflow-reducer.js";
 import type { LoopExpiredPayload } from "./loop-events.js";
 import { TASK_BACKLOG_ACTION_CONTRACT } from "./task-backlog-runtime.js";
@@ -39,6 +39,7 @@ export interface LoopFireEvent {
   taskBacklog?: boolean;
   dynamic?: DynamicLoopState;
   workflow?: WorkflowRunState;
+  controllerStatus?: LoopEntry["status"];
   orchestration?: OrchestrationState;
   orchestrationWakeSequence?: number;
   fireLimitReached?: boolean;
@@ -65,6 +66,7 @@ export interface NotificationRuntimeOptions {
   hasPendingTasks: () => Promise<number>;
   cleanDoneTasks: () => Promise<void>;
   getHasPendingMessages: () => boolean;
+  getLoop?: (id: string) => LoopEntry | undefined;
   onLoopNotificationDelivered?: (data: { loopId: string; orchestrationWakeSequence?: number }) => void;
   debug?: (...args: unknown[]) => void;
 }
@@ -80,7 +82,7 @@ export interface NotificationRuntime {
 }
 
 export function createNotificationRuntime(options: NotificationRuntimeOptions): NotificationRuntime {
-  const { pi, hasPendingTasks, cleanDoneTasks, getHasPendingMessages, onLoopNotificationDelivered, debug } = options;
+  const { pi, hasPendingTasks, cleanDoneTasks, getHasPendingMessages, getLoop, onLoopNotificationDelivered, debug } = options;
 
   let notificationState: NotificationReducerState = {
     notificationsByKey: {},
@@ -344,6 +346,18 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     };
   }
 
+  function workflowNotificationIsCurrent(notification: ReducerNotification): boolean {
+    const queued = notification.workflow;
+    if (!queued || !getLoop || notification.controllerStatus === undefined) return true;
+    const current = getLoop(notification.loopId);
+    if (!current?.workflow) return false;
+    if (notification.controllerStatus !== undefined && current.status !== notification.controllerStatus) return false;
+    return (current.workflow.definitionRevision ?? 1) === (queued.definitionRevision ?? 1)
+      && current.workflow.currentState === queued.currentState
+      && current.workflow.transitionSeq === queued.transitionSeq
+      && current.workflow.activeExecution?.id === queued.activeExecution?.id;
+  }
+
   async function deliverNotification(notification: ReducerNotification): Promise<boolean> {
     const deliveryGeneration = notification.sessionGeneration ?? sessionGeneration;
     if (notification.autoTask) {
@@ -361,6 +375,10 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
 
     if (deliveryGeneration !== sessionGeneration) {
       debug?.(`loop:fire #${notification.loopId} — session changed before delivery, dropping wake`);
+      return false;
+    }
+    if (!workflowNotificationIsCurrent(notification)) {
+      debug?.(`loop:fire #${notification.loopId} — workflow execution changed before delivery, dropping wake`);
       return false;
     }
     syncRuntimeState({ agentRunning: true });

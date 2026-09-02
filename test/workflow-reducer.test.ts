@@ -37,6 +37,52 @@ describe("workflow reducer", () => {
     });
   });
 
+  it.each([
+    ["disconnected work", "orphan", {
+      version: 1,
+      initialState: "start",
+      states: {
+        start: { prompt: "Start", on: { done: "done" } },
+        orphan: { prompt: "Never reached", on: { done: "done" } },
+        done: { prompt: "Done", terminal: "completed" },
+      },
+    }],
+    ["disconnected terminal", "orphanDone", {
+      version: 1,
+      initialState: "start",
+      states: {
+        start: { prompt: "Start", on: { loop: "start" }, maxAttempts: 2 },
+        orphanDone: { prompt: "Never reached", terminal: "completed" },
+      },
+    }],
+    ["disconnected cycle", "a", {
+      version: 1,
+      initialState: "start",
+      states: {
+        start: { prompt: "Start", on: { done: "done" } },
+        a: { prompt: "A", on: { next: "b" } },
+        b: { prompt: "B", on: { next: "a" } },
+        done: { prompt: "Done", terminal: "completed" },
+      },
+    }],
+  ] as const)("rejects %s in an initial workflow definition", (_name, stateId, candidate) => {
+    expect(validateWorkflowDefinition(candidate as WorkflowDefinition))
+      .toBe(`Workflow state "${stateId}" is not reachable from initial state "start"`);
+  });
+
+  it("accepts a cycle when every state remains reachable from the initial state", () => {
+    expect(validateWorkflowDefinition({
+      version: 1,
+      initialState: "start",
+      states: {
+        start: { prompt: "Start", on: { next: "a" } },
+        a: { prompt: "A", on: { next: "b" } },
+        b: { prompt: "B", on: { retry: "a", done: "complete" } },
+        complete: { prompt: "Done", terminal: "completed" },
+      },
+    })).toBeUndefined();
+  });
+
   it("embeds and leases initial state work in the workflow aggregate", () => {
     const taskDefinition: WorkflowDefinition = {
       version: 1,

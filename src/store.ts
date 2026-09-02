@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { atMaxFires, type LoopReducerEffect, type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { applyOrchestrationEvent, type OrchestrationEvent, validateOrchestrationDefinition, validatePersistedOrchestration } from "./orchestration-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
-import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopExpiryDisposition, LoopExpiryReason, LoopFireOrigin, LoopPauseKind, LoopPauseRecord, LoopStoreData, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
+import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopExpiryDisposition, LoopExpiryReason, LoopFireOrigin, LoopPauseKind, LoopPauseRecord, LoopStoreData, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorSettlement, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
 import { validateWorkflowDefinition } from "./workflow-definition.js";
 import { atWorkflowStateFireLimit, isTerminalWorkflowRun, transitionWorkflowRun, validateWorkflowAdmissionRecord, type WorkflowTransitionFailure, type WorkflowTransitionInput } from "./workflow-reducer.js";
 import { validatePersistedWorkflowRevision, type WorkflowRevisionInput, type WorkflowRevisionSummary } from "./workflow-revision.js";
@@ -579,6 +579,33 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         payload: { id, wait },
       });
       return this.entries.get(id);
+    });
+  }
+
+  settleWorkflowMonitorWait(
+    id: string,
+    expected: WorkflowMonitorWait,
+    now = Date.now(),
+  ): WorkflowMonitorSettlement {
+    return this.withLock(() => {
+      const expired = this.expireEntryUnlocked(id, now);
+      if (expired) return { kind: "expired", ...expired };
+      const entry = this.entries.get(id);
+      const wait = entry?.workflow?.waitingMonitor;
+      if (!wait
+        || wait.monitorId !== expected.monitorId
+        || wait.stateId !== expected.stateId
+        || wait.transitionSeq !== expected.transitionSeq
+        || wait.attachedAt !== expected.attachedAt) return { kind: "stale" };
+      this.applyReducerEvent({
+        type: "LOOP_WORKFLOW_MONITOR_CLEARED",
+        at: now,
+        source: "monitor",
+        entityType: "loop",
+        entityId: id,
+        payload: { id, expected },
+      });
+      return { kind: "resumed", entry: this.entries.get(id)! };
     });
   }
 

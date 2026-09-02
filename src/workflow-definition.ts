@@ -104,7 +104,7 @@ function definitionBytes(definition: WorkflowDefinition): number {
 
 export function validateWorkflowDefinition(
   definition: WorkflowDefinition,
-  options: { allowUnboundedSelfLoops?: boolean } = {},
+  options: { allowUnboundedSelfLoops?: boolean; allowUnreachableStates?: boolean } = {},
 ): string | undefined {
   if (definition?.version !== 1) return "Workflow version must be 1";
   if (!definition.states || typeof definition.states !== "object" || Array.isArray(definition.states)) {
@@ -124,6 +124,24 @@ export function validateWorkflowDefinition(
   for (const [stateId, state] of Object.entries(definition.states)) {
     const error = validateState(definition, stateId, state, options.allowUnboundedSelfLoops === true);
     if (error) return error;
+  }
+
+  if (options.allowUnreachableStates) return undefined;
+
+  const reachable = new Set<string>([definition.initialState]);
+  const pending = [definition.initialState];
+  while (pending.length > 0) {
+    const stateId = pending.shift()!;
+    for (const destination of Object.values(definition.states[stateId]?.on ?? {})) {
+      if (reachable.has(destination)) continue;
+      reachable.add(destination);
+      pending.push(destination);
+    }
+  }
+  for (const stateId of Object.keys(definition.states)) {
+    if (!reachable.has(stateId)) {
+      return `Workflow state "${stateId}" is not reachable from initial state "${definition.initialState}"`;
+    }
   }
   return undefined;
 }

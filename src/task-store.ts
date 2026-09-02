@@ -199,14 +199,25 @@ export class TaskStore extends ReducerBackedStore<TaskEntry, TaskReducerState, T
     });
   }
 
-  updateDetails(id: string, fields: { subject?: string; description?: string }): TaskEntry | undefined {
+  updateDetails(
+    id: string,
+    fields: { subject?: string; description?: string },
+    options: { claimId?: string; expectedRevision?: number; now?: number } = {},
+  ): TaskEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
       if (!entry) return undefined;
+      const now = options.now ?? Date.now();
+      if (options.expectedRevision !== undefined && entry.revision !== options.expectedRevision) return undefined;
+      if (entry.claim && (
+        entry.claim.leaseExpiresAt <= now
+        || !options.claimId
+        || entry.claim.claimId !== options.claimId
+      )) return undefined;
       if (fields.subject === undefined && fields.description === undefined) return entry;
       this.applyReducerEvent({
         type: "TASK_UPDATED",
-        at: Date.now(),
+        at: now,
         source: "tool",
         entityType: "task",
         entityId: id,

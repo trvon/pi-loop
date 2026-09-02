@@ -111,7 +111,7 @@ function validate() {
   if (completedWork.size !== 2) throw new Error(`expected two durable work results, got ${completedWork.size}`);
   for (const [workId, text] of completedWork) {
     if (!/Result:\s*42\b/.test(text)) throw new Error(`work ${workId} did not return 42`);
-    if (!/Consume:\s*consumed/.test(text)) throw new Error(`work ${workId} was not consumed`);
+    if (!/Consume:\s*provider_owned/.test(text)) throw new Error(`work ${workId} did not preserve provider-owned completion`);
   }
   if (!cancellationObservedActive) throw new Error("cancellation controller was not observed with one active worker");
   if (!completionDeleted || !cancellationDeleted) throw new Error("both orchestration controllers must be deleted");
@@ -293,11 +293,11 @@ try {
     "Call OrchestrationCreate exactly once for goal 'Validate live worker settlement' with concurrency 2, maxAttempts 1, maxTurns 3, and two general-purpose work items:",
     "1. 'Compute 17 + 25. Return the numeric answer and one short verification sentence.'",
     "2. 'Compute 6 * 7. Return the numeric answer and one short verification sentence.'",
-    "Call LoopList once, then stop. When pi-loop wakes you after completion, call OrchestrationGet for the controller and each work item. Verify both results equal 42 and both say Consume: consumed. Do not delete until another prompt asks you to.",
+    "Call LoopList once, then stop. When the provider's native completion messages arrive, call OrchestrationGet for the controller and each work item. Verify both results equal 42 and both say Consume: provider_owned. Do not delete until another prompt asks you to.",
   ].join("\n"));
   const state = await outcome;
   writeArtifact("passed", state);
-  console.log(`PASS: live orchestration settled, consumed, and cancelled with ${toolCalls.length} tool calls`);
+  console.log(`PASS: live orchestration preserved provider completion and cancelled with ${toolCalls.length} tool calls`);
   console.log(`Artifact: ${join(artifactDir, "latest.json")}`);
 } catch (error) {
   failure = error;

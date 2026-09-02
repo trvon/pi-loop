@@ -20,7 +20,7 @@ export const MAX_ORCHESTRATION_INPUT_BYTES = 65_536;
 const ORCHESTRATION_STATUSES = new Set(["active", "needs_attention", "completed", "cancelled"]);
 const WORK_STATUSES = new Set(["pending", "active", "completed", "failed", "uncertain", "cancelled"]);
 const DISPATCH_STATUSES = new Set(["spawning", "queued", "running", "completed", "failed", "interrupted", "stopped", "uncertain"]);
-const CONSUME_STATUSES = new Set(["not_applicable", "pending", "consumed", "unavailable"]);
+const CONSUME_STATUSES = new Set(["not_applicable", "provider_owned", "pending", "consumed", "unavailable"]);
 const WAKE_REASONS = new Set(["completed", "failed", "uncertain", "recovery"]);
 
 export function validateOrchestrationDefinition(input: OrchestrationDefinitionInput): string | undefined {
@@ -345,7 +345,7 @@ export function applyOrchestrationEvent(
     found.dispatch.error = truncate(event.error, MAX_ORCHESTRATION_ERROR_CHARS);
     found.dispatch.usage = event.usage;
     found.dispatch.settledAt = event.at;
-    found.dispatch.consumeStatus = "pending";
+    found.dispatch.consumeStatus = "provider_owned";
     found.item.status = event.outcome === "completed" ? "completed" : "failed";
     if (event.outcome === "failed") settleFailure(found.item, next);
     refreshControllerStatus(next, event.at);

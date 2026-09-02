@@ -61,7 +61,10 @@ export function validatePersistedWorkflowRevision(
 ): string | undefined {
   if (!Check(WorkflowDefinitionRevisionSchema, revision)) return "history record is invalid";
   if (revision.revision !== expectedRevision) return "history is not contiguous";
-  const definitionError = validateWorkflowDefinition(revision.definition, { allowUnboundedSelfLoops: true });
+  const definitionError = validateWorkflowDefinition(revision.definition, {
+    allowUnboundedSelfLoops: true,
+    allowUnreachableStates: true,
+  });
   return definitionError ? `history definition is invalid: ${definitionError}` : undefined;
 }
 
@@ -389,7 +392,7 @@ function validateGraph(
   definition: WorkflowDefinition,
   summary: WorkflowRevisionSummary,
 ): RevisionRejection | undefined {
-  const definitionError = validateWorkflowDefinition(definition);
+  const definitionError = validateWorkflowDefinition(definition, { allowUnreachableStates: true });
   if (definitionError) {
     const code = definitionError.includes("exceeds") ? "definition_too_large" : "graph_invalid";
     return rejected(code, `Revised workflow definition rejected: ${definitionError}.`);

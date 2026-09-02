@@ -305,7 +305,6 @@ export function createSubagentOrchestrationRuntime(
       usage,
     });
     if (!result.applied) return false;
-    consumeSettled(match.entry.id, event.id);
     updateWidget();
     schedulePump();
     return true;
@@ -443,6 +442,16 @@ export function createSubagentOrchestrationRuntime(
     }
   }
 
+  function providerOwnsTerminalWake(state: OrchestrationState): boolean {
+    const counts = getOrchestrationCounts(state);
+    if (counts.pending > 0 || counts.active > 0 || counts.uncertain > 0) return false;
+    return state.work.length > 0 && state.work.every((item) => {
+      const dispatch = item.dispatches.at(-1);
+      return (item.status === "completed" || item.status === "failed")
+        && dispatch?.consumeStatus === "provider_owned";
+    });
+  }
+
   function emitPendingWakes(): void {
     for (const entry of getStore().list()) {
       const state = entry.orchestration;
@@ -451,10 +460,14 @@ export function createSubagentOrchestrationRuntime(
       if (getOrchestrationCounts(state).active > 0) continue;
       const key = `${entry.id}:${wake.sequence}`;
       if (wakeQueued.has(key)) continue;
-      wakeQueued.add(key);
       if (state.status === "completed" || (state.status === "needs_attention" && getOrchestrationCounts(state).active === 0)) {
         getStore().pause(entry.id, "orchestration_settlement", `orchestration ${state.status}`);
       }
+      if (providerOwnsTerminalWake(state)) {
+        acknowledgeWake(entry.id, wake.sequence);
+        continue;
+      }
+      wakeQueued.add(key);
       emitWake(getStore().get(entry.id) ?? entry, wake);
     }
   }

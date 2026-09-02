@@ -50,7 +50,7 @@ Project scope shares durable state but does not yet elect one scheduler owner ac
 
 `LoopCreate` creates ordinary controllers. Use dynamic loops for one evolving goal without named phase/outcome routing; use workflows for ordered phases, conditional outcomes, rework, or durable handoff; use standalone tasks for independently completable backlog items. Free-text `/loop <goal>` controllers have no implicit fire-count cap; finite budgets require an explicit `LoopCreate maxFires`. `LoopUpdate` is only for dynamic controllers that are neither workflow nor orchestration owned and must persist `continue` after empty or unchanged iterations while work remains. `LoopDelete` pauses or removes ordinary/workflow controllers and cancellation-fences orchestration before stopping its workers. Recurring loops expire after seven days unless explicitly recreated; `LoopList` exposes the ISO `expiresAt` boundary. Workflow presentation derives `running`, `paused`, `idle`, or ephemeral `stopped` activity from authoritative workflow fields and reports activity duration, wall-clock age, and state age without persisting duplicate UI state. Seven-day expiry and stale event/hybrid retirement during session recovery emit `loops:expired` plus a hidden notification with `deleted` or `paused` disposition. Fire limits bound repeated execution.
 
-Wake delivery is idle-driven. A due timer or event mutates loop state, emits `loop:fire`, buffers a generation-tagged notification, and sends a hidden Pi message when delivery is safe. Retirement follows the same generation-fenced notification path after the store mutation and emits a typed `loops:expired` payload whose reason distinguishes `expires_at` from `resume_event_stale`. Pending fire and retirement notifications are memory-only; they are not a durable event ledger across process death. Stale extension contexts are probed before fire mutation.
+Wake delivery is idle-driven. A due timer or event mutates loop state, emits `loop:fire`, buffers a generation-tagged notification, and sends a hidden Pi message when delivery is safe. Immediately before a buffered workflow wake is sent, the runtime re-reads `LoopStore` and requires the controller status, definition revision, state, transition sequence, and execution ID to match the queued snapshot; deleted, transitioned, paused, or reissued work is dropped even within the same session generation. Retirement follows the same generation-fenced notification path after the store mutation and emits a typed `loops:expired` payload whose reason distinguishes `expires_at` from `resume_event_stale`. Pending fire and retirement notifications are memory-only; they are not a durable event ledger across process death. Stale extension contexts are probed before fire mutation.
 
 ## Subagent orchestration model
 
@@ -58,15 +58,15 @@ Wake delivery is idle-driven. A due timer or event mutates loop state, emits `lo
 
 The parent `agent_end`, existing 30-second heartbeat, session recovery, and direct `subagents:started|completed|failed` events drive reconciliation. Before each spawn, LoopStore records a generated dispatch ID and consumes local capacity. Spawn forces background execution, disables inherited extension tools, and leaves global queue/concurrency authority with `pi-subagents`. `spawning`, `queued`, and `running` all count against the local limit.
 
-Lifecycle callbacks CAS loop revision, owner runtime/generation, work ID, dispatch ID, attempt, and agent ID. Terminal evidence is bounded and persisted synchronously before `subagents:rpc:consume`. Proved failures retry only within `maxAttempts`; a spawn timeout is ambiguous without upstream status/list or idempotent dispatch keys, so it becomes `uncertain` and is never retried automatically.
+Lifecycle callbacks CAS loop revision, owner runtime/generation, work ID, dispatch ID, attempt, and agent ID. Normal terminal evidence is bounded and persisted with `provider_owned` completion status; pi-loop does not call `subagents:rpc:consume`, so the provider retains its native completion surface. Confirmed worker stops may still be consumed after durable interruption settlement. Proved failures retry only within `maxAttempts`; a spawn timeout is ambiguous without upstream status/list or idempotent dispatch keys, so it becomes `uncertain` and is never retried automatically.
 
-Completion bursts refill capacity without waking the parent. A hidden parent wake is emitted only when the batch completes or needs attention. Its sequence remains durable until `pi.sendMessage` succeeds; a crash before acknowledgement may duplicate delivery. Completed/attention controllers pause for `OrchestrationGet` inspection and explicit deletion.
+Completion bursts refill capacity without a pi-loop parent wake. When every terminal dispatch is provider-owned, pi-loop pauses the controller and acknowledges its aggregate wake internally so only the provider's native completion path runs. Uncertain dispatches and failures without a provider-owned terminal result retain the durable hidden wake until `pi.sendMessage` succeeds; a crash before acknowledgement may duplicate that delivery. Completed/attention controllers pause for `OrchestrationGet` inspection and explicit deletion.
 
 Session shutdown/switch invalidates lifecycle callbacks, best-effort stops known workers, and persists stopped work as retryable or unconfirmed work as uncertain before store rebinding. A new runtime cannot adopt an unexpired foreign owner lease; after expiry it marks active dispatches uncertain rather than risking duplicates. Project scope, dynamic work addition, dependency graphs, cross-session election, and exact-once dispatch are not implemented.
 
 ## Workflow model
 
-`WorkflowDefinition.version` is 1. A state contains:
+`WorkflowDefinition.version` is 1. Every state in a newly created definition must be reachable from `initialState`; reachable cycles are valid, and terminal reachability remains a separate policy. A state contains:
 
 - `prompt`
 - optional embedded `task:{subject,description}`
@@ -103,7 +103,7 @@ Revision and transition race through the same LoopStore lock. Revision-first mak
 
 ## Standalone tasks
 
-Native task statuses are `pending`, `in_progress`, `completed`, and `closed`. `TaskClaim` starts or resumes unfinished work and returns a renewable bearer claim ID. `TaskHeartbeat` renews it. Terminal update or deletion of live claimed work requires that ID. Expired claims may be taken over.
+Native task statuses are `pending`, `in_progress`, `completed`, and `closed`. `TaskClaim` starts or resumes unfinished work and returns a renewable bearer claim ID. `TaskHeartbeat` renews it. Subject/description edits, terminal updates, and deletion of live claimed work require that ID. Missing, wrong, or expired bearers reject before mutation; expired claims may be taken over.
 
 Standalone tasks are independently completable backlog items. Related work that advances one evolving goal through ordered phases, conditional outcomes, rework, or durable handoff belongs in a workflow instead. Task prerequisites are description conventions, not first-class graph fields. Backlog workers use `TaskGet` to follow them, and unfinished handoffs persist material progress and next action through `TaskUpdate`.
 

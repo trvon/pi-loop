@@ -9,7 +9,7 @@ import {
   reduceMonitorCompletionEvent,
 } from "../monitor-completion-coordinator.js";
 import type { MonitorManager } from "../monitor-manager.js";
-import type { LoopEntry, MonitorEntry, WorkflowMonitorWait } from "../types.js";
+import type { LoopEntry, MonitorEntry, WorkflowMonitorSettlement, WorkflowMonitorWait } from "../types.js";
 
 export interface MonitorOnDoneRuntimeOptions {
   monitorManager: MonitorManager;
@@ -17,7 +17,11 @@ export interface MonitorOnDoneRuntimeOptions {
   deleteLoop: (id: string) => void;
   onLoopFire: (entry: LoopEntry) => void;
   isContextCurrent: () => boolean;
-  completeWorkflowMonitorWait: (id: string, expected: WorkflowMonitorWait) => LoopEntry | undefined;
+  settleWorkflowMonitorWait: (
+    id: string,
+    expected: WorkflowMonitorWait,
+    now: number,
+  ) => WorkflowMonitorSettlement;
   rearmWorkflow: (entry: LoopEntry) => void;
   wakeWorkflow: (entry: LoopEntry, monitor: MonitorEntry | undefined) => void;
   debug?: (...args: unknown[]) => void;
@@ -58,7 +62,7 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
     deleteLoop,
     onLoopFire,
     isContextCurrent,
-    completeWorkflowMonitorWait,
+    settleWorkflowMonitorWait,
     rearmWorkflow,
     wakeWorkflow,
     debug,
@@ -133,11 +137,10 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
 
     const deliver = (monitor?: MonitorEntry) => {
       if (!isContextCurrent()) return;
-      const resumed = completeWorkflowMonitorWait(entry.id, wait);
-      if (!resumed) return;
-      if (resumed.status !== "active") return;
-      rearmWorkflow(resumed);
-      wakeWorkflow(resumed, monitor ?? monitorManager.get(wait.monitorId));
+      const settlement = settleWorkflowMonitorWait(entry.id, wait, Date.now());
+      if (settlement.kind !== "resumed" || settlement.entry.status !== "active") return;
+      rearmWorkflow(settlement.entry);
+      wakeWorkflow(settlement.entry, monitor ?? monitorManager.get(wait.monitorId));
     };
 
     const registered = monitorManager.onTerminal(wait.monitorId, deliver);

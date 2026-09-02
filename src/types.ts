@@ -13,7 +13,7 @@ export type LoopDeletionTombstoneInput = Omit<LoopDeletionTombstone, "id" | "del
 export type LoopStatus = "active" | "paused";
 export type LoopExpiryDisposition = "deleted" | "paused";
 export type LoopExpiryReason = "expires_at" | "resume_event_stale";
-export type LoopExpirySource = "scheduler" | "session_recovery";
+export type LoopExpirySource = "scheduler" | "session_recovery" | "monitor";
 
 export type LoopPauseKind = "administrative" | "controller_limit" | "semantic_terminal" | "orchestration_settlement";
 
@@ -63,7 +63,7 @@ export interface DynamicLoopState {
 export type OrchestrationStatus = "active" | "needs_attention" | "completed" | "cancelled";
 export type OrchestrationWorkStatus = "pending" | "active" | "completed" | "failed" | "uncertain" | "cancelled";
 export type OrchestrationDispatchStatus = "spawning" | "queued" | "running" | "completed" | "failed" | "interrupted" | "stopped" | "uncertain";
-export type OrchestrationConsumeStatus = "not_applicable" | "pending" | "consumed" | "unavailable";
+export type OrchestrationConsumeStatus = "not_applicable" | "provider_owned" | "pending" | "consumed" | "unavailable";
 export type OrchestrationWakeReason = "completed" | "failed" | "uncertain" | "recovery";
 
 export interface OrchestrationActor {
@@ -337,6 +337,11 @@ export interface LoopEntry {
   workflow?: WorkflowRunState;
   orchestration?: OrchestrationState;
 }
+
+export type WorkflowMonitorSettlement =
+  | { kind: "resumed"; entry: LoopEntry }
+  | { kind: "expired"; entry: LoopEntry; disposition: LoopExpiryDisposition; reason: LoopExpiryReason }
+  | { kind: "stale" };
 
 export interface LoopStoreData {
   nextId: number;
