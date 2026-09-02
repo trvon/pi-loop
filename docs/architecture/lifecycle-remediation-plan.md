@@ -1,6 +1,6 @@
 # Lifecycle remediation plan
 
-**Baseline:** `docs/lifecycle-ownership-audit.md` at `b42e1a1`
+**Baseline:** [`lifecycle-ownership-audit.md`](./lifecycle-ownership-audit.md), originally reviewed at `b42e1a1`
 
 **Rule:** RED tests and production fixes remain separate from PR #74. A RED test must encode an agreed authority or lifecycle invariant, not merely freeze one preferred implementation.
 
@@ -147,4 +147,4 @@ Observed before any production edit:
 - 1 expired monitor completion rearms the workflow;
 - 1 settled subagent result is immediately consumed.
 
-All edited test files pass primary TypeScript LSP diagnostics. The suite is intentionally RED on this branch; no production source file has been changed.
+All edited test files passed primary TypeScript LSP diagnostics. This evidence was captured in the signed RED commit before production changes; the subsequent GREEN commit makes the suite pass while preserving these regression contracts.
