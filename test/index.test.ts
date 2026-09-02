@@ -222,7 +222,7 @@ describe("subagent orchestration runtime wiring", () => {
   beforeEach(() => clearTestLoopStore(sessionId));
   afterEach(() => clearTestLoopStore(sessionId));
 
-  it("dispatches a bounded batch, consumes settled evidence, and wakes the idle parent once", async () => {
+  it("dispatches a bounded batch, preserves provider completion, and wakes the idle parent once", async () => {
     let nextAgent = 0;
     const { pi, toolMap, emittedEvents, sentMessages, emitExtension } = createMockPi({
       respondToSubagentPing: 2,
@@ -253,8 +253,8 @@ describe("subagent orchestration runtime wiring", () => {
     pi.events.emit("subagents:completed", { id: "agent-2", status: "completed", result: "Runtime is bounded." });
     await flushAsync();
 
-    expect(emittedEvents.filter((event) => event.name === "subagents:rpc:consume")).toHaveLength(2);
-    expect(sentMessages.filter((item) => item.message.content.includes("Orchestration #1 requires parent attention"))).toHaveLength(1);
+    expect(emittedEvents.filter((event) => event.name === "subagents:rpc:consume")).toHaveLength(0);
+    expect(sentMessages.filter((item) => item.message.content.includes("Orchestration #1 requires parent attention"))).toHaveLength(0);
     const inspected = await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1" });
     expect(inspected.content[0].text).toContain("completed=2");
     const loops = await toolMap.get("LoopList")!.execute!("list", {});

@@ -237,6 +237,23 @@ describe("TaskUpdate", () => {
     expect(h.emittedEvents.some((e) => e.name === "tasks:updated" && e.payload.taskId === "1")).toBe(true);
   });
 
+  it("rejects a detail edit when another owner claims after the initial read", async () => {
+    const original = h.taskStore.updateDetails.bind(h.taskStore);
+    vi.spyOn(h.taskStore, "updateDetails").mockImplementation((id, fields, options) => {
+      h.taskStore.claim(id, {
+        claimId: "racing-claim",
+        ownerSessionId: "session-b",
+        ownerRuntimeId: "runtime-b",
+        leaseMs: 60_000,
+      });
+      return original(id, fields, options);
+    });
+
+    expect(await h.text("TaskUpdate", { id: "1", description: "racing rewrite" })).toContain("claimId is required");
+    expect(h.taskStore.get("1")?.description).toBe("desc");
+    expect(h.taskStore.get("1")?.claim?.claimId).toBe("racing-claim");
+  });
+
   it("requires a claim bearer before changing claimed task instructions", async () => {
     await h.text("TaskClaim", { id: "1", leaseSeconds: 60 });
     const before = h.taskStore.get("1");

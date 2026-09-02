@@ -925,7 +925,6 @@ describe("Workflow tools", () => {
       initialState: "stuck",
       states: {
         stuck: { prompt: "No exits declared." },
-        done: { prompt: "Report.", terminal: "completed" },
       },
     });
     const out = await h.text("WorkflowCreate", { goal: "Fix the regression", definition: noOutcomes });

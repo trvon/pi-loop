@@ -206,6 +206,38 @@ describe("TaskStore (in-memory)", () => {
     expect(entry?.status).toBe("pending");
   });
 
+  it("checks claim ownership and revision inside the detail-update lock", () => {
+    store.create("task", "desc");
+    const beforeClaimRevision = store.get("1")?.revision;
+    store.claim("1", {
+      claimId: "claim-1",
+      ownerSessionId: "session-a",
+      ownerRuntimeId: "runtime-a",
+      now: 1_000,
+      leaseMs: 1_000,
+    });
+
+    expect(store.updateDetails("1", { description: "missing bearer" }, { now: 1_500 })).toBeUndefined();
+    expect(store.updateDetails("1", { description: "wrong bearer" }, { claimId: "wrong", now: 1_500 })).toBeUndefined();
+    expect(store.updateDetails("1", { description: "stale read" }, {
+      claimId: "claim-1",
+      expectedRevision: beforeClaimRevision,
+      now: 1_500,
+    })).toBeUndefined();
+    expect(store.get("1")?.description).toBe("desc");
+
+    expect(store.updateDetails("1", { description: "owned update" }, {
+      claimId: "claim-1",
+      expectedRevision: store.get("1")?.revision,
+      now: 1_500,
+    })?.description).toBe("owned update");
+    expect(store.updateDetails("1", { description: "expired update" }, {
+      claimId: "claim-1",
+      now: 2_001,
+    })).toBeUndefined();
+    expect(store.get("1")?.description).toBe("owned update");
+  });
+
   it("returns undefined for missing lifecycle/detail updates", () => {
     expect(store.start("999")).toBeUndefined();
     expect(store.complete("999")).toBeUndefined();

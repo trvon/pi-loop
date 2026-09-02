@@ -94,7 +94,7 @@ describe("subagent orchestration reducer", () => {
     expect(getOrchestrationCounts(second.state).active).toBe(2);
   });
 
-  it("binds lifecycle identity and settles evidence before consume", () => {
+  it("binds lifecycle identity and settles evidence under provider-owned completion", () => {
     const requested = dispatch(create(1), "1", "dispatch-1", 110).state;
     const bound = applyOrchestrationEvent(requested, {
       type: "dispatch_bound",
@@ -126,7 +126,7 @@ describe("subagent orchestration reducer", () => {
     expect(settled.state.work[0]?.dispatches[0]).toMatchObject({
       agentId: "agent-1",
       status: "completed",
-      consumeStatus: "pending",
+      consumeStatus: "provider_owned",
       usage: { toolUses: 4, durationMs: 250 },
     });
     expect(settled.state.work[0]?.dispatches[0]?.result).toHaveLength(MAX_ORCHESTRATION_RESULT_CHARS);

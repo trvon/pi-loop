@@ -100,7 +100,7 @@ describe("subagent orchestration runtime", () => {
     expect(h.store.get(h.entry.id)?.orchestration?.work.map((item) => item.status)).toEqual(["active", "active", "pending"]);
   });
 
-  it("settles without consuming provider output, coalesces refill, and wakes only after the batch settles", async () => {
+  it("settles without consuming provider output, coalesces refill, and leaves completion to the provider", async () => {
     const order: string[] = [];
     let nextAgent = 0;
     const rpc = vi.fn(async (channel: string) => {
@@ -123,9 +123,9 @@ describe("subagent orchestration runtime", () => {
     h.pi.events.emit("subagents:completed", { id: "agent-3", status: "completed", result: "third" });
     await h.drain();
 
-    expect(h.emitWake).toHaveBeenCalledTimes(1);
-    expect(h.emitWake).toHaveBeenCalledWith(expect.objectContaining({ id: h.entry.id }), expect.objectContaining({ reason: "completed", sequence: 1 }));
+    expect(h.emitWake).not.toHaveBeenCalled();
     expect(h.store.get(h.entry.id)?.status).toBe("paused");
+    expect(h.store.get(h.entry.id)?.orchestration?.pendingWake).toBeUndefined();
   });
 
   it("replays a started event that arrives before the spawn reply binds the agent", async () => {
@@ -161,11 +161,14 @@ describe("subagent orchestration runtime", () => {
     await h.runtime.pump();
     await h.drain();
 
-    expect(h.store.get(h.entry.id)?.orchestration?.work[0]).toMatchObject({ status: "completed" });
-    expect(rpc.mock.calls.some(([channel]) => channel === "subagents:rpc:consume")).toBe(true);
+    expect(h.store.get(h.entry.id)?.orchestration?.work[0]).toMatchObject({
+      status: "completed",
+      dispatches: [expect.objectContaining({ consumeStatus: "provider_owned" })],
+    });
+    expect(rpc.mock.calls.some(([channel]) => channel === "subagents:rpc:consume")).toBe(false);
   });
 
-  it("settles failed lifecycle events with bounded usage before consume", async () => {
+  it("settles failed lifecycle events with bounded usage under provider-owned completion", async () => {
     const h = setup({ workCount: 1 });
     await h.runtime.pump();
 
@@ -182,9 +185,9 @@ describe("subagent orchestration runtime", () => {
       status: "failed",
       error: "worker failed",
       usage: { tokens: { input: 2, output: 3, total: 5 }, toolUses: 4, durationMs: 20 },
-      consumeStatus: "pending",
+      consumeStatus: "provider_owned",
     });
-    expect(h.rpc.mock.calls.at(-1)?.[0]).toBe("subagents:rpc:consume");
+    expect(h.rpc.mock.calls.some(([channel]) => channel === "subagents:rpc:consume")).toBe(false);
   });
 
   it("waits for active workers before waking for uncertain work", async () => {
@@ -262,9 +265,12 @@ describe("subagent orchestration runtime", () => {
   });
 
   it("replays a durable pending wake after paused-owner lease recovery", async () => {
-    const h = setup({ workCount: 1 });
+    const rpc = vi.fn(async (channel: string) => {
+      if (channel === "subagents:rpc:spawn") throw new RpcError(channel, "timed out", true);
+      return undefined;
+    });
+    const h = setup({ workCount: 1, rpc });
     await h.runtime.pump();
-    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "done" });
     await h.drain();
     const previous = h.store.get(h.entry.id)!.orchestration!;
     expect(h.store.get(h.entry.id)?.status).toBe("paused");
@@ -276,26 +282,19 @@ describe("subagent orchestration runtime", () => {
 
     expect(h.store.get(h.entry.id)?.orchestration?.owner).toMatchObject({ runtimeId: "runtime-b", generation: 3 });
     expect(h.emitWake).toHaveBeenCalledTimes(2);
-    expect(h.store.get(h.entry.id)?.orchestration?.pendingWake).toMatchObject({ reason: "completed", sequence: 1 });
+    expect(h.store.get(h.entry.id)?.orchestration?.pendingWake).toMatchObject({ reason: "uncertain", sequence: 1 });
   });
 
-  it("retries bounded consume acknowledgement after durable settlement", async () => {
-    let consumeAttempts = 0;
-    const rpc = vi.fn(async (channel: string) => {
-      if (channel === "subagents:rpc:spawn") return { id: "agent-1" };
-      if (channel === "subagents:rpc:consume" && ++consumeAttempts === 1) throw new Error("consume unavailable");
-      return undefined;
-    });
-    const h = setup({ workCount: 1, rpc });
+  it("does not retry consumption for provider-owned completion", async () => {
+    const h = setup({ workCount: 1 });
     await h.runtime.pump();
 
     h.pi.events.emit("subagents:completed", { id: "agent-1", status: "completed", result: "done" });
     await h.drain();
     await h.runtime.pump();
-    await Promise.resolve();
 
-    expect(consumeAttempts).toBe(2);
-    expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.consumeStatus).toBe("consumed");
+    expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume")).toHaveLength(0);
+    expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.consumeStatus).toBe("provider_owned");
   });
 
   it("does not consume again for duplicate terminal lifecycle events", async () => {
@@ -304,7 +303,7 @@ describe("subagent orchestration runtime", () => {
     h.pi.events.emit("subagents:completed", { id: "agent-1", result: "done" });
     await Promise.resolve();
     await Promise.resolve();
-    expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.consumeStatus).toBe("consumed");
+    expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.consumeStatus).toBe("provider_owned");
     const before = h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume").length;
 
     h.pi.events.emit("subagents:completed", { id: "agent-1", result: "duplicate" });

@@ -39,7 +39,7 @@ function setup(manager: ReturnType<typeof mockManager>, isContextCurrent = () =>
     deleteLoop,
     onLoopFire,
     isContextCurrent,
-    completeWorkflowMonitorWait: vi.fn(),
+    settleWorkflowMonitorWait: vi.fn(() => ({ kind: "stale" as const })),
     rearmWorkflow: vi.fn(),
     wakeWorkflow: vi.fn(),
   });
@@ -64,7 +64,7 @@ describe("monitor-ondone-runtime", () => {
       deleteLoop,
       onLoopFire,
       isContextCurrent: () => true,
-      completeWorkflowMonitorWait: vi.fn(),
+      settleWorkflowMonitorWait: vi.fn(() => ({ kind: "stale" as const })),
       rearmWorkflow: vi.fn(),
       wakeWorkflow: vi.fn(),
     });
@@ -206,7 +206,7 @@ describe("monitor-ondone-runtime", () => {
       ...workflow,
       workflow: { ...workflow.workflow!, waitingMonitor: undefined },
     };
-    const completeWorkflowMonitorWait = vi.fn(() => resumed);
+    const settleWorkflowMonitorWait = vi.fn(() => ({ kind: "resumed" as const, entry: resumed }));
     const rearmWorkflow = vi.fn();
     const wakeWorkflow = vi.fn();
     const runtime = createMonitorOnDoneRuntime({
@@ -215,7 +215,7 @@ describe("monitor-ondone-runtime", () => {
       deleteLoop: vi.fn(),
       onLoopFire: vi.fn(),
       isContextCurrent: () => true,
-      completeWorkflowMonitorWait,
+      settleWorkflowMonitorWait,
       rearmWorkflow,
       wakeWorkflow,
     });
@@ -233,17 +233,20 @@ describe("monitor-ondone-runtime", () => {
     runtime.registerWorkflowWait(workflow);
     manager.fireTerminal(monitor);
 
-    expect(completeWorkflowMonitorWait).toHaveBeenCalledWith("6", workflow.workflow?.waitingMonitor);
+    expect(settleWorkflowMonitorWait).toHaveBeenCalledWith("6", workflow.workflow?.waitingMonitor, expect.any(Number));
     expect(rearmWorkflow).toHaveBeenCalledWith(resumed);
     expect(wakeWorkflow).toHaveBeenCalledWith(resumed, monitor);
   });
 
-  it("does not rearm or wake a workflow whose monitor completes at the expiry boundary", () => {
+  it.each([
+    ["at", 0],
+    ["after", 1],
+  ] as const)("does not rearm or wake a workflow whose monitor completes %s the expiry boundary", (_label, offset) => {
     vi.useFakeTimers();
     try {
-      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const expiresAt = new Date("2026-01-01T00:00:00Z").getTime();
+      vi.setSystemTime(expiresAt + offset);
       const manager = mockManager({ onCompleteReturns: false, onTerminalReturns: true });
-      const expiresAt = Date.now();
       const workflow = {
         id: "6",
         prompt: "Validate release",
@@ -270,8 +273,12 @@ describe("monitor-ondone-runtime", () => {
           waitingMonitor: { monitorId: "3", stateId: "validate", transitionSeq: 2, attachedAt: expiresAt - 30_000 },
         },
       } as LoopEntry;
-      const cleared = { ...workflow, workflow: { ...workflow.workflow!, waitingMonitor: undefined } };
-      const completeWorkflowMonitorWait = vi.fn(() => cleared);
+      const settleWorkflowMonitorWait = vi.fn(() => ({
+        kind: "expired" as const,
+        entry: workflow,
+        disposition: "paused" as const,
+        reason: "expires_at" as const,
+      }));
       const rearmWorkflow = vi.fn();
       const wakeWorkflow = vi.fn();
       const runtime = createMonitorOnDoneRuntime({
@@ -280,7 +287,7 @@ describe("monitor-ondone-runtime", () => {
         deleteLoop: vi.fn(),
         onLoopFire: vi.fn(),
         isContextCurrent: () => true,
-        completeWorkflowMonitorWait,
+        settleWorkflowMonitorWait,
         rearmWorkflow,
         wakeWorkflow,
       });
@@ -288,7 +295,11 @@ describe("monitor-ondone-runtime", () => {
       runtime.registerWorkflowWait(workflow);
       manager.fireTerminal({ id: "3", status: "completed" } as MonitorEntry);
 
-      expect(completeWorkflowMonitorWait).not.toHaveBeenCalled();
+      expect(settleWorkflowMonitorWait).toHaveBeenCalledWith(
+        "6",
+        workflow.workflow?.waitingMonitor,
+        expiresAt + offset,
+      );
       expect(rearmWorkflow).not.toHaveBeenCalled();
       expect(wakeWorkflow).not.toHaveBeenCalled();
     } finally {

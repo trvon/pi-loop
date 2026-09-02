@@ -171,7 +171,7 @@ OrchestrationGet id="1"
 OrchestrationGet id="1" workId="2"
 ```
 
-The parent is not woken merely to refill capacity. It wakes once when all work completes, attempts are exhausted, or a dispatch becomes uncertain. Results are persisted before the consume RPC. Completed and attention batches pause for inspection; `LoopUpdate` cannot mutate them. `LoopDelete` first fences cancellation, best-effort stops known workers, then pauses or deletes the controller.
+The parent is not woken merely to refill capacity. Normal terminal results are persisted with provider-owned completion status, are not consumed, and do not also generate a pi-loop aggregate wake; the provider's native output is the sole completion path. A durable pi-loop wake remains for uncertain dispatches or failures with no provider-owned terminal result. Completed and attention batches pause for inspection; `LoopUpdate` cannot mutate them. `LoopDelete` first fences cancellation, best-effort stops known workers, then pauses or deletes the controller.
 
 Session shutdown/switch stops owned workers before rebinding storage. Confirmed stops remain retryable within their attempt budget; unconfirmed workers become uncertain. A crashed runtime cannot safely reconstruct an upstream worker, so ownership-expiry recovery fails closed instead of redispatching it.
 
@@ -198,7 +198,7 @@ For a monitor launched from an active workflow, use `workflowId` instead of `onD
 MonitorCreate command="npm test" description="Validate release" workflowId="29"
 ```
 
-The workflow pauses its cadence while the monitor runs. While the same Pi runtime remains active, success, failure, timeout, or explicit `MonitorStop` resumes the same state once with status, stop reason, exit code, and output count; inspect the result and call `WorkflowTransition` with a declared outcome. Do not poll with `LoopUpdate` while it waits.
+The workflow pauses its cadence while the monitor runs. While the same Pi runtime remains active, success, failure, timeout, or explicit `MonitorStop` resumes the same state once with status, stop reason, exit code, and output count; inspect the result and call `WorkflowTransition` with a declared outcome. At or after the controller's expiry boundary, monitor completion retires the workflow before clearing the wait, rearming, or waking it. Do not poll with `LoopUpdate` while it waits.
 
 A session shutdown or switch interrupts the monitor: its in-memory process and wait are discarded without a terminal workflow wake. In session or project scope, inspect the resumed workflow and start a new monitor if the work still needs to run; memory-scoped workflows are discarded.
 
@@ -230,7 +230,7 @@ TaskUpdate id="1" status="closed" claimId="<claim-id>"  # abandon without comple
 TaskDelete id="1"
 ```
 
-The native provider is selected for the session and exposes `/tasks`, compact status-line tracking, persisted task state, lifecycle events, and task RPC replies. Standalone tasks are for independently completable backlog items; use a workflow instead when related items are ordered phases of one evolving goal. `TaskClaim` provides one live owner per task, renewable heartbeats, and takeover only after lease expiry. It also moves the task to `in_progress`; a following `TaskUpdate status="in_progress"` is harmless but redundant. Claimed terminal updates require the exact live claim token; an expired token must be replaced by reclaiming the task. Before handing off unfinished work, update its description with material progress, discovered dependencies, and the next action. `closed` is terminal like `completed`, is excluded from pending backlog work, and deliberately does not emit `tasks:completed`; use it when work is intentionally abandoned.
+The native provider is selected for the session and exposes `/tasks`, compact status-line tracking, persisted task state, lifecycle events, and task RPC replies. Standalone tasks are for independently completable backlog items; use a workflow instead when related items are ordered phases of one evolving goal. `TaskClaim` provides one live owner per task, renewable heartbeats, and takeover only after lease expiry. It also moves the task to `in_progress`; a following `TaskUpdate status="in_progress"` is harmless but redundant. Claimed subject/description edits and terminal updates require the exact live claim token; an expired token must be replaced by reclaiming the task. Before handing off unfinished work, update its description with material progress, discovered dependencies, and the next action. `closed` is terminal like `completed`, is excluded from pending backlog work, and deliberately does not emit `tasks:completed`; use it when work is intentionally abandoned.
 
 See the [reference](./REFERENCE.md#mutation-guarantees) for ownership and mutation boundaries.
 

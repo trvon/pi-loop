@@ -1115,6 +1115,37 @@ describe("LoopStore (absolute path)", () => {
     expect(completed?.workflow?.waitingMonitor).toBeUndefined();
   });
 
+  it("settles monitor expiry and wait completion atomically", () => {
+    const store = new LoopStore();
+    const workflow = store.create({ type: "dynamic" }, "Validate", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "validate",
+        states: {
+          validate: { prompt: "Run validation.", on: { passed: "done" } },
+          done: { prompt: "Report success.", terminal: "completed" },
+        },
+      },
+    });
+    const attached = store.attachWorkflowMonitor(workflow.id, "18", {
+      stateId: "validate",
+      transitionSeq: 0,
+    });
+    const wait = attached?.workflow?.waitingMonitor;
+
+    expect(store.settleWorkflowMonitorWait(workflow.id, wait!, workflow.expiresAt)).toMatchObject({
+      kind: "expired",
+      disposition: "paused",
+      reason: "expires_at",
+    });
+    expect(store.get(workflow.id)).toMatchObject({
+      status: "paused",
+      pause: { kind: "controller_limit", reason: "loop expiry reached" },
+      workflow: { waitingMonitor: wait },
+    });
+  });
+
   it("clears a monitor wait when an explicit workflow transition wins", () => {
     const store = new LoopStore();
     const workflow = store.create({ type: "dynamic" }, "Validate", {
@@ -1295,6 +1326,65 @@ describe("LoopStore workflow execution leases", () => {
         failure: { code: "revision_conflict" },
       });
       expect(readFileSync(lPath, "utf8")).toBe(raw);
+    } finally {
+      rmSync(lPath, { force: true });
+      rmSync(lPath + ".prev", { force: true });
+      rmSync(lPath + ".lock", { force: true });
+      rmSync(lPath + ".tmp", { force: true });
+    }
+  });
+
+  it("loads and revises legacy workflow history with unreachable states", () => {
+    const lPath = join(tmpdir(), `pi-loop-legacy-unreachable-history-${Date.now()}.json`);
+    const legacyDefinition = {
+      version: 1 as const,
+      initialState: "work",
+      states: {
+        work: { prompt: "Work.", on: { done: "complete" } },
+        complete: { prompt: "Report.", terminal: "completed" as const },
+        orphan: { prompt: "Legacy unreachable state." },
+      },
+    };
+    writeFileSync(lPath, JSON.stringify({
+      nextId: 2,
+      loops: [{
+        id: "1",
+        prompt: "legacy unreachable",
+        trigger: { type: "dynamic" },
+        status: "active",
+        recurring: true,
+        createdAt: 1,
+        updatedAt: 1,
+        expiresAt: Date.now() + 60_000,
+        workflow: {
+          definition: legacyDefinition,
+          definitionRevision: 2,
+          revisionHistory: [{
+            revision: 1,
+            definition: legacyDefinition,
+            reason: "Legacy revision.",
+            supersededAt: 2,
+            supersededBy: { sessionId: "session-a", runtimeId: "runtime-a" },
+            changes: [{ op: "revise_state", stateId: "complete", prompt: "Report." }],
+          }],
+          currentState: "work",
+          transitionSeq: 0,
+          stateEnteredAt: 1,
+          attemptsByState: { work: 1 },
+          stateFireCounts: {},
+        },
+      }],
+    }));
+    try {
+      const store = new LoopStore(lPath);
+      expect(store.get("1")?.workflow?.revisionHistory).toHaveLength(1);
+      expect(store.reviseWorkflow("1", {
+        expectedRevision: 2,
+        expectedState: "work",
+        expectedTransitionSeq: 0,
+        reason: "Revise reachable reporting.",
+        changes: [{ op: "revise_state", stateId: "complete", prompt: "Report revised." }],
+      }, { sessionId: "session-a", runtimeId: "runtime-a" })).toMatchObject({ applied: true });
     } finally {
       rmSync(lPath, { force: true });
       rmSync(lPath + ".prev", { force: true });

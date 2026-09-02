@@ -70,6 +70,19 @@ describe("workflow reducer", () => {
       .toBe(`Workflow state "${stateId}" is not reachable from initial state "start"`);
   });
 
+  it("accepts a cycle when every state remains reachable from the initial state", () => {
+    expect(validateWorkflowDefinition({
+      version: 1,
+      initialState: "start",
+      states: {
+        start: { prompt: "Start", on: { next: "a" } },
+        a: { prompt: "A", on: { next: "b" } },
+        b: { prompt: "B", on: { retry: "a", done: "complete" } },
+        complete: { prompt: "Done", terminal: "completed" },
+      },
+    })).toBeUndefined();
+  });
+
   it("embeds and leases initial state work in the workflow aggregate", () => {
     const taskDefinition: WorkflowDefinition = {
       version: 1,

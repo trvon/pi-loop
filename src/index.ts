@@ -96,6 +96,7 @@ export default function (pi: ExtensionAPI) {
     hasPendingTasks: () => hasPendingTasks(),
     cleanDoneTasks: () => cleanDoneTasks(),
     getHasPendingMessages: () => _latestCtx?.hasPendingMessages() ?? false,
+    getLoop: (id) => store.get(id),
     onLoopNotificationDelivered: ({ loopId, orchestrationWakeSequence }) => {
       if (orchestrationWakeSequence !== undefined) orchestrationRuntime?.acknowledgeWake(loopId, orchestrationWakeSequence);
     },
@@ -110,7 +111,13 @@ export default function (pi: ExtensionAPI) {
     },
     onLoopFire,
     isContextCurrent: isCurrentExtensionContext,
-    completeWorkflowMonitorWait: (id, expected) => store.completeWorkflowMonitorWait(id, expected),
+    settleWorkflowMonitorWait: (id, expected, now) => {
+      const settlement = store.settleWorkflowMonitorWait(id, expected, now);
+      if (settlement.kind === "expired") {
+        emitLoopExpired(settlement.entry, settlement.disposition, "monitor", settlement.reason);
+      }
+      return settlement;
+    },
     rearmWorkflow: (entry) => {
       triggerSystem.add(entry);
     },
@@ -244,6 +251,7 @@ export default function (pi: ExtensionAPI) {
       taskBacklog: entry.taskBacklog,
       dynamic: entry.dynamic,
       workflow: entry.workflow,
+      controllerStatus: entry.status,
       orchestration: entry.orchestration,
       orchestrationWakeSequence,
       fireLimitReached: atMaxFires(entry),
@@ -328,7 +336,8 @@ export default function (pi: ExtensionAPI) {
       });
     }
 
-    emitLoopFire(firedEntry, monitor);
+    const authoritativeEntry = store.get(firedEntry.id) ?? firedEntry;
+    emitLoopFire({ ...authoritativeEntry, prompt: entry.prompt }, monitor);
   }
 
   // ── Session lifecycle ──
