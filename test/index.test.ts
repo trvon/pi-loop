@@ -1551,6 +1551,46 @@ describe("dynamic loop pump", () => {
     expect(sentCustomMessages).toHaveLength(2);
   });
 
+  it("keeps a free-text dynamic controller registered through its twentieth fire", async () => {
+    const { pi, commandMap, toolMap, extensionHandlers } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    const ctx = makeCtx();
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    await commandMap.get("loop")!.handler?.("survive twenty hourly iterations", ctx);
+    await Promise.resolve();
+
+    const loopUpdate = toolMap.get("LoopUpdate")!;
+    for (let iteration = 1; iteration < 20; iteration++) {
+      const updated = await loopUpdate.execute?.(`update-${iteration}`, {
+        id: "1",
+        status: "continue",
+        state: `iteration ${iteration}`,
+      });
+      expect(updated?.content[0]?.text).not.toContain("not found");
+      for (const handler of extensionHandlers.get("agent_end") ?? []) await handler(null, ctx);
+      await Promise.resolve();
+    }
+
+    const listed = await toolMap.get("LoopList")!.execute?.("list-after-twenty", {});
+    expect(listed?.content[0]?.text).toContain("#1");
+    const finalUpdate = await loopUpdate.execute?.("post-twenty-update", {
+      id: "1",
+      status: "continue",
+      state: "still active",
+    });
+    expect(finalUpdate?.content[0]?.text).not.toContain("not found");
+
+    const storePath = resolveLoopStorePath({ loopScope: "session", cwd }, "test-session")!;
+    expect(readJsonFile(storePath)).toMatchObject({
+      nextId: 2,
+      loops: [{ id: "1", fireCount: 20 }],
+    });
+  });
+
   it("recovers a queued dynamic wake after a session switch clears in-memory notifications", async () => {
     const { pi, commandMap, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
 

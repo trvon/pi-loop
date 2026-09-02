@@ -230,7 +230,7 @@ describe("registerLoopCommand", () => {
     expect(h.store.get("1")?.trigger).toEqual({ type: "dynamic" });
     expect(h.store.get("1")?.prompt).toBe("finish the monitor wake fix");
     expect(h.store.get("1")?.recurring).toBe(true);
-    expect(h.store.get("1")?.maxFires).toBe(20);
+    expect(h.store.get("1")?.maxFires).toBeUndefined();
     expect(h.store.get("1")?.dynamic).toMatchObject({
       goal: "finish the monitor wake fix",
       iteration: 0,
@@ -239,6 +239,17 @@ describe("registerLoopCommand", () => {
     expect(h.triggerSystem.add).toHaveBeenCalledTimes(1);
     expect(h.onDynamicLoopActivated).toHaveBeenCalledWith(h.store.get("1"));
     expect(ctx.notifications[0].message).toContain("Dynamic loop #1 created");
+  });
+
+  it("keeps same-store loop identities monotonic after explicit deletion", async () => {
+    const ctx = createCtx();
+
+    await h.command.handler!("first goal", ctx);
+    expect(h.store.delete("1")).toBe(true);
+    await h.command.handler!("second goal", ctx);
+
+    expect(h.store.get("1")).toBeUndefined();
+    expect(h.store.get("2")?.prompt).toBe("second goal");
   });
 
   it("keeps numeric free-text goals in dynamic mode", async () => {
