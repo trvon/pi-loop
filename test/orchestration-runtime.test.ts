@@ -100,7 +100,7 @@ describe("subagent orchestration runtime", () => {
     expect(h.store.get(h.entry.id)?.orchestration?.work.map((item) => item.status)).toEqual(["active", "active", "pending"]);
   });
 
-  it("settles before consume, coalesces refill, and wakes only after the batch settles", async () => {
+  it("settles without consuming provider output, coalesces refill, and wakes only after the batch settles", async () => {
     const order: string[] = [];
     let nextAgent = 0;
     const rpc = vi.fn(async (channel: string) => {
@@ -113,7 +113,7 @@ describe("subagent orchestration runtime", () => {
 
     h.pi.events.emit("subagents:completed", { id: "agent-1", status: "completed", result: "first", toolUses: 2, durationMs: 10 });
     expect(h.store.get(h.entry.id)?.orchestration?.work[0]).toMatchObject({ status: "completed" });
-    expect(order.at(-1)).toBe("subagents:rpc:consume");
+    expect(order.filter((channel) => channel === "subagents:rpc:consume")).toEqual([]);
     expect(h.emitWake).not.toHaveBeenCalled();
 
     await h.drain();

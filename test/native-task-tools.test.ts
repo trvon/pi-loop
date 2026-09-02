@@ -237,6 +237,50 @@ describe("TaskUpdate", () => {
     expect(h.emittedEvents.some((e) => e.name === "tasks:updated" && e.payload.taskId === "1")).toBe(true);
   });
 
+  it("requires a claim bearer before changing claimed task instructions", async () => {
+    await h.text("TaskClaim", { id: "1", leaseSeconds: 60 });
+    const before = h.taskStore.get("1");
+
+    expect(await h.text("TaskUpdate", { id: "1", description: "unowned rewrite" })).toContain("claimId is required");
+    expect(h.taskStore.get("1")).toEqual(before);
+  });
+
+  it("rejects the wrong claim bearer without changing task instructions", async () => {
+    await h.text("TaskClaim", { id: "1", leaseSeconds: 60 });
+    const before = h.taskStore.get("1");
+
+    expect(await h.text("TaskUpdate", { id: "1", description: "wrong rewrite", claimId: "wrong" }))
+      .toContain("Claim token does not match");
+    expect(h.taskStore.get("1")).toEqual(before);
+  });
+
+  it("allows the live claim bearer to change task instructions", async () => {
+    await h.text("TaskClaim", { id: "1", leaseSeconds: 60 });
+    const claimId = h.taskStore.get("1")?.claim?.claimId;
+
+    expect(await h.text("TaskUpdate", { id: "1", description: "owner rewrite", claimId })).toContain("updated");
+    expect(h.taskStore.get("1")?.description).toBe("owner rewrite");
+  });
+
+  it("requires reclaim before an expired bearer changes task instructions", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      h = setup();
+      h.taskStore.create("subject", "desc");
+      await h.text("TaskClaim", { id: "1", leaseSeconds: 60 });
+      const claimId = h.taskStore.get("1")?.claim?.claimId;
+      vi.advanceTimersByTime(60_001);
+      const before = h.taskStore.get("1");
+
+      expect(await h.text("TaskUpdate", { id: "1", description: "expired rewrite", claimId }))
+        .toContain("lease expired; reclaim the task");
+      expect(h.taskStore.get("1")).toEqual(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects an update with no requested changes", async () => {
     const before = h.taskStore.get("1");
     expect(await h.text("TaskUpdate", { id: "1" })).toContain("No update fields were provided");

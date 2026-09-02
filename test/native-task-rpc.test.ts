@@ -329,6 +329,31 @@ describe("tasks:rpc:update", () => {
     expect(evt?.payload.previousStatus).toBe("pending");
   });
 
+  it("rejects a claimed-task instruction edit without the live bearer", async () => {
+    const { mock, store } = setup();
+    store!.create("subject", "desc");
+    store!.claim("1", {
+      claimId: "claim-1",
+      ownerSessionId: "session-a",
+      ownerRuntimeId: "runtime-a",
+      leaseMs: 60_000,
+    });
+    const before = store!.get("1");
+
+    mock.pi.events.emit("tasks:rpc:update", {
+      requestId: "r1",
+      id: "1",
+      description: "unowned rewrite",
+    });
+    await flushAsync();
+
+    expect(replyOf(mock, "tasks:rpc:update", "r1")).toEqual({
+      success: false,
+      error: "Task #1 has a live claim; claimId is required.",
+    });
+    expect(store!.get("1")).toEqual(before);
+  });
+
   it("emits both the transition event and tasks:updated when status and details change together", async () => {
     const { mock, store } = setup();
     store!.create("subject", "desc");

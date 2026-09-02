@@ -26,7 +26,7 @@ function clearTestLoopStore(sessionId: string): void {
 }
 
 describe("workflow runtime wiring", () => {
-  const sessionIds = ["workflow-cap-session", "workflow-task-session", "workflow-reissue-session"];
+  const sessionIds = ["workflow-cap-session", "workflow-task-session", "workflow-reissue-session", "workflow-stale-wake-session"];
   beforeEach(() => sessionIds.forEach(clearTestLoopStore));
   afterEach(() => sessionIds.forEach(clearTestLoopStore));
   it("pauses an immediately fired workflow state at its local fire cap with recovery guidance", async () => {
@@ -138,6 +138,42 @@ describe("workflow runtime wiring", () => {
     });
     const taskPath = resolveTaskStorePath({ loopScope: "session" }, "workflow-reissue-session");
     expect(new TaskStore(taskPath).list()).toEqual([]);
+  });
+
+  it("drops a buffered workflow wake after the authoritative controller completes", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
+    extension(pi as any);
+    await flushAsync();
+
+    const ctx = {
+      ui: { setStatus: vi.fn(), setWidget: vi.fn() },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "workflow-stale-wake-session" },
+    };
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    for (const handler of extensionHandlers.get("agent_start") ?? []) await handler(null, ctx);
+
+    const definition = JSON.stringify({
+      version: 1,
+      initialState: "work",
+      states: {
+        work: {
+          prompt: "Instructions that become stale before delivery.",
+          task: { subject: "Stale work", description: "Do not run after completion." },
+          on: { done: "complete" },
+        },
+        complete: { prompt: "Finished.", terminal: "completed" },
+      },
+    });
+    await toolMap.get("WorkflowCreate")!.execute!("create", { goal: "Finish before wake delivery", definition });
+    expect(sentMessages).toHaveLength(0);
+
+    const completed = await toolMap.get("WorkflowTransition")!.execute!("complete", { id: "1", outcome: "done" });
+    expect(completed.content[0].text).toContain("completed and deleted");
+    for (const handler of extensionHandlers.get("agent_end") ?? []) await handler(null, ctx);
+    await flushAsync();
+
+    expect(sentMessages).toEqual([]);
   });
 
   it("creates and completes task-bearing workflow work", async () => {

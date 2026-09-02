@@ -238,6 +238,64 @@ describe("monitor-ondone-runtime", () => {
     expect(wakeWorkflow).toHaveBeenCalledWith(resumed, monitor);
   });
 
+  it("does not rearm or wake a workflow whose monitor completes at the expiry boundary", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const manager = mockManager({ onCompleteReturns: false, onTerminalReturns: true });
+      const expiresAt = Date.now();
+      const workflow = {
+        id: "6",
+        prompt: "Validate release",
+        trigger: { type: "dynamic" },
+        status: "active",
+        recurring: true,
+        createdAt: expiresAt - 60_000,
+        updatedAt: expiresAt - 60_000,
+        expiresAt,
+        workflow: {
+          definition: {
+            version: 1,
+            initialState: "validate",
+            states: {
+              validate: { prompt: "Run validation.", on: { passed: "done" } },
+              done: { prompt: "Report success.", terminal: "completed" },
+            },
+          },
+          currentState: "validate",
+          transitionSeq: 2,
+          stateEnteredAt: expiresAt - 60_000,
+          attemptsByState: { validate: 1 },
+          stateFireCounts: {},
+          waitingMonitor: { monitorId: "3", stateId: "validate", transitionSeq: 2, attachedAt: expiresAt - 30_000 },
+        },
+      } as LoopEntry;
+      const cleared = { ...workflow, workflow: { ...workflow.workflow!, waitingMonitor: undefined } };
+      const completeWorkflowMonitorWait = vi.fn(() => cleared);
+      const rearmWorkflow = vi.fn();
+      const wakeWorkflow = vi.fn();
+      const runtime = createMonitorOnDoneRuntime({
+        monitorManager: manager as any,
+        getLoop: () => workflow,
+        deleteLoop: vi.fn(),
+        onLoopFire: vi.fn(),
+        isContextCurrent: () => true,
+        completeWorkflowMonitorWait,
+        rearmWorkflow,
+        wakeWorkflow,
+      });
+
+      runtime.registerWorkflowWait(workflow);
+      manager.fireTerminal({ id: "3", status: "completed" } as MonitorEntry);
+
+      expect(completeWorkflowMonitorWait).not.toHaveBeenCalled();
+      expect(rearmWorkflow).not.toHaveBeenCalled();
+      expect(wakeWorkflow).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("expires the loop when the monitor already finished in a non-notifying state", async () => {
     const manager = mockManager({ onCompleteReturns: false, status: "stopped" });
     const { runtime, onLoopFire, deleteLoop } = setup(manager);
