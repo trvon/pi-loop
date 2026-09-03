@@ -167,7 +167,11 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       if (params.workId && !item) {
         const message = `Work #${params.workId} not found in orchestration #${params.id}`;
         return Promise.resolve(textResult(message, {
-          kind: "orchestration", action: "inspect", tone: "error", summary: message, expanded: [orchestrationControllerText(entry)],
+          kind: "orchestration",
+          action: "inspect",
+          tone: "error",
+          summary: message,
+          expanded: orchestrationDisplayDetails(entry).expanded,
         }));
       }
       const details = orchestrationDisplayDetails(entry, item);
