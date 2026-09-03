@@ -2,8 +2,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { formatTrigger } from "../loop-format.js";
 import { parseInterval } from "../loop-parse.js";
-import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { LoopEntry, Trigger } from "../types.js";
+import { orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "../ui/workflow-presentation.js";
 import { getActiveWorkflowStateLoop } from "../workflow-reducer.js";
@@ -411,9 +411,8 @@ export function registerLoopTools(options: LoopToolsOptions): void {
         if (entry.autoTask) line += " [auto-task]";
         if (entry.taskBacklog) line += " [backlog-worker]";
         if (entry.orchestration) {
-          const counts = getOrchestrationCounts(entry.orchestration);
-          line += ` [orchestration:${entry.orchestration.status}]`;
-          line += ` pending=${counts.pending} active=${counts.active} completed=${counts.completed} failed=${counts.failed} uncertain=${counts.uncertain}`;
+          line += ` [orchestration:${orchestrationStatusLabel(entry.orchestration.status)}]`;
+          line += ` ${orchestrationProgressLabel(entry.orchestration)}`;
           lines.push(line);
         } else if (entry.workflow && activity) {
           line += ` [workflow:${entry.workflow.currentState} ${formatCompactWorkflowDuration(activity.stateAgeMs)}]`;

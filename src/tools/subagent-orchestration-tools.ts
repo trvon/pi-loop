@@ -1,11 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { LoopScope } from "../runtime/scope.js";
 import type { LoopStore } from "../store.js";
-import type { LoopEntry, OrchestrationActor, OrchestrationDefinitionInput, OrchestrationState, OrchestrationWorkItem } from "../types.js";
+import type { OrchestrationActor, OrchestrationDefinitionInput } from "../types.js";
+import { orchestrationControllerText, orchestrationDisplayDetails, orchestrationProgressLabel, orchestrationWorkText } from "../ui/orchestration-presentation.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
-import { displayRows, textResult } from "./tool-result.js";
+import { textResult } from "./tool-result.js";
 
 const MAX_WORK_ITEMS = 32;
 const MAX_CONCURRENCY = 8;
@@ -37,8 +37,8 @@ interface CreateParams {
 
 function errorResult(message: string) {
   return textResult(message, {
-    kind: "loop",
-    action: "orchestration",
+    kind: "orchestration",
+    action: "create",
     tone: "error",
     summary: "Orchestration was not created",
     expanded: [message],
@@ -84,42 +84,6 @@ function definitionFrom(params: CreateParams): OrchestrationDefinitionInput {
     model: params.model,
     maxTurns: params.maxTurns,
   };
-}
-
-function formatWork(item: OrchestrationWorkItem): string {
-  const dispatch = item.dispatches.at(-1);
-  const label = item.agentType ?? "general-purpose";
-  let line = `#${item.id} [${item.status}] ${label} · ${item.prompt.replace(/\s+/g, " ").slice(0, 120)}`;
-  if (dispatch?.agentId) line += ` · agent=${dispatch.agentId}`;
-  if (item.attemptCount > 0) line += ` · attempts=${item.attemptCount}`;
-  return line;
-}
-
-function formatController(entry: LoopEntry, state: OrchestrationState): string {
-  const counts = getOrchestrationCounts(state);
-  return [
-    `Orchestration #${entry.id} · ${state.status}`,
-    `Goal: ${state.goal}`,
-    `Counts: pending=${counts.pending} active=${counts.active} completed=${counts.completed} failed=${counts.failed} uncertain=${counts.uncertain} cancelled=${counts.cancelled}`,
-    `Limits: concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`,
-    ...state.work.map(formatWork),
-  ].join("\n");
-}
-
-function formatWorkDetails(entry: LoopEntry, state: OrchestrationState, item: OrchestrationWorkItem): string {
-  const lines = [
-    `Orchestration #${entry.id} · Work #${item.id} · ${item.status}`,
-    `Agent type: ${item.agentType ?? "general-purpose"}`,
-    `Prompt: ${item.prompt}`,
-    `Attempts: ${item.attemptCount}/${state.maxAttempts}`,
-  ];
-  for (const dispatch of item.dispatches) {
-    lines.push(`Dispatch ${dispatch.attempt}: ${dispatch.status}${dispatch.agentId ? ` · agent=${dispatch.agentId}` : ""}`);
-    if (dispatch.result) lines.push(`Result: ${dispatch.result}`);
-    if (dispatch.error) lines.push(`Error: ${dispatch.error}`);
-    lines.push(`Consume: ${dispatch.consumeStatus}`);
-  }
-  return lines.join("\n");
 }
 
 export function registerSubagentOrchestrationTools(options: OrchestrationToolsOptions): void {
@@ -172,11 +136,11 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {
-        kind: "loop",
-        action: "orchestration",
+        kind: "orchestration",
+        action: "create",
         tone: "success",
-        summary: `Orchestration #${entry.id} active · ${definition.work.length} items`,
-        expanded: [`Goal: ${definition.goal}`, `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
+        summary: `Orchestration #${entry.id} running · ${orchestrationProgressLabel(entry.orchestration!)}`,
+        expanded: [`Goal: ${definition.goal}`, `Status: running`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
       });
     },
   });
@@ -196,24 +160,21 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       if (!entry?.orchestration) {
         const message = `Orchestration #${params.id} not found`;
         return Promise.resolve(textResult(message, {
-          kind: "loop", action: "orchestration", tone: "error", summary: message, expanded: ["Use LoopList to find orchestration IDs."],
+          kind: "orchestration", action: "inspect", tone: "error", summary: message, expanded: ["Use LoopList to find orchestration IDs."],
         }));
       }
       const item = params.workId ? entry.orchestration.work.find((candidate) => candidate.id === params.workId) : undefined;
       if (params.workId && !item) {
         const message = `Work #${params.workId} not found in orchestration #${params.id}`;
         return Promise.resolve(textResult(message, {
-          kind: "loop", action: "orchestration", tone: "error", summary: message, expanded: [formatController(entry, entry.orchestration)],
+          kind: "orchestration", action: "inspect", tone: "error", summary: message, expanded: [orchestrationControllerText(entry)],
         }));
       }
-      const message = item ? formatWorkDetails(entry, entry.orchestration, item) : formatController(entry, entry.orchestration);
-      return Promise.resolve(textResult(message, {
-        kind: "loop",
-        action: "orchestration",
-        tone: entry.orchestration.status === "needs_attention" ? "warning" : "info",
-        summary: item ? `Orchestration #${entry.id} · work #${item.id} ${item.status}` : `Orchestration #${entry.id} · ${entry.orchestration.status}`,
-        expanded: displayRows(message.split("\n")),
-      }));
+      const details = orchestrationDisplayDetails(entry, item);
+      const message = item
+        ? orchestrationWorkText(entry, item)
+        : orchestrationControllerText(entry);
+      return Promise.resolve(textResult(message, details));
     },
   });
 }

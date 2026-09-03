@@ -12,8 +12,8 @@ import {
   type ReducerNotification,
   reduceNotificationState,
 } from "../notification-reducer.js";
-import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { DynamicLoopState, LoopEntry, MonitorOutcome, OrchestrationState, Trigger, WorkflowRunState } from "../types.js";
+import { orchestrationProgressLabel, orchestrationStatusLabel, orchestrationWakeHeading, orchestrationWorkStatusLabel } from "../ui/orchestration-presentation.js";
 import { getWorkflowOutcomeAvailability, type WorkflowOutcomeAvailability } from "../workflow-reducer.js";
 import type { LoopExpiredPayload } from "./loop-events.js";
 import { TASK_BACKLOG_ACTION_CONTRACT } from "./task-backlog-runtime.js";
@@ -145,12 +145,11 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       : "";
 
     if (data.orchestration) {
-      const counts = getOrchestrationCounts(data.orchestration);
       const lines = [
-        `[pi-loop] Orchestration #${loopId} requires parent attention.${constraint}`,
+        `${orchestrationWakeHeading(loopId, data.orchestration)}${constraint}`,
         `Goal: ${data.orchestration.goal}`,
-        `Status: ${data.orchestration.status}`,
-        `Counts: pending=${counts.pending} active=${counts.active} completed=${counts.completed} failed=${counts.failed} uncertain=${counts.uncertain} cancelled=${counts.cancelled}`,
+        `Status: ${orchestrationStatusLabel(data.orchestration.status)}`,
+        `Progress: ${orchestrationProgressLabel(data.orchestration)}`,
       ];
       const footer = [
         `Use OrchestrationGet({ id: "${loopId}" }) for durable bounded evidence.`,
@@ -159,12 +158,13 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
           : "The controller is paused when no worker remains active. Review failed or uncertain work; do not use TaskUpdate, LoopUpdate, or WorkflowTransition for this controller.",
       ];
       let omitted = 0;
+      const omissionReserve = `... ${data.orchestration.work.length} work item(s) omitted; inspect them with OrchestrationGet.`;
       for (const item of data.orchestration.work) {
         const dispatch = item.dispatches.at(-1);
-        const itemLines = [`#${item.id} [${item.status}] ${item.agentType ?? "general-purpose"}`];
+        const itemLines = [`#${item.id} [${orchestrationWorkStatusLabel(item.status)}] ${item.agentType ?? "general-purpose"}`];
         if (dispatch?.result) itemLines.push(`Result #${item.id}: ${dispatch.result.replace(/\s+/g, " ").slice(0, 500)}`);
         if (dispatch?.error) itemLines.push(`Error #${item.id}: ${dispatch.error.replace(/\s+/g, " ").slice(0, 500)}`);
-        const projected = [...lines, ...itemLines, ...footer].join("\n").length;
+        const projected = [...lines, ...itemLines, omissionReserve, ...footer].join("\n").length;
         if (projected > MAX_ORCHESTRATION_WAKE_CHARS) omitted += 1;
         else lines.push(...itemLines);
       }

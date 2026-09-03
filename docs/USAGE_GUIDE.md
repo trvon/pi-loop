@@ -171,6 +171,8 @@ OrchestrationGet id="1"
 OrchestrationGet id="1" workId="2"
 ```
 
+These surfaces call the controller an **orchestration**: `running`, `needs attention`, `complete`, or `cancelled`. Work is `queued`, `running`, `complete`, `failed`, `uncertain`, or `cancelled`. The status line and `/loop` inspector retain completed and attention batches until explicit deletion. This durable batch is distinct from provider-native `SubagentWorkflow`, whose FleetView, conversations, and transcripts remain provider-owned.
+
 The parent is not woken merely to refill capacity. Normal terminal results are persisted with provider-owned completion status, are not consumed, and do not also generate a pi-loop aggregate wake; the provider's native output is the sole completion path. A durable pi-loop wake remains for uncertain dispatches or failures with no provider-owned terminal result. Completed and attention batches pause for inspection; `LoopUpdate` cannot mutate them. `LoopDelete` first fences cancellation, best-effort stops known workers, then pauses or deletes the controller.
 
 Session shutdown/switch stops owned workers before rebinding storage. Confirmed stops remain retryable within their attempt budget; unconfirmed workers become uncertain. A crashed runtime cannot safely reconstruct an upstream worker, so ownership-expiry recovery fails closed instead of redispatching it.
