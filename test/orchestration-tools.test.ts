@@ -151,10 +151,17 @@ describe("subagent orchestration tools", () => {
     expect(warning.details.summary).not.toContain("needs_attention");
   });
 
-  it("reports missing controllers and work without mutation", async () => {
+  it("reports missing controllers and work with bounded context", async () => {
     expect(await h.text("OrchestrationGet", { id: "404" })).toContain("Orchestration #404 not found");
-    await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }] });
-    expect(await h.text("OrchestrationGet", { id: "1", workId: "404" })).toContain("Work #404 not found");
+    await h.text("OrchestrationCreate", {
+      goal: "Review",
+      work: Array.from({ length: 12 }, (_, index) => ({ prompt: `Inspect ${index + 1}` })),
+    });
+    const missing = await h.result("OrchestrationGet", { id: "1", workId: "404" });
+    expect(missing.content[0].text).toContain("Work #404 not found");
+    expect(missing.details.expanded).toHaveLength(10);
+    expect(missing.details.expanded.at(-1)).toBe("… 7 more");
+    expect(missing.details.expanded.every((line: string) => !line.includes("\n"))).toBe(true);
   });
 
   it("renders compact create and inspect calls", () => {
