@@ -353,8 +353,9 @@ describe("LoopList", () => {
     });
 
     const out = await h.text("LoopList", {});
-    expect(out).toContain("[orchestration:active]");
-    expect(out).toContain("pending=1 active=0 completed=0 failed=0 uncertain=0");
+    expect(out).toContain("[orchestration:running]");
+    expect(out).toContain("0/1 complete · 0 running · 1 queued");
+    expect(out).not.toContain("pending=1 active=0");
   });
 });
 

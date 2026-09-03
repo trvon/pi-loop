@@ -256,10 +256,10 @@ describe("subagent orchestration runtime wiring", () => {
     expect(emittedEvents.filter((event) => event.name === "subagents:rpc:consume")).toHaveLength(0);
     expect(sentMessages.filter((item) => item.message.content.includes("Orchestration #1 requires parent attention"))).toHaveLength(0);
     const inspected = await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1" });
-    expect(inspected.content[0].text).toContain("completed=2");
+    expect(inspected.content[0].text).toContain("Progress: 2/2 complete · 0 running");
     const loops = await toolMap.get("LoopList")!.execute!("list", {});
     expect(loops.content[0].text).toContain("[paused]");
-    expect(loops.content[0].text).toContain("[orchestration:completed]");
+    expect(loops.content[0].text).toContain("[orchestration:complete]");
   });
 });
 

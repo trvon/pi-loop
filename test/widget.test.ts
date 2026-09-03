@@ -282,7 +282,27 @@ describe("LoopWidget status rendering", () => {
     widget.update();
     expect(latestStatusCall()).toEqual([
       "loops",
-      "◇ 1 orchestration | #1 active · 0/2 done · 0 active",
+      "◇ 1 orchestration | #1 running · 0/2 complete · 0 running · 2 queued",
+    ]);
+  });
+
+  it("keeps a completed orchestration visible until its durable results are deleted", () => {
+    const entry = store.create({ type: "dynamic" }, "Parallel review", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "s", runtimeId: "r", generation: 1 },
+        definition: { goal: "Parallel review", work: [{ prompt: "Inspect API" }] },
+      },
+    });
+    entry.orchestration!.status = "completed";
+    entry.orchestration!.work[0]!.status = "completed";
+    store.pause(entry.id, "orchestration_settlement", "batch complete");
+
+    widget.update();
+
+    expect(latestStatusCall()).toEqual([
+      "loops",
+      "◇ 1 orchestration | #1 complete · 1/1 complete · 0 running",
     ]);
   });
 

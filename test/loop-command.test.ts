@@ -355,11 +355,19 @@ describe("registerLoopCommand", () => {
       },
     });
     let loopVisits = 0;
+    let selectedChoice = "";
+    let detail = "";
     const ui = {
-      select: vi.fn(async (title: string) => {
+      select: vi.fn(async (title: string, choices?: string[]) => {
         if (title === "Loop") return "View loops";
-        if (title === "Loops") return loopVisits++ === 0 ? "* #1 [active] Parallel review (dynamic)" : "< Back";
-        if (title.startsWith("#1")) return "x Delete";
+        if (title === "Loops") {
+          selectedChoice = choices?.find((choice) => choice.includes("#1")) ?? "";
+          return loopVisits++ === 0 ? selectedChoice : "< Back";
+        }
+        if (title.startsWith("Orchestration #1")) {
+          detail = title;
+          return "x Delete";
+        }
         return "< Back";
       }),
       input: vi.fn(),
@@ -368,8 +376,13 @@ describe("registerLoopCommand", () => {
 
     await h.command.handler!("", { ui } as any);
 
+    expect(selectedChoice).toContain("[running: 0/1 complete · 0 running · 1 queued]");
+    expect(detail).toContain("Orchestration #1 · running");
+    expect(detail).toContain("Progress: 0/1 complete · 0 running · 1 queued");
+    expect(detail).not.toContain('Trigger: {"type":"dynamic"}');
     expect(h.cancelOrchestration).toHaveBeenCalledWith("1", "delete");
     expect(h.store.get("1")).toBeUndefined();
+    expect(ui.notify).toHaveBeenCalledWith("Orchestration #1 deleted", "info");
   });
 
   it("deletes a workflow loop and its trigger from the command", async () => {

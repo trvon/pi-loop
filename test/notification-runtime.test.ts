@@ -159,7 +159,10 @@ describe("notification runtime session boundary", () => {
     runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
     await runtime.flushPendingNotifications({ ignorePendingMessages: true });
 
-    expect(sentMessages[0].message.content).toContain("Orchestration #7 requires parent attention");
+    expect(sentMessages[0].message.content).toContain("Orchestration #7 complete");
+    expect(sentMessages[0].message.content).toContain("Status: complete");
+    expect(sentMessages[0].message.content).toContain("Progress: 1/1 complete · 0 running");
+    expect(sentMessages[0].message.content).not.toContain("requires parent attention");
     expect(delivered).toHaveBeenCalledWith({ loopId: "7", orchestrationWakeSequence: 3 });
   });
 

@@ -29,7 +29,7 @@ describe("subagent orchestration tools", () => {
   });
 
   it("creates a finite session-scoped batch without arming a second scheduler", async () => {
-    const out = await h.text("OrchestrationCreate", {
+    const created = await h.result("OrchestrationCreate", {
       goal: "Review release readiness",
       work: [
         { prompt: "Inspect API compatibility", agentType: "Explore" },
@@ -40,9 +40,15 @@ describe("subagent orchestration tools", () => {
       model: "test/model",
       maxTurns: 8,
     });
+    const out = created.content[0].text as string;
 
     expect(out).toContain("Orchestration #1 created");
     expect(out).toContain("2 work items · concurrency 2");
+    expect(created.details).toMatchObject({
+      kind: "orchestration",
+      tone: "success",
+      summary: "Orchestration #1 running · 0/2 complete · 0 running · 2 queued",
+    });
     expect(h.probeSubagents).toHaveBeenCalledTimes(1);
     expect(h.store.get("1")).toMatchObject({
       trigger: { type: "dynamic" },
@@ -91,9 +97,9 @@ describe("subagent orchestration tools", () => {
     });
 
     const summary = await h.text("OrchestrationGet", { id: "1" });
-    expect(summary).toContain("Orchestration #1 · active");
-    expect(summary).toContain("pending=1");
-    expect(summary).toContain("#1 [pending] Explore · Inspect API compatibility");
+    expect(summary).toContain("Orchestration #1 · running");
+    expect(summary).toContain("0/1 complete · 0 running · 1 queued");
+    expect(summary).toContain("#1 [queued] Explore · Inspect API compatibility");
 
     let state = h.store.get("1")!.orchestration!;
     h.store.mutateOrchestration("1", {
@@ -123,11 +129,26 @@ describe("subagent orchestration tools", () => {
     });
 
     const work = await h.text("OrchestrationGet", { id: "1", workId: "1" });
-    expect(work).toContain("Work #1 · completed");
+    expect(work).toContain("Work #1 · complete");
     expect(work).toContain("Prompt: Inspect API compatibility");
-    expect(work).toContain("Dispatch 1: completed · agent=agent-1");
+    expect(work).toContain("Dispatch 1: complete · agent=agent-1");
     expect(work).toContain("Result: API is compatible");
-    expect(work).toContain("Consume: provider_owned");
+    expect(work).toContain("Output: provider-owned");
+  });
+
+  it("renders status-aware human summaries", async () => {
+    await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }] });
+    const entry = h.store.get("1")!;
+    entry.orchestration!.status = "needs_attention";
+    entry.orchestration!.work[0]!.status = "failed";
+
+    const warning = await h.result("OrchestrationGet", { id: "1" });
+    expect(warning.details).toMatchObject({
+      kind: "orchestration",
+      tone: "warning",
+      summary: "Orchestration #1 needs attention · 0/1 complete · 0 running · 1 failed",
+    });
+    expect(warning.details.summary).not.toContain("needs_attention");
   });
 
   it("reports missing controllers and work without mutation", async () => {
