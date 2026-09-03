@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 
 /** Plain-text tool result in the shape pi's registerTool expects. */
-type ToolDisplayKind = "loop" | "workflow" | "task" | "monitor";
+type ToolDisplayKind = "loop" | "workflow" | "orchestration" | "task" | "monitor";
 export type ToolDisplayTone = "success" | "warning" | "error" | "info";
 
 export interface ToolDisplayDetails {

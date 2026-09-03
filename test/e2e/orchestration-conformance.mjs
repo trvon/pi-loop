@@ -111,7 +111,7 @@ function validate() {
   if (completedWork.size !== 2) throw new Error(`expected two durable work results, got ${completedWork.size}`);
   for (const [workId, text] of completedWork) {
     if (!/Result:\s*42\b/.test(text)) throw new Error(`work ${workId} did not return 42`);
-    if (!/Consume:\s*provider_owned/.test(text)) throw new Error(`work ${workId} did not preserve provider-owned completion`);
+    if (!/Output:\s*provider-owned/.test(text)) throw new Error(`work ${workId} did not preserve provider-owned completion`);
   }
   if (!cancellationObservedActive) throw new Error("cancellation controller was not observed with one active worker");
   if (!completionDeleted || !cancellationDeleted) throw new Error("both orchestration controllers must be deleted");
@@ -250,11 +250,11 @@ child.stdout.on("data", (chunk) => {
           cancellationCreated = true;
         }
       }
-      if (event.toolName === "OrchestrationGet" && /Work #(\d+) · completed/.test(text)) {
+      if (event.toolName === "OrchestrationGet" && /Work #(\d+) · complete/.test(text)) {
         const workId = text.match(/Work #(\d+)/)?.[1];
         if (workId) completedWork.set(workId, text);
       }
-      if (event.toolName === "LoopList" && cancellationId && text.includes(`#${cancellationId}`) && /active=1\b/.test(text)) {
+      if (event.toolName === "LoopList" && cancellationId && text.includes(`#${cancellationId}`) && /\b1 running\b/.test(text)) {
         cancellationObservedActive = true;
       }
       if (event.toolName === "LoopDelete") {
@@ -293,7 +293,7 @@ try {
     "Call OrchestrationCreate exactly once for goal 'Validate live worker settlement' with concurrency 2, maxAttempts 1, maxTurns 3, and two general-purpose work items:",
     "1. 'Compute 17 + 25. Return the numeric answer and one short verification sentence.'",
     "2. 'Compute 6 * 7. Return the numeric answer and one short verification sentence.'",
-    "Call LoopList once, then stop. When the provider's native completion messages arrive, call OrchestrationGet for the controller and each work item. Verify both results equal 42 and both say Consume: provider_owned. Do not delete until another prompt asks you to.",
+    "Call LoopList once, then stop. When the provider's native completion messages arrive, call OrchestrationGet for the controller and each work item. Verify both results equal 42 and both say Output: provider-owned. Do not delete until another prompt asks you to.",
   ].join("\n"));
   const state = await outcome;
   writeArtifact("passed", state);

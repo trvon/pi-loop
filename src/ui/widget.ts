@@ -1,8 +1,8 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { MonitorManager } from "../monitor-manager.js";
-import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { LoopStore } from "../store.js";
 import type { LoopEntry } from "../types.js";
+import { orchestrationWidgetSummary } from "./orchestration-presentation.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "./workflow-presentation.js";
 
 interface TaskSummary {
@@ -72,8 +72,7 @@ export class LoopWidget {
     }
     const orchestration = orchestrations.length === 1 ? orchestrations[0] : undefined;
     if (orchestration?.orchestration) {
-      const counts = getOrchestrationCounts(orchestration.orchestration);
-      line += ` | #${orchestration.id} ${orchestration.orchestration.status} · ${counts.completed}/${orchestration.orchestration.work.length} done · ${counts.active} active`;
+      line += ` | ${orchestrationWidgetSummary(orchestration)}`;
     }
     if (taskSummary.focusText) line += ` | ${taskSummary.focusText}`;
     return line;
@@ -141,7 +140,7 @@ function formatCount(count: number, noun: string): string {
 }
 
 function isStatusVisibleLoop(loop: LoopEntry): boolean {
-  if (loop.workflow && loop.status === "paused") return true;
+  if ((loop.workflow || loop.orchestration) && loop.status === "paused") return true;
   if (loop.status !== "active") return false;
   if (loop.recurring) return true;
   return !(loop.trigger.type === "event" && loop.trigger.source === "monitor:done");

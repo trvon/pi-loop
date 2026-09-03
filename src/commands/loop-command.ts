@@ -6,6 +6,7 @@ import type {
 import { formatTrigger } from "../loop-format.js";
 import { isValidCronExpression, parseInterval } from "../loop-parse.js";
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
+import { formatOrchestrationInspection, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
 import { formatWorkflowInspection, workflowActivityLabel } from "../ui/workflow-presentation.js";
 import { isTerminalWorkflowRun } from "../workflow-reducer.js";
 
@@ -157,7 +158,10 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
     const choices = loops.map((l) => {
       const icon = l.status === "active" ? "*" : l.status === "paused" ? "-" : "x";
       const activity = l.workflow ? ` [activity:${workflowActivityLabel(l, now)}]` : "";
-      return `${icon} #${l.id} [${l.status}] ${l.prompt.slice(0, 50)}${activity} (${formatTrigger(l.trigger, "command")})`;
+      const orchestration = l.orchestration
+        ? ` [${orchestrationStatusLabel(l.orchestration.status)}: ${orchestrationProgressLabel(l.orchestration)}]`
+        : "";
+      return `${icon} #${l.id} [${l.status}] ${l.prompt.slice(0, 50)}${activity}${orchestration} (${formatTrigger(l.trigger, "command")})`;
     });
     choices.push("< Back");
 
@@ -180,7 +184,9 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
 
         const detail = entry.workflow
           ? formatWorkflowInspection(entry)
-          : `#${entry.id}: ${entry.prompt}\nTrigger: ${JSON.stringify(entry.trigger)}`;
+          : entry.orchestration
+            ? formatOrchestrationInspection(entry)
+            : `#${entry.id}: ${entry.prompt}\nTrigger: ${JSON.stringify(entry.trigger)}`;
         const action = await ui.select(detail, actions);
 
         if (action === "x Delete") {
@@ -190,7 +196,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
             getStore().delete(entry.id);
             updateWidget();
           }
-          ui.notify(`Loop #${entry.id} deleted`, "info");
+          ui.notify(`${entry.orchestration ? "Orchestration" : "Loop"} #${entry.id} deleted`, "info");
         } else if (action === "- Pause") {
           if (entry.orchestration) await cancelOrchestration?.(entry.id, "pause");
           else {
@@ -198,7 +204,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
             getTriggerSystem().remove(entry.id);
             updateWidget();
           }
-          ui.notify(`Loop #${entry.id} paused`, "info");
+          ui.notify(`${entry.orchestration ? "Orchestration" : "Loop"} #${entry.id} paused`, "info");
         } else if (action === "* Resume") {
           const resumed = getStore().resume(entry.id);
           if (!resumed) return viewLoops(ui);

@@ -66,7 +66,7 @@ OrchestrationGet id="1"
 | `/tasks` | Manage native fallback tasks when `pi-tasks` is absent |
 | `LoopCreate`, `LoopList`, `LoopUpdate`, `LoopDelete` | Create and control ordinary loops |
 | `WorkflowCreate`, `WorkflowClaim`, `WorkflowRevise`, `WorkflowTransition` | Create, claim, revise, and advance workflows; paused terminals require trusted blocker admission |
-| `OrchestrationCreate`, `OrchestrationGet` | Run and inspect a finite batch of independent async subagent work; cancel with `LoopDelete` |
+| `OrchestrationCreate`, `OrchestrationGet` | Run and inspect a durable finite batch of independent async subagent work; distinct from provider-native `SubagentWorkflow`; cancel with `LoopDelete` |
 | `MonitorCreate`, `MonitorList`, `MonitorStop` | Run and inspect background commands |
 | `TaskCreate`, `TaskList`, `TaskClaim`, `TaskHeartbeat`, `TaskUpdate`, `TaskDelete` | Native fallback task management |
 
