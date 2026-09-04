@@ -190,10 +190,10 @@ Output is buffered and emitted as `monitor:output`. A monitor finishes as one of
 
 - clean exit: emits `monitor:done`
 - nonzero exit or spawn failure: emits `monitor:error`
-- inactivity timeout: stops the process after no output or structured progress, emits `monitor:error`, and always wakes the agent after the process reaps
+- inactivity timeout: stops the process after no output or structured progress, emits `monitor:error`, and wakes the agent after reaping when its callback controller is still unexpired
 - explicit `MonitorStop`: cancels the monitor without an `onDone` wake; workflow-owned monitors resume their current state with `status=stopped`
 
-Pass `onDone` whenever the agent should resume work after success or failure. Its one-shot wake also fires on timeout; monitors without `onDone` still send a timeout-only alert. `timeout` is an inactivity threshold, not a total-runtime limit: stdout/stderr bytes, JSONL progress, and `MonitorUpdate` renew it. The default is five quiet minutes; use `timeout=0` to disable stale detection.
+Pass `onDone` whenever the agent should resume work after success or failure. Its one-shot wake also fires on timeout; monitors without `onDone` send a timeout-only alert while that callback controller remains unexpired. `timeout` is an inactivity threshold, not a total-runtime limit: stdout/stderr bytes, JSONL progress, and `MonitorUpdate` renew it. The default is five quiet minutes; use `timeout=0` to disable stale detection.
 
 For a monitor launched from an active workflow, use `workflowId` instead of `onDone`:
 

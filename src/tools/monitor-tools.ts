@@ -77,16 +77,16 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
 
   pi.registerTool({ name: "MonitorCreate", label: "MonitorCreate",
   renderCall: renderToolCall("Monitor", (args) => `start · ${String(toolArg(args, "description") ?? toolArg(args, "command") ?? "background command").slice(0, 56)}`),
-  renderResult: renderToolResult, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nThe timeout measures inactivity, not total runtime: output or structured progress renews it. Stale monitors always wake the agent. Pass onDone for a completion wake, or workflowId to pause a workflow until terminal. Commands may emit JSONL progress as {"progress":{...}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone when the agent must resume automatically after success or failure; stale monitors already alert on timeout.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
+  renderResult: renderToolResult, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nThe timeout measures inactivity, not total runtime: output or structured progress renews it. Stale-monitor wakes require an unexpired callback. Pass onDone for a completion wake, or workflowId to pause a workflow until terminal. Commands may emit JSONL progress as {"progress":{...}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone for terminal wakes; timeout alerts require an unexpired callback.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
     command: Type.String({ description: "Shell command to run in background" }),
     description: Type.Optional(Type.String({ description: "Human-readable description" })),
     timeout: Type.Optional(Type.Number({ description: "Stop after N ms without output or progress (default: 300000, 0 = disabled)", default: 300000, minimum: 0 })),
     onDone: Type.Optional(Type.String({ description: "Prompt to run when the monitor completes. Auto-creates a one-shot completion wake — no need for a separate LoopCreate." })),
-    expiresIn: Type.Optional(Type.String({ description: "Lifetime for a new completion or timeout wake, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
+    expiresIn: Type.Optional(Type.String({ description: "Callback lifetime (e.g. 12h); overrides PI_LOOP_EXPIRES_IN" })),
 
     workflowId: Type.Optional(Type.String({ description: "Active workflow loop to pause until this monitor reaches a terminal status" })),
   }),
-  execute(_toolCallId, params) {
+  async execute(_toolCallId, params) {
     if (params.workflowId && params.onDone) {
       return Promise.resolve(textResult("workflowId cannot be combined with onDone; workflow completion already delivers one terminal wake.", {
         kind: "monitor", action: "create", tone: "error", summary: "Choose workflowId or onDone", expanded: [],
@@ -136,20 +136,37 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     updateWidget();
 
     let onDoneMsg = "";
-    if (params.onDone) {
-      const doneTrigger: Trigger = { type: "event", source: "monitor:done", filter: JSON.stringify({ monitorId: entry.id }) };
-      const doneLoop = store.create(doneTrigger, params.onDone, { recurring: false, expiresIn: params.expiresIn });
-      handleMonitorDoneLoop(doneLoop, entry.id);
-      onDoneMsg = `\nCompletion wake loop #${doneLoop.id}: fires when the monitor completes — no polling needed`;
-    } else if (!workflow && entry.timeout > 0) {
-      const timeoutTrigger: Trigger = { type: "event", source: "monitor:timeout", filter: JSON.stringify({ monitorId: entry.id }) };
-      const timeoutLoop = store.create(
-        timeoutTrigger,
-        `Monitor #${entry.id} became stale after ${entry.timeout}ms without output or progress. Inspect MonitorList, report the failure, and decide whether to retry or recover the command.`,
-        { recurring: false, expiresIn: params.expiresIn },
-      );
-      handleMonitorDoneLoop(timeoutLoop, entry.id);
-      onDoneMsg = `\nTimeout alert loop #${timeoutLoop.id}: wakes the agent only if the monitor times out`;
+    try {
+      if (params.onDone) {
+        const doneTrigger: Trigger = { type: "event", source: "monitor:done", filter: JSON.stringify({ monitorId: entry.id }) };
+        const doneLoop = store.create(doneTrigger, params.onDone, { recurring: false, expiresIn: params.expiresIn });
+        handleMonitorDoneLoop(doneLoop, entry.id);
+        onDoneMsg = `\nCompletion wake loop #${doneLoop.id}: fires when the monitor completes — no polling needed`;
+      } else if (!workflow && entry.timeout > 0) {
+        const timeoutTrigger: Trigger = { type: "event", source: "monitor:timeout", filter: JSON.stringify({ monitorId: entry.id }) };
+        const timeoutLoop = store.create(
+          timeoutTrigger,
+          `Monitor #${entry.id} became stale after ${entry.timeout}ms without output or progress. Inspect MonitorList, report the failure, and decide whether to retry or recover the command.`,
+          { recurring: false, expiresIn: params.expiresIn },
+        );
+        handleMonitorDoneLoop(timeoutLoop, entry.id);
+        onDoneMsg = `\nTimeout alert loop #${timeoutLoop.id}: wakes the agent only if the monitor times out`;
+      }
+    } catch (error) {
+      try {
+        await getMonitorManager().stop(entry.id);
+      } catch {
+        // The creation error remains authoritative even if process cleanup cannot be confirmed.
+      }
+      updateWidget();
+      const message = error instanceof Error ? error.message : String(error);
+      return textResult(message, {
+        kind: "monitor",
+        action: "create",
+        tone: "error",
+        summary: "Monitor wake was not created",
+        expanded: [`Monitor #${entry.id} was stopped after wake creation failed.`, message],
+      });
     }
 
     return Promise.resolve(textResult(

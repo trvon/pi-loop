@@ -358,6 +358,15 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       && current.workflow.activeExecution?.id === queued.activeExecution?.id;
   }
 
+  function orchestrationNotificationIsCurrent(notification: ReducerNotification): boolean {
+    const sequence = notification.orchestrationWakeSequence;
+    if (sequence === undefined || !getLoop) return true;
+    const current = getLoop(notification.loopId);
+    if (!current?.orchestration) return false;
+    if (notification.controllerStatus !== undefined && current.status !== notification.controllerStatus) return false;
+    return current.orchestration.pendingWake?.sequence === sequence;
+  }
+
   async function deliverNotification(notification: ReducerNotification): Promise<boolean> {
     const deliveryGeneration = notification.sessionGeneration ?? sessionGeneration;
     if (notification.autoTask) {
@@ -379,6 +388,10 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     }
     if (!workflowNotificationIsCurrent(notification)) {
       debug?.(`loop:fire #${notification.loopId} — workflow execution changed before delivery, dropping wake`);
+      return false;
+    }
+    if (!orchestrationNotificationIsCurrent(notification)) {
+      debug?.(`loop:fire #${notification.loopId} — orchestration wake changed before delivery, dropping wake`);
       return false;
     }
     syncRuntimeState({ agentRunning: true });
