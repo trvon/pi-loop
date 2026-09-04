@@ -153,8 +153,9 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
         onDoneMsg = `\nTimeout alert loop #${timeoutLoop.id}: wakes the agent only if the monitor times out`;
       }
     } catch (error) {
+      let cleanupConfirmed = false;
       try {
-        await getMonitorManager().stop(entry.id);
+        cleanupConfirmed = await getMonitorManager().stop(entry.id);
       } catch {
         // The creation error remains authoritative even if process cleanup cannot be confirmed.
       }
@@ -165,7 +166,12 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
         action: "create",
         tone: "error",
         summary: "Monitor wake was not created",
-        expanded: [`Monitor #${entry.id} was stopped after wake creation failed.`, message],
+        expanded: [
+          cleanupConfirmed
+            ? `Monitor #${entry.id} was stopped after wake creation failed.`
+            : `Monitor #${entry.id} cleanup could not be confirmed after wake creation failed. Inspect MonitorList before retrying.`,
+          message,
+        ],
       });
     }
 

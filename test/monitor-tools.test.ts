@@ -110,6 +110,19 @@ describe("MonitorCreate", () => {
     expect(h.store.list()).toHaveLength(0);
   });
 
+  it("does not claim cleanup succeeded when stopping a failed wake cannot be confirmed", async () => {
+    const h = setup({ stop: vi.fn(async () => false) });
+    const result = await h.result("MonitorCreate", {
+      command: "npm test",
+      onDone: "Report results",
+      expiresIn: "forever",
+    });
+
+    expect(result.details).toMatchObject({
+      expanded: [expect.stringContaining("cleanup could not be confirmed"), expect.any(String)],
+    });
+  });
+
   it("rejects negative inactivity timeouts", () => {
     const h = setup();
     const schema = h.toolMap.get("MonitorCreate")?.parameters;
