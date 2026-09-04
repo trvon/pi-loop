@@ -308,8 +308,8 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     return result.kind === "fired" ? result.entry : undefined;
   }
 
-  fireOrExpire(id: string, origin: LoopFireOrigin = "scheduler", now = Date.now()): LoopFireResult {
-    return this.withLock(() => this.fireUnlocked(id, origin, now, true));
+  fireOrExpire(id: string, origin: LoopFireOrigin = "scheduler", now?: number): LoopFireResult {
+    return this.withLock(() => this.fireUnlocked(id, origin, now ?? Date.now(), true));
   }
 
   updateMetadata(id: string, fields: { trigger?: Trigger; prompt?: string; taskBacklog?: boolean }): { entry: LoopEntry | undefined; changedFields: string[] } {
@@ -363,7 +363,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   ): LoopEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
-      if (!entry || entry.trigger.type !== "dynamic" || !entry.dynamic || entry.workflow) return undefined;
+      if (!entry || Date.now() >= entry.expiresAt || entry.trigger.type !== "dynamic" || !entry.dynamic || entry.workflow) return undefined;
       if (expected && (
         entry.status !== expected.status
         || entry.dynamic.iteration !== expected.iteration
@@ -400,7 +400,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   ): boolean {
     return this.withLock(() => {
       const entry = this.entries.get(id);
-      if (!entry || entry.trigger.type !== "dynamic" || !entry.dynamic || entry.workflow
+      if (!entry || Date.now() >= entry.expiresAt || entry.trigger.type !== "dynamic" || !entry.dynamic || entry.workflow
         || entry.status !== expected.status
         || entry.dynamic.iteration !== expected.iteration
         || entry.updatedAt !== expected.updatedAt) return false;

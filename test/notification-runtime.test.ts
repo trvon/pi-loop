@@ -125,6 +125,30 @@ describe("notification runtime session boundary", () => {
     expect(sentMessages).toEqual([]);
   });
 
+  it("drops a buffered ordinary wake after its absolute expiry boundary", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: vi.fn(async () => 0),
+      cleanDoneTasks: vi.fn(async () => {}),
+      getHasPendingMessages: () => false,
+    });
+
+    runtime.syncRuntimeState({ agentRunning: true });
+    await runtime.queueOrDeliverNotification({
+      loopId: "7",
+      prompt: "Check release",
+      trigger: { type: "cron", schedule: "*/5 * * * *" },
+      timestamp: Date.now() - 2,
+      expiresAt: Date.now() - 1,
+      recurring: true,
+    });
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages).toHaveLength(0);
+  });
+
   it("acknowledges durable orchestration wake state only after message delivery", async () => {
     const { pi, sentMessages } = createMockPi();
     const delivered = vi.fn();

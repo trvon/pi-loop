@@ -252,6 +252,7 @@ export default function (pi: ExtensionAPI) {
       prompt: entry.prompt,
       trigger: entry.trigger,
       timestamp: Date.now(),
+      expiresAt: entry.expiresAt,
       readOnly: entry.readOnly,
       recurring: entry.recurring,
       persistent: entry.recurring,
@@ -338,6 +339,10 @@ export default function (pi: ExtensionAPI) {
         }) ?? fired
       : fired;
     const firedEntry = updatedEntry;
+    if (retireIfExpired()) {
+      activeTaskBacklogWakes.delete(current.id);
+      return;
+    }
 
     if (atMaxFires(firedEntry)) {
       triggerSystem.remove(firedEntry.id);
@@ -352,7 +357,8 @@ export default function (pi: ExtensionAPI) {
       widget.update();
     }
 
-    if (retireIfExpired()) {
+    if (Date.now() >= firedEntry.expiresAt) {
+      retireIfExpired();
       activeTaskBacklogWakes.delete(current.id);
       return;
     }

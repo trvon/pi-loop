@@ -32,6 +32,7 @@ export interface LoopFireEvent {
   prompt: string;
   trigger: Trigger | string;
   timestamp: number;
+  expiresAt?: number;
   readOnly?: boolean;
   recurring?: boolean;
   persistent?: boolean;
@@ -384,6 +385,10 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
 
     if (deliveryGeneration !== sessionGeneration) {
       debug?.(`loop:fire #${notification.loopId} — session changed before delivery, dropping wake`);
+      return false;
+    }
+    if (notification.expiresAt !== undefined && Date.now() >= notification.expiresAt) {
+      debug?.(`loop:fire #${notification.loopId} — expiry boundary passed before delivery, dropping wake`);
       return false;
     }
     if (!workflowNotificationIsCurrent(notification)) {
