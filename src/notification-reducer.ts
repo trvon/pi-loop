@@ -8,6 +8,7 @@ export interface ReducerNotification {
   prompt: string;
   message: string;
   timestamp: number;
+  queueSequence: number;
   expiresAt?: number;
   controllerCreatedAt?: number;
   fireCount?: number;

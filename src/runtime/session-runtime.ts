@@ -243,12 +243,11 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     stopHeartbeat();
     releaseTaskBacklogWakes();
     notificationRuntime.clear("session_shutdown");
-    await shutdownOrchestrations();
+    await Promise.all([shutdownMonitors(), shutdownOrchestrations()]);
     setSessionId(undefined);
     storeUpgraded = false;
     persistedShown = false;
     agentStartFireCounts = undefined;
-    await shutdownMonitors();
   });
 
   pi.on("session_switch" as never, async (event: SessionSwitchEvent, ctx: ExtensionContext) => {
@@ -258,11 +257,10 @@ export function registerSessionRuntimeHooks(options: SessionRuntimeOptions): voi
     stopHeartbeat();
     notificationRuntime.clear("session_switch");
     releaseTaskBacklogWakes();
-    await shutdownOrchestrations();
+    await Promise.all([shutdownMonitors(), shutdownOrchestrations()]);
     setSessionId(undefined);
     storeUpgraded = false;
     persistedShown = false;
-    await shutdownMonitors();
     if (!isCurrentGeneration(generation)) return;
 
     setLatestCtx(ctx);

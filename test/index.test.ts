@@ -93,7 +93,11 @@ describe("workflow runtime wiring", () => {
       },
     });
 
-    await toolMap.get("WorkflowCreate")!.execute!("workflow-local-cap", { goal: "Process records", definition });
+    await toolMap.get("WorkflowCreate")!.execute!("workflow-local-cap", {
+      goal: "Process records",
+      definition,
+      maxFires: 1,
+    });
     await flushAsync();
     const loops = await toolMap.get("LoopList")!.execute!("list-workflows", {});
     const wake = sentMessages.find((item) => item.message.content.includes("fired (workflow)"));

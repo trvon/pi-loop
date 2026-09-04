@@ -86,6 +86,9 @@ function normalizePauseRecord(entry: LoopEntry): LoopPauseRecord | undefined {
 
 function normalizeLoopEntry(entry: LoopEntry): LoopEntry {
   const pause = normalizePauseRecord(entry);
+  if (entry.workflow && (entry.autoTask || entry.taskBacklog || entry.orchestration)) {
+    throw new Error("Malformed loop controller: workflow cannot own standalone task or orchestration behavior");
+  }
   return {
     ...entry,
     ...(pause ? { pause } : {}),
@@ -176,6 +179,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       }
       if (opts.workflow) {
         if (trigger.type !== "dynamic") throw new Error("Workflow loops require a dynamic trigger.");
+        if (opts.autoTask || opts.taskBacklog) throw new Error("Workflow controllers cannot create or adopt standalone tasks.");
         const validationError = validateWorkflowDefinition(opts.workflow);
         if (validationError) throw new Error(`Invalid workflow: ${validationError}`);
       }

@@ -219,9 +219,15 @@ describe("embedded workflow execution integration", () => {
       });
       expect(transitioned.content[0].text).toContain("poll → finish");
       expect(new LoopStore(h.loopPath).get("1")).toMatchObject({
-        status: "active",
+        status: "paused",
+        fireCount: 3,
         workflow: { currentState: "finish", transitionSeq: 1 },
       });
+      const completed = await h.toolMap.get("WorkflowTransition")!.execute!("done", {
+        id: "1", outcome: "done", evidence: "Finish work completed.",
+      });
+      expect(completed.content[0].text).toContain("completed and deleted");
+      expect(new LoopStore(h.loopPath).get("1")).toBeUndefined();
     } finally {
       await h.emitExtension("session_shutdown", null, h.ctx);
     }
