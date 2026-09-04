@@ -292,6 +292,10 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       const record = settleExpiry ? this.expireEntryUnlocked(id, now) : undefined;
       return record ? { kind: "expired", record } : { kind: "ignored" };
     }
+    if (atMaxFires(entry) || (entry.workflow && atWorkflowStateFireLimit(entry.workflow))) {
+      this.settleFireLimitUnlocked(entry, now);
+      return { kind: "ignored" };
+    }
     this.applyReducerEvent({
       type: "LOOP_FIRED",
       at: now,
@@ -300,7 +304,39 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       entityId: id,
       payload: { id, origin },
     });
-    return { kind: "fired", entry: this.entries.get(id)! };
+    const fired = this.entries.get(id)!;
+    const delivered = structuredClone(fired);
+    if (atMaxFires(fired) || (fired.workflow && atWorkflowStateFireLimit(fired.workflow))) {
+      this.settleFireLimitUnlocked(fired, now);
+    }
+    return { kind: "fired", entry: this.entries.get(id) ?? delivered };
+  }
+
+  private settleFireLimitUnlocked(entry: LoopEntry, at: number): void {
+    const workflowLimitReached = atMaxFires(entry);
+    if (!entry.workflow && !entry.taskBacklog) {
+      this.applyReducerEvent({
+        type: "LOOP_DELETED",
+        at,
+        source: "system",
+        entityType: "loop",
+        entityId: entry.id,
+        payload: { id: entry.id },
+      });
+      return;
+    }
+    this.applyReducerEvent({
+      type: "LOOP_PAUSED",
+      at,
+      source: "system",
+      entityType: "loop",
+      entityId: entry.id,
+      payload: {
+        id: entry.id,
+        kind: "controller_limit",
+        reason: workflowLimitReached ? "loop fire cap reached" : "workflow state fire cap reached",
+      },
+    });
   }
 
   fire(id: string, origin: LoopFireOrigin = "scheduler"): LoopEntry | undefined {
