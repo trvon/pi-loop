@@ -118,8 +118,42 @@ describe("embedded workflow execution integration", () => {
     for (const handler of harness.extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
     const taskPath = resolveTaskStorePath({ loopScope: "session", cwd }, sessionId)!;
     const loopPath = resolveLoopStorePath({ loopScope: "session", cwd }, sessionId)!;
-    return { ...harness, taskPath, loopPath };
+    return { ...harness, ctx, taskPath, loopPath };
   }
+
+  it("AUD-06: the default budget permits an ordinary phase followed by one cadence fire and completion", async () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const h = await setup();
+    try {
+      await h.emitExtension("agent_start", null, h.ctx);
+      const created = await h.toolMap.get("WorkflowCreate")!.execute!("create", {
+        goal: "Prepare and poll",
+        definition: JSON.stringify({
+          version: 1,
+          initialState: "prepare",
+          states: {
+            prepare: { prompt: "Prepare release.", on: { ready: "poll" } },
+            poll: { prompt: "Poll release.", loop: { schedule: "* * * * *", maxFires: 1 }, on: { done: "done" } },
+            done: { prompt: "Report success.", terminal: "completed" },
+          },
+        }),
+      });
+      expect(created.content[0].text).toContain("Workflow #1 created");
+      expect(new LoopStore(h.loopPath).get("1")?.fireCount).toBe(1);
+      const enteredPoll = await h.toolMap.get("WorkflowTransition")!.execute!("ready", { id: "1", outcome: "ready", evidence: "Preparation is complete." });
+      expect(enteredPoll.content[0].text).toContain("prepare → poll");
+      await h.emitExtension("agent_end", null, h.ctx);
+      // The 90s heartbeat crosses the minute boundary plus deterministic #1 jitter.
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(new LoopStore(h.loopPath).get("1")?.fireCount).toBe(2);
+      expect(h.sentMessages.filter((sent) => sent.message.content.includes("Poll release."))).toHaveLength(1);
+      const completed = await h.toolMap.get("WorkflowTransition")!.execute!("done", { id: "1", outcome: "done", evidence: "Release is ready." });
+      expect(completed.content[0].text).toContain("completed and deleted");
+      expect(new LoopStore(h.loopPath).get("1")).toBeUndefined();
+    } finally {
+      await h.emitExtension("session_shutdown", null, h.ctx);
+    }
+  });
 
   it("creates task-bearing workflow work before task-provider detection and leaves TaskStore empty", async () => {
     const h = await setup();
