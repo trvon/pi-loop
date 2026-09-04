@@ -84,7 +84,10 @@ describe("LoopStore (in-memory)", () => {
     expect(store.attachWorkflowMonitor(entry.id, "monitor-1", { stateId: "work", transitionSeq: 0 })).toBeUndefined();
     expect(store.get(entry.id)).toEqual(before);
 
-    expect(store.expireEntry(entry.id)).toMatchObject({ disposition: "paused" });
+    expect(store.fireOrExpire(entry.id)).toMatchObject({
+      kind: "expired",
+      record: { disposition: "paused" },
+    });
     expect(store.transitionWorkflow(entry.id, { outcome: "done", evidence: "late", actor })).toMatchObject({
       applied: false,
       error: expect.stringContaining("expired"),
