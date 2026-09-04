@@ -4,6 +4,7 @@ import { RpcError, type RpcEventBus } from "../rpc/cross-extension-rpc.js";
 import type { LoopStore } from "../store.js";
 import type {
   LoopEntry,
+  LoopExpiryDisposition,
   OrchestrationActor,
   OrchestrationDispatch,
   OrchestrationPendingWake,
@@ -47,6 +48,7 @@ export interface SubagentOrchestrationRuntimeOptions {
   getGeneration: () => number;
   rpcCall: (channel: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
   emitWake: (entry: LoopEntry, wake: OrchestrationPendingWake) => void;
+  onExpired?: (entry: LoopEntry, disposition: LoopExpiryDisposition) => void;
   updateWidget: () => void;
   now?: () => number;
   scheduleReconcile?: (fn: () => void) => void;
@@ -138,6 +140,7 @@ export function createSubagentOrchestrationRuntime(
   const scheduleReconcile = options.scheduleReconcile ?? queueMicrotask;
   const isContextCurrent = options.isContextCurrent ?? (() => true);
   const getPiLoopEnv = options.getPiLoopEnv ?? (() => undefined);
+  const onExpired = options.onExpired ?? (() => {});
   const earlyEvents = new Map<string, EarlyLifecycleEvent>();
   const wakeQueued = new Set<string>();
   const consumeInFlight = new Set<string>();
@@ -263,6 +266,10 @@ export function createSubagentOrchestrationRuntime(
   function handleLifecycle(event: LifecycleEvent, rememberUnknown = true): boolean {
     if (!active || !isContextCurrent()) return false;
     const match = findActiveAgent(event.id);
+    if (match && now() >= match.entry.expiresAt) {
+      void retireExpiredOrchestration(match.entry, now());
+      return true;
+    }
     if (!match) {
       const settled = event.kind === "started" ? undefined : findSettledAgent(event.id);
       if (settled) {
@@ -351,6 +358,7 @@ export function createSubagentOrchestrationRuntime(
 
   async function dispatchWork(entry: LoopEntry, item: OrchestrationWorkItem): Promise<void> {
     if (!isContextCurrent()) return;
+    if (now() >= entry.expiresAt && await retireExpiredOrchestration(entry, now())) return;
     const state = entry.orchestration;
     if (!state || !actorOwns(state) || state.status !== "active") return;
     const dispatchId = randomUUID();
@@ -386,7 +394,12 @@ export function createSubagentOrchestrationRuntime(
         await stopUnboundSpawn(reply.id);
         return;
       }
-      const fresh = getStore().get(entry.id)?.orchestration;
+      const freshEntry = getStore().get(entry.id);
+      if (!freshEntry || (now() >= freshEntry.expiresAt && await retireExpiredOrchestration(freshEntry, now()))) {
+        await stopUnboundSpawn(reply.id);
+        return;
+      }
+      const fresh = freshEntry.orchestration;
       if (!fresh || !actorOwns(fresh)) {
         await stopUnboundSpawn(reply.id);
         return;
@@ -417,7 +430,9 @@ export function createSubagentOrchestrationRuntime(
       }
     } catch (error) {
       if (!isContextCurrent()) return;
-      const fresh = getStore().get(entry.id)?.orchestration;
+      const freshEntry = getStore().get(entry.id);
+      if (!freshEntry || (now() >= freshEntry.expiresAt && await retireExpiredOrchestration(freshEntry, now()))) return;
+      const fresh = freshEntry.orchestration;
       if (!fresh || !actorOwns(fresh)) return;
       const message = error instanceof Error ? error.message : String(error);
       const uncertain = error instanceof RpcError && error.timedOut;
@@ -452,8 +467,37 @@ export function createSubagentOrchestrationRuntime(
     });
   }
 
+  async function retireExpiredOrchestration(entry: LoopEntry, timestamp: number): Promise<boolean> {
+    const current = getStore().get(entry.id);
+    const state = current?.orchestration;
+    if (!current || !state || timestamp < current.expiresAt) return false;
+    const agentIds = state.work.flatMap((item) => {
+      const agentId = currentDispatch(item)?.agentId;
+      return agentId ? [agentId] : [];
+    });
+    if (state.status !== "cancelled") {
+      getStore().mutateOrchestration(current.id, {
+        type: "cancelled",
+        at: timestamp,
+        expected: expected(state),
+      });
+    }
+    const expired = getStore().expireEntry(current.id, timestamp);
+    if (expired) onExpired(expired.entry, expired.disposition);
+    for (const key of wakeQueued) {
+      if (key.startsWith(`${current.id}:`)) wakeQueued.delete(key);
+    }
+    await Promise.all(agentIds.map((agentId) => stopCancelledAgent(current.id, agentId)));
+    updateWidget();
+    return true;
+  }
+
   function emitPendingWakes(): void {
     for (const entry of getStore().list()) {
+      if (now() >= entry.expiresAt) {
+        void retireExpiredOrchestration(entry, now());
+        continue;
+      }
       const state = entry.orchestration;
       const wake = state?.pendingWake;
       if (!state || !wake || !actorOwns(state)) continue;
@@ -481,6 +525,7 @@ export function createSubagentOrchestrationRuntime(
       let entry = listed;
       let state = entry.orchestration;
       if (!state) continue;
+      if (now() >= entry.expiresAt && await retireExpiredOrchestration(entry, now())) continue;
       const recoveringWake = entry.status === "paused" && state.pendingWake !== undefined
         && getOrchestrationCounts(state).active === 0;
       if (entry.status !== "active" && !recoveringWake) continue;

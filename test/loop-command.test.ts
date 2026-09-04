@@ -74,9 +74,13 @@ describe("registerLoopCommand", () => {
     expect(entry.expiresAt - entry.createdAt).toBe(expectedLifetime);
   });
 
-  it("rejects an invalid expiration override without creating a loop", async () => {
+  it.each([
+    "--expires-in forever 5m check the deploy",
+    "--expires-in forever event deploy:completed summarize",
+    "--expires-in forever investigate flaky tests",
+  ])("rejects an invalid expiration override without creating a loop: %s", async (args) => {
     const ctx = createCtx();
-    await h.command.handler!("--expires-in forever 5m check the deploy", ctx);
+    await h.command.handler!(args, ctx);
 
     expect(h.store.list()).toHaveLength(0);
     expect(ctx.notifications[0]).toMatchObject({ level: "error" });

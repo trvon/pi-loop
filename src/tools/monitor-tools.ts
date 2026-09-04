@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { DEFAULT_LOOP_EXPIRY_MS } from "../loop-expiry.js";
 import type { LoopEntry, MonitorEntry, MonitorProgress, Trigger, WorkflowMonitorWait } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { displayRows, textResult } from "./tool-result.js";
@@ -20,20 +19,13 @@ interface LoopStoreLike {
     taskBacklog?: boolean;
     readOnly?: boolean;
     maxFires?: number;
-    minimumExpiryMs?: number;
+    expiresIn?: string;
   }): LoopEntry;
   attachWorkflowMonitor(
     id: string,
     monitorId: string,
     expected: Pick<WorkflowMonitorWait, "stateId" | "transitionSeq">,
   ): LoopEntry | undefined;
-}
-
-const MONITOR_WAKE_EXPIRY_GRACE_MS = 60_000;
-
-// A short runtime default must not retire a callback before the monitor's expected inactivity deadline.
-function monitorWakeMinimumExpiryMs(timeoutMs: number): number {
-  return timeoutMs > 0 ? timeoutMs + MONITOR_WAKE_EXPIRY_GRACE_MS : DEFAULT_LOOP_EXPIRY_MS;
 }
 
 interface TriggerSystemLike {
@@ -90,6 +82,8 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     description: Type.Optional(Type.String({ description: "Human-readable description" })),
     timeout: Type.Optional(Type.Number({ description: "Stop after N ms without output or progress (default: 300000, 0 = disabled)", default: 300000, minimum: 0 })),
     onDone: Type.Optional(Type.String({ description: "Prompt to run when the monitor completes. Auto-creates a one-shot completion wake — no need for a separate LoopCreate." })),
+    expiresIn: Type.Optional(Type.String({ description: "Lifetime for a new completion or timeout wake, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
+
     workflowId: Type.Optional(Type.String({ description: "Active workflow loop to pause until this monitor reaches a terminal status" })),
   }),
   execute(_toolCallId, params) {
@@ -144,10 +138,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     let onDoneMsg = "";
     if (params.onDone) {
       const doneTrigger: Trigger = { type: "event", source: "monitor:done", filter: JSON.stringify({ monitorId: entry.id }) };
-      const doneLoop = store.create(doneTrigger, params.onDone, {
-        recurring: false,
-        minimumExpiryMs: monitorWakeMinimumExpiryMs(entry.timeout),
-      });
+      const doneLoop = store.create(doneTrigger, params.onDone, { recurring: false, expiresIn: params.expiresIn });
       handleMonitorDoneLoop(doneLoop, entry.id);
       onDoneMsg = `\nCompletion wake loop #${doneLoop.id}: fires when the monitor completes — no polling needed`;
     } else if (!workflow && entry.timeout > 0) {
@@ -155,7 +146,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
       const timeoutLoop = store.create(
         timeoutTrigger,
         `Monitor #${entry.id} became stale after ${entry.timeout}ms without output or progress. Inspect MonitorList, report the failure, and decide whether to retry or recover the command.`,
-        { recurring: false, minimumExpiryMs: monitorWakeMinimumExpiryMs(entry.timeout) },
+        { recurring: false, expiresIn: params.expiresIn },
       );
       handleMonitorDoneLoop(timeoutLoop, entry.id);
       onDoneMsg = `\nTimeout alert loop #${timeoutLoop.id}: wakes the agent only if the monitor times out`;

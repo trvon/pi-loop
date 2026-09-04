@@ -109,6 +109,21 @@ describe("subagent orchestration runtime", () => {
     expect(h.store.get(h.entry.id)?.status).toBe("paused");
   });
 
+  it("rejects lifecycle settlement after the batch expires", async () => {
+    const h = setup({ workCount: 1, concurrency: 1 });
+    await h.runtime.pump();
+    h.store.get(h.entry.id)!.expiresAt = 1_000;
+
+    h.pi.events.emit("subagents:completed", { id: "agent-1", status: "completed", result: "late" });
+    await Promise.resolve();
+
+    expect(h.store.get(h.entry.id)).toMatchObject({
+      status: "paused",
+      orchestration: { status: "cancelled", work: [{ status: "cancelled" }] },
+    });
+    expect(h.onExpired).toHaveBeenCalledTimes(1);
+  });
+
   it("fills only local capacity and forces detached isolated worker options", async () => {
     const h = setup({ workCount: 3, concurrency: 2 });
 

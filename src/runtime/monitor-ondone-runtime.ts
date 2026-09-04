@@ -15,6 +15,7 @@ export interface MonitorOnDoneRuntimeOptions {
   monitorManager: MonitorManager;
   getLoop: (id: string) => LoopEntry | undefined;
   deleteLoop: (id: string) => void;
+  expireLoop: (id: string, now: number) => boolean;
   onLoopFire: (entry: LoopEntry) => void;
   isContextCurrent: () => boolean;
   settleWorkflowMonitorWait: (
@@ -60,6 +61,7 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
     monitorManager,
     getLoop,
     deleteLoop,
+    expireLoop,
     onLoopFire,
     isContextCurrent,
     settleWorkflowMonitorWait,
@@ -83,6 +85,8 @@ export function createMonitorOnDoneRuntime(options: MonitorOnDoneRuntimeOptions)
           monitorId: string;
           monitor?: MonitorEntry;
         };
+        const completedAt = Date.now();
+        if (expireLoop(loopId, completedAt)) return;
         const current = getLoop(loopId);
         if (!current) return;
         debug?.(`onDone loop #${loopId} — monitor #${monitorId} completed, delivering through coordinator`);

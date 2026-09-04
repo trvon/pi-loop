@@ -3,7 +3,6 @@ import type {
   ExtensionCommandContext,
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
-import { expiresAtFromDuration, parseLoopDurationMs } from "../loop-expiry.js";
 import { formatTrigger } from "../loop-format.js";
 import { isValidCronExpression, parseInterval } from "../loop-parse.js";
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
@@ -56,12 +55,7 @@ function extractExpiryOverride(input: string): { args: string; expiresIn?: strin
   if (!trimmed.startsWith("--expires-in")) return { args: trimmed };
   const match = trimmed.match(/^--expires-in\s+(\S+)(?:\s+(.*))?$/s);
   if (!match?.[1]) return { args: "", error: "--expires-in requires a duration such as 12h or 14d." };
-  try {
-    expiresAtFromDuration(Date.now(), parseLoopDurationMs(match[1]));
-    return { args: match[2]?.trim() ?? "", expiresIn: match[1] };
-  } catch (error) {
-    return { args: "", error: (error as Error).message };
-  }
+  return { args: match[2]?.trim() ?? "", expiresIn: match[1] };
 }
 
 function parseLoopCommandRoute(input: string): LoopCommandRoute {
@@ -136,12 +130,18 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
 
     const trigger: Trigger = { type: "event", source };
     const taskBacklog = source === "tasks:created";
-    const entry = getStore().create(trigger, p, {
-      recurring: true,
-      taskBacklog,
-      maxFires: taskBacklog ? 25 : undefined,
-      expiresIn,
-    });
+    let entry: LoopEntry;
+    try {
+      entry = getStore().create(trigger, p, {
+        recurring: true,
+        taskBacklog,
+        maxFires: taskBacklog ? 25 : undefined,
+        expiresIn,
+      });
+    } catch (error) {
+      ui.notify(error instanceof Error ? error.message : String(error), "error");
+      return;
+    }
     getTriggerSystem().add(entry);
     updateWidget();
     const bootstrapped = taskBacklog ? await maybeBootstrapTaskLoop?.(entry) : false;
@@ -153,11 +153,17 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
 
   function dynamicLoop(ui: ExtensionUIContext, goal: string, expiresIn?: string) {
     const trigger: Trigger = { type: "dynamic" };
-    const entry = getStore().create(trigger, goal, {
-      recurring: true,
-      expiresIn,
-      dynamic: { goal, iteration: 0 },
-    });
+    let entry: LoopEntry;
+    try {
+      entry = getStore().create(trigger, goal, {
+        recurring: true,
+        expiresIn,
+        dynamic: { goal, iteration: 0 },
+      });
+    } catch (error) {
+      ui.notify(error instanceof Error ? error.message : String(error), "error");
+      return;
+    }
     getTriggerSystem().add(entry);
     updateWidget();
     ui.notify(`Dynamic loop #${entry.id} created — ${goal.slice(0, 50)}`, "info");

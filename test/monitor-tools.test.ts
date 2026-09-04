@@ -83,6 +83,19 @@ describe("MonitorCreate", () => {
     expect(wake.expiresAt - wake.createdAt).toBe(30_000);
   });
 
+  it("applies a monitor wake expiration override", async () => {
+    const h = setup({}, 30_000);
+    await h.text("MonitorCreate", {
+      command: "npm test",
+      timeout: 120_000,
+      onDone: "Report results",
+      expiresIn: "2m",
+    });
+
+    const wake = h.store.get("1")!;
+    expect(wake.expiresAt - wake.createdAt).toBe(120_000);
+  });
+
   it("rejects negative inactivity timeouts", () => {
     const h = setup();
     const schema = h.toolMap.get("MonitorCreate")?.parameters;

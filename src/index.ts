@@ -111,6 +111,12 @@ export default function (pi: ExtensionAPI) {
     deleteLoop: (id) => {
       store.delete(id);
     },
+    expireLoop: (id, now) => {
+      const record = store.expireEntry(id, now);
+      if (!record) return false;
+      emitLoopExpired(record.entry, record.disposition, "monitor", record.reason);
+      return true;
+    },
     onLoopFire: (entry) => onLoopFire(entry, undefined, "monitor", entry.prompt),
     isContextCurrent: isCurrentExtensionContext,
     settleWorkflowMonitorWait: (id, expected, now) => {
@@ -357,6 +363,7 @@ export default function (pi: ExtensionAPI) {
     getGeneration: () => sessionGeneration,
     rpcCall: (channel, params, timeoutMs) => rpcCall(pi.events, channel, params, timeoutMs),
     emitWake: (entry, wake) => emitLoopFire(entry, undefined, wake.sequence),
+    onExpired: (entry, disposition) => emitLoopExpired(entry, disposition, "scheduler", "expires_at"),
     updateWidget: () => widget.update(),
     isContextCurrent: isCurrentExtensionContext,
     debug,

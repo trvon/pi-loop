@@ -161,7 +161,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     );
   }
 
-  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; expiresIn?: string; minimumExpiryMs?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition; actor?: WorkflowRuntimeActor; orchestration?: { definition: OrchestrationDefinitionInput; owner: OrchestrationActor } }): LoopEntry {
+  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; expiresIn?: string; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition; actor?: WorkflowRuntimeActor; orchestration?: { definition: OrchestrationDefinitionInput; owner: OrchestrationActor } }): LoopEntry {
     return this.withLock(() => {
       if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
@@ -178,11 +178,8 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         if (validationError) throw new Error(`Invalid orchestration: ${validationError}`);
       }
       const now = Date.now();
-      const configuredExpiryMs = opts.expiresIn === undefined ? this.defaultExpiryMs : parseLoopDurationMs(opts.expiresIn);
-      if (opts.minimumExpiryMs !== undefined && (!Number.isSafeInteger(opts.minimumExpiryMs) || opts.minimumExpiryMs <= 0)) {
-        throw new Error("Minimum loop expiration must be a positive safe integer number of milliseconds.");
-      }
-      const expiresAt = expiresAtFromDuration(now, Math.max(configuredExpiryMs, opts.minimumExpiryMs ?? 0));
+      const expiryMs = opts.expiresIn === undefined ? this.defaultExpiryMs : parseLoopDurationMs(opts.expiresIn);
+      const expiresAt = expiresAtFromDuration(now, expiryMs);
       this.applyReducerEvent({
         type: "LOOP_CREATED",
         at: now,
