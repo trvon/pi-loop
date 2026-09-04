@@ -156,6 +156,87 @@ describe("notification runtime session boundary", () => {
     expect.soft(sentMessages[0]?.message.content).toContain("Adopt pending work");
   });
 
+  it("RA-04: busy retention preserves a newer same-key wake", async () => {
+    const { pi, sentMessages } = createMockPi();
+    let entered!: () => void;
+    let release!: () => void;
+    let first = true;
+    const lookupEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const delayedLookup = new Promise<number>((resolve) => { release = () => resolve(1); });
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: () => {
+        if (!first) return Promise.resolve(1);
+        first = false;
+        entered();
+        return delayedLookup;
+      },
+      cleanDoneTasks: async () => {},
+      getHasPendingMessages: () => false,
+    });
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    const oldWake = runtime.queueOrDeliverNotification({
+      loopId: "1", prompt: "Old instructions", trigger: { type: "cron", schedule: "* * * * *" },
+      timestamp: 1, autoTask: true, recurring: true,
+    });
+    await lookupEntered;
+    runtime.syncRuntimeState({ agentRunning: true });
+    const newWake = runtime.queueOrDeliverNotification({
+      loopId: "1", prompt: "New instructions", trigger: { type: "cron", schedule: "* * * * *" },
+      timestamp: 2, autoTask: true, recurring: true,
+    });
+    release();
+    await Promise.all([oldWake, newWake]);
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]?.message.content).toContain("New instructions");
+    expect(sentMessages[0]?.message.content).not.toContain("Old instructions");
+  });
+
+  it("RA-07: monitor attachment invalidates a buffered workflow wake", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const store = new LoopStore();
+    const entry = store.create({ type: "dynamic" }, "Wait for monitor", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "wait",
+        states: {
+          wait: { prompt: "Do not run before the monitor.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: async () => 0,
+      cleanDoneTasks: async () => {},
+      getHasPendingMessages: () => false,
+      getLoop: (id) => store.get(id),
+    });
+    runtime.syncRuntimeState({ agentRunning: true });
+    await runtime.queueOrDeliverNotification({
+      loopId: entry.id,
+      prompt: entry.prompt,
+      trigger: entry.trigger,
+      timestamp: entry.updatedAt,
+      recurring: true,
+      controllerStatus: entry.status,
+      workflow: entry.workflow,
+    });
+    expect(store.attachWorkflowMonitor(entry.id, "monitor-1", {
+      stateId: "wait",
+      transitionSeq: 0,
+      definitionRevision: 1,
+    })).toBeDefined();
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages).toEqual([]);
+  });
+
   it("delivers an explicit recurring-loop expiry notification", async () => {
     const { pi, sentMessages } = createMockPi();
     const runtime = createNotificationRuntime({

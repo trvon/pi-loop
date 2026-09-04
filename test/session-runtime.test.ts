@@ -270,7 +270,26 @@ describe("session-runtime heartbeat lifecycle", () => {
 
     await drive("session_shutdown");
 
-    expect(calls).toEqual(["clear", "stop orchestration", "shutdown monitors"]);
+    expect(calls[0]).toBe("clear");
+    expect(new Set(calls.slice(1))).toEqual(new Set(["shutdown monitors", "stop orchestration"]));
+  });
+
+  it("RA-06: starts monitor shutdown before awaiting orchestration shutdown", async () => {
+    let releaseOrchestration!: () => void;
+    let enteredOrchestration!: () => void;
+    const orchestrationEntered = new Promise<void>((resolve) => { enteredOrchestration = resolve; });
+    const shutdownOrchestrations = vi.fn(() => new Promise<void>((resolve) => {
+      releaseOrchestration = resolve;
+      enteredOrchestration();
+    }));
+    const shutdownMonitors = vi.fn(async () => {});
+    const { drive } = setup({ shutdownOrchestrations, shutdownMonitors });
+
+    const shutdown = drive("session_shutdown");
+    await orchestrationEntered;
+    expect(shutdownMonitors).toHaveBeenCalledOnce();
+    releaseOrchestration();
+    await shutdown;
   });
 
   it("awaits monitor shutdown before completing session shutdown", async () => {

@@ -59,9 +59,13 @@ describe("loop expiry runtime wiring", () => {
 });
 
 describe("workflow runtime wiring", () => {
-  const sessionIds = ["workflow-cap-session", "workflow-task-session", "workflow-reissue-session", "workflow-stale-wake-session"];
+  const sessionIds = ["workflow-cap-session", "workflow-cap-race-session", "workflow-task-session", "workflow-reissue-session", "workflow-stale-wake-session"];
   beforeEach(() => sessionIds.forEach(clearTestLoopStore));
-  afterEach(() => sessionIds.forEach(clearTestLoopStore));
+  afterEach(() => {
+    sessionIds.forEach(clearTestLoopStore);
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
   it("pauses an immediately fired workflow state at its local fire cap with recovery guidance", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
     extension(pi as any);
@@ -99,6 +103,62 @@ describe("workflow runtime wiring", () => {
     expect(wake?.message.content).toContain("has reached its fire cap; this workflow is paused and no next cadence is scheduled");
     expect(wake?.message.content).toContain("Otherwise add a bounded recovery state/route with WorkflowRevise, then transition and claim it");
     expect(wake?.message.content).not.toContain("leave the workflow active for its next cadence");
+  });
+
+  it("RA-02: stale capped-fire cleanup cannot re-pause an advanced destination", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const { pi, toolMap, extensionHandlers } = createMockPi();
+    extension(pi as any);
+    const sessionId = "workflow-cap-race-session";
+    const ctx = createCtx({ sessionId });
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
+    const original = LoopStore.prototype.fireOrExpire;
+    let interposed = false;
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (...args) {
+      const result = original.apply(this, args);
+      if (!interposed && result.kind === "fired" && result.entry.workflow?.currentState === "poll") {
+        interposed = true;
+        const workflow = new LoopStore(loopPath).get(result.entry.id)!.workflow!;
+        expect(new LoopStore(loopPath).transitionWorkflow(result.entry.id, {
+          outcome: "ready",
+          evidence: "Poll passed concurrently.",
+        }, {
+          currentState: workflow.currentState,
+          transitionSeq: workflow.transitionSeq,
+          definitionRevision: workflow.definitionRevision,
+          activeExecutionId: workflow.activeExecution?.id,
+        }).applied).toBe(true);
+      }
+      return result;
+    });
+
+    await toolMap.get("WorkflowCreate")!.execute!("workflow-cap-race", {
+      goal: "Advance after capped poll",
+      maxFires: 10,
+      definition: JSON.stringify({
+        version: 1,
+        initialState: "poll",
+        states: {
+          poll: {
+            prompt: "Poll once.",
+            loop: { schedule: "* * * * *", maxFires: 1 },
+            on: { ready: "implement" },
+          },
+          implement: { prompt: "Implement.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      }),
+    });
+    await vi.advanceTimersByTimeAsync(90_000);
+
+    expect(interposed).toBe(true);
+    expect(new LoopStore(loopPath).get("1")).toMatchObject({
+      status: "active",
+      workflow: { currentState: "implement", transitionSeq: 1 },
+    });
+    vi.useRealTimers();
   });
 
   it("persists reissued work and delivers only the fresh workflow instruction", async () => {
@@ -1032,6 +1092,46 @@ describe("native task fallback", () => {
     const listResult = await taskList!.execute?.("3", {});
     expect(listResult.content[0].text).toContain("1 tasks (0 pending, 0 in progress, 1 done, 0 closed)");
     expect(listResult.content[0].text).toContain("#1 [completed] Done 1");
+  });
+
+  it("RA-05: delayed backlog bootstrap cannot fire a rebound same-id controller", async () => {
+    const h = createMockPi({ respondToTaskPing: true });
+    let pendingRequestId: string | undefined;
+    let lookupEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { lookupEntered = resolve; });
+    h.pi.events.on("tasks:rpc:pending", (payload: { requestId?: string }) => {
+      pendingRequestId = payload.requestId;
+      lookupEntered();
+    });
+    extension(h.pi as any);
+    const ctxA = createCtx({ sessionId: "bootstrap-a" });
+    const ctxB = createCtx({ sessionId: "bootstrap-b" });
+    for (const handler of h.extensionHandlers.get("turn_start") ?? []) await handler(null, ctxA);
+    await vi.advanceTimersByTimeAsync(6100);
+
+    const pathB = resolveLoopStorePath({ loopScope: "session", cwd }, "bootstrap-b")!;
+    const unrelated = new LoopStore(pathB).create({ type: "cron", schedule: "0 0 1 1 *" }, "Unrelated B controller", {
+      recurring: true,
+      maxFires: 5,
+    });
+    const creating = h.toolMap.get("LoopCreate")!.execute!("create", {
+      trigger: "tasks:created",
+      prompt: "Adopt A backlog",
+      triggerType: "event",
+      recurring: true,
+      taskBacklog: true,
+      maxFires: 5,
+    });
+    await entered;
+    await h.emitExtension("session_switch", { reason: "switch" }, ctxB);
+    h.pi.events.emit(`tasks:rpc:pending:reply:${pendingRequestId}`, {
+      success: true,
+      data: { pending: 1 },
+    });
+    await creating;
+
+    expect(new LoopStore(pathB).get(unrelated.id)?.fireCount ?? 0).toBe(0);
+    expect(h.sentMessages.some((sent) => sent.message.content.includes("Unrelated B controller"))).toBe(false);
   });
 
   it("re-wakes an explicit task-backlog loop while unfinished work remains", async () => {

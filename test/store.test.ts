@@ -165,6 +165,23 @@ describe("LoopStore (in-memory)", () => {
     expect(store.get(created.id)?.status).toBe("paused");
   });
 
+  it.each(["autoTask", "taskBacklog"] as const)("RA-08: rejects workflow projection through %s", (flag) => {
+    const store = new LoopStore();
+    expect(() => store.create({ type: "dynamic" }, "Workflow", {
+      recurring: true,
+      [flag]: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Work.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    })).toThrow(/workflow.*standalone tasks/i);
+    expect(store.list()).toEqual([]);
+  });
+
   it("rejects a paused terminal transition without trusted admission", () => {
     store.create({ type: "dynamic" }, "Investigate", {
       recurring: true,
