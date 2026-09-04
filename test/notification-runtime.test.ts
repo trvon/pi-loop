@@ -52,6 +52,39 @@ describe("notification runtime session boundary", () => {
     }
   });
 
+  it.each(["one-shot", "fire-cap"] as const)("delivers a legitimate %s final fire after controller cleanup", async (kind) => {
+    const { pi, sentMessages } = createMockPi();
+    const store = new LoopStore();
+    const entry = store.create({ type: "cron", schedule: "* * * * *" }, "Final work", {
+      recurring: kind === "fire-cap",
+      ...(kind === "fire-cap" ? { maxFires: 1 } : {}),
+    });
+    const fired = store.fire(entry.id)!;
+    if (kind === "one-shot") store.delete(entry.id);
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: async () => 0,
+      cleanDoneTasks: async () => {},
+      getHasPendingMessages: () => false,
+      getLoop: (id) => store.get(id),
+    });
+    runtime.syncRuntimeState({ agentRunning: true });
+    await runtime.queueOrDeliverNotification({
+      loopId: fired.id,
+      prompt: fired.prompt,
+      trigger: fired.trigger,
+      timestamp: fired.updatedAt,
+      recurring: fired.recurring,
+      controllerStatus: fired.status,
+      fireLimitReached: kind === "fire-cap",
+    });
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]?.message.content).toContain("Final work");
+  });
+
   it("AUD-05: a task lookup finishing while busy retains the wake for exactly one idle delivery", async () => {
     const { pi, sentMessages } = createMockPi();
     let entered!: () => void;

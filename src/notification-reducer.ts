@@ -1,14 +1,19 @@
-import type { DynamicLoopState, LoopEntry, OrchestrationState, WorkflowRunState } from "./types.js";
+import type { DynamicLoopState, LoopEntry, OrchestrationState, Trigger, WorkflowRunState } from "./types.js";
 
 type ReducerSource = "tool" | "command" | "scheduler" | "eventbus" | "monitor" | "session" | "coordinator" | "system";
 
 export interface ReducerNotification {
   key: string;
   loopId: string;
+  prompt: string;
   message: string;
   timestamp: number;
   expiresAt?: number;
-  trigger: unknown;
+  controllerCreatedAt?: number;
+  fireCount?: number;
+  fireLimitReached?: boolean;
+  workflowStateFireLimitReached?: boolean;
+  trigger: Trigger | string;
   recurring?: boolean;
   persistent?: boolean;
   autoTask?: boolean;
