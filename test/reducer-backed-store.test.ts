@@ -1,7 +1,7 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnyReducerEffect } from "../src/coordinator.js";
 import { ReducerBackedStore } from "../src/reducer-backed-store.js";
 
@@ -107,6 +107,33 @@ describe("ReducerBackedStore", () => {
     });
     afterEach(() => {
       rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("AUD-10: an empty live lock cannot be replaced or entered by a second writer", () => {
+      const path = join(dir, "items.json");
+      const a = new ItemStore(path);
+      a.set("x", 1);
+      const b = new ItemStore(path);
+      const before = readFileSync(path, "utf8");
+      const lockPath = `${path}.lock`;
+      // Hold A's exclusively created inode open before publishing its PID bytes.
+      const fd = openSync(lockPath, "wx");
+      const inode = fstatSync(fd).ino;
+      let tick = 0;
+      // Advance lock-retry accounting deterministically if acquisition fails closed.
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => (tick += 100));
+      try {
+        expect.soft(() => b.set("x", 2)).toThrow(/lock/i);
+        expect.soft(b.seenEffects).toEqual([]);
+        expect.soft(b.get("x")).toEqual({ id: "x", value: 1 });
+        expect.soft(readFileSync(path, "utf8")).toBe(before);
+        expect.soft(existsSync(lockPath)).toBe(true);
+        expect.soft(existsSync(lockPath) ? statSync(lockPath).ino : undefined).toBe(inode);
+        expect.soft(fstatSync(fd).nlink).toBe(1);
+      } finally {
+        clock.mockRestore();
+        closeSync(fd);
+      }
     });
 
     it("persists through withLock and reloads from disk", () => {
