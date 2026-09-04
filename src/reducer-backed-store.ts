@@ -6,8 +6,11 @@ import {
   linkSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -29,45 +32,103 @@ interface LockOwner {
   contents: string;
 }
 
+function staleOwner(contents: string): boolean {
+  const pidPrefix = /^(\d+)/.exec(contents);
+  return pidPrefix ? !isProcessRunning(Number(pidPrefix[1])) : contents.length > 0;
+}
+
+function removeStaleDirectoryLock(lockPath: string, token: string): boolean {
+  const ownerPath = join(lockPath, "owner");
+  try {
+    const contents = readFileSync(ownerPath, "utf-8");
+    if (!staleOwner(contents)) return false;
+    const claimPath = join(lockPath, `.cleanup-${process.pid}-${token}`);
+    renameSync(ownerPath, claimPath);
+    unlinkSync(claimPath);
+    try { rmdirSync(lockPath); } catch { /* a replacement non-empty directory stays fenced */ }
+    return !existsSync(lockPath);
+  } catch {
+    try {
+      const names = readdirSync(lockPath);
+      if (names.length === 0) {
+        rmdirSync(lockPath);
+        return true;
+      }
+      const cleanup = names.find((name) => /^\.cleanup-(\d+)-/.test(name));
+      const pid = cleanup ? Number(/^\.cleanup-(\d+)-/.exec(cleanup)?.[1]) : undefined;
+      if (cleanup && pid !== undefined && !isProcessRunning(pid)) {
+        unlinkSync(join(lockPath, cleanup));
+        rmdirSync(lockPath);
+        return true;
+      }
+    } catch { /* incomplete or concurrently replaced directories stay fenced */ }
+    return false;
+  }
+}
+
+function removeStaleLegacyLock(lockPath: string, token: string): boolean {
+  const claimPath = `${lockPath}.${token}.legacy`;
+  try {
+    // The hard link binds inspection to one inode. New code publishes directories,
+    // so a replacement owner cannot be removed by this legacy-file migration path.
+    linkSync(lockPath, claimPath);
+    if (!staleOwner(readFileSync(claimPath, "utf-8"))) return false;
+    try { unlinkSync(lockPath); } catch { return false; }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { unlinkSync(claimPath); } catch { /* no migration claim was published */ }
+  }
+}
+
+function removeStaleLock(lockPath: string, token: string): boolean {
+  try {
+    return statSync(lockPath).isDirectory()
+      ? removeStaleDirectoryLock(lockPath, token)
+      : removeStaleLegacyLock(lockPath, token);
+  } catch {
+    return false;
+  }
+}
+
 function acquireLock(lockPath: string): LockOwner {
   mkdirSync(dirname(lockPath), { recursive: true });
   const token = randomUUID();
   const owner: LockOwner = { contents: `${process.pid}:${token}` };
   const candidatePath = `${lockPath}.${token}.candidate`;
-  writeFileSync(candidatePath, owner.contents, { flag: "wx" });
+  mkdirSync(candidatePath);
+  writeFileSync(join(candidatePath, "owner"), owner.contents, { flag: "wx" });
   try {
     for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
       try {
-        // A hard link publishes the complete owner record atomically. Creating the
-        // final lock and filling it in separate syscalls leaves a stealable empty inode.
-        linkSync(candidatePath, lockPath);
+        // Renaming a complete non-empty directory publishes ownership atomically.
+        // Stale cleanup claims its fixed owner entry before removing the directory.
+        renameSync(candidatePath, lockPath);
         return owner;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === "EEXIST") {
-          try {
-            const contents = readFileSync(lockPath, "utf-8");
-            const pidPrefix = /^(\d+)/.exec(contents);
-            if (contents.length > 0 && (!pidPrefix || !isProcessRunning(Number(pidPrefix[1])))) {
-              try { unlinkSync(lockPath); } catch { /* another acquirer won stale cleanup */ }
-              continue;
-            }
-          } catch { /* unreadable or concurrently replaced locks stay fenced */ }
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EEXIST" || code === "ENOTDIR" || code === "ENOTEMPTY" || code === "EPERM" || code === "EACCES") {
+          if (removeStaleLock(lockPath, token)) continue;
           const start = Date.now();
           while (Date.now() - start < LOCK_RETRY_MS) { /* busy wait */ }
           continue;
         }
-        throw e;
+        throw error;
       }
     }
     throw new Error(`Failed to acquire lock: ${lockPath}`);
   } finally {
-    try { unlinkSync(candidatePath); } catch { /* linked lock retains the inode */ }
+    try { rmSync(candidatePath, { recursive: true, force: true }); } catch { /* published candidate was renamed */ }
   }
 }
 
 function releaseLock(lockPath: string, owner: LockOwner): void {
   try {
-    if (readFileSync(lockPath, "utf-8") === owner.contents) unlinkSync(lockPath);
+    const ownerPath = join(lockPath, "owner");
+    if (readFileSync(ownerPath, "utf-8") !== owner.contents) return;
+    unlinkSync(ownerPath);
+    try { rmdirSync(lockPath); } catch { /* never remove a replacement owner's directory */ }
   } catch { /* never remove a lock whose ownership cannot be confirmed */ }
 }
 
