@@ -7,6 +7,7 @@ export interface ReducerNotification {
   loopId: string;
   message: string;
   timestamp: number;
+  expiresAt?: number;
   trigger: unknown;
   recurring?: boolean;
   persistent?: boolean;

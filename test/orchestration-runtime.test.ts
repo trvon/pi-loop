@@ -22,6 +22,7 @@ function setup(options: { workCount?: number; concurrency?: number; maxAttempts?
     return undefined;
   });
   const emitWake = vi.fn();
+  const onExpired = vi.fn();
   const runtime = createSubagentOrchestrationRuntime({
     events: pi.events,
     getStore: () => store,
@@ -31,6 +32,7 @@ function setup(options: { workCount?: number; concurrency?: number; maxAttempts?
     getGeneration: () => actor.generation,
     rpcCall: rpc,
     emitWake,
+    onExpired,
     updateWidget: vi.fn(),
     now: () => now,
     scheduleReconcile: (fn) => scheduled.push(fn),
@@ -65,6 +67,7 @@ function setup(options: { workCount?: number; concurrency?: number; maxAttempts?
     runtime,
     rpc,
     emitWake,
+    onExpired,
     entry,
     drain,
     setNow(value: number) { now = value; },
@@ -79,6 +82,47 @@ function spawnCalls(rpc: RpcMock) {
 
 describe("subagent orchestration runtime", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it("retires an expired batch before dispatching workers", async () => {
+    const h = setup();
+    h.entry.expiresAt = 1_000;
+
+    await h.runtime.pump();
+
+    expect(spawnCalls(h.rpc)).toHaveLength(0);
+    expect(h.store.get(h.entry.id)).toMatchObject({
+      status: "paused",
+      pause: { kind: "controller_limit", reason: "loop expiry reached" },
+      orchestration: { status: "cancelled" },
+    });
+    expect(h.onExpired).toHaveBeenCalledWith(expect.objectContaining({ id: h.entry.id }), "paused");
+  });
+
+  it("stops active workers when their batch expires", async () => {
+    const h = setup({ workCount: 2, concurrency: 2 });
+    await h.runtime.pump();
+    h.store.get(h.entry.id)!.expiresAt = 1_000;
+
+    await h.runtime.pump();
+
+    expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:stop")).toHaveLength(2);
+    expect(h.store.get(h.entry.id)?.status).toBe("paused");
+  });
+
+  it("rejects lifecycle settlement after the batch expires", async () => {
+    const h = setup({ workCount: 1, concurrency: 1 });
+    await h.runtime.pump();
+    h.store.get(h.entry.id)!.expiresAt = 1_000;
+
+    h.pi.events.emit("subagents:completed", { id: "agent-1", status: "completed", result: "late" });
+    await Promise.resolve();
+
+    expect(h.store.get(h.entry.id)).toMatchObject({
+      status: "paused",
+      orchestration: { status: "cancelled", work: [{ status: "cancelled" }] },
+    });
+    expect(h.onExpired).toHaveBeenCalledTimes(1);
+  });
 
   it("fills only local capacity and forces detached isolated worker options", async () => {
     const h = setup({ workCount: 3, concurrency: 2 });

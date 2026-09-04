@@ -10,12 +10,13 @@ Use `/loop <interval> <prompt>` or `LoopCreate`:
 
 ```text
 /loop 5m check the deploy
+/loop --expires-in 14d 5m check the deploy
 LoopCreate trigger="0 9 * * 1-5" prompt="Review weekday alerts" maxFires=10
 ```
 
 Intervals such as `5m`, `2h`, and `1d` are converted to cron expressions. Full five-field cron expressions are also accepted. Cron and hybrid loops track their next fire time and deliver only when the agent is idle.
 
-Use `maxFires` for polling or other bounded work so a loop cannot run indefinitely. Recurring loops expire after seven days. `LoopList` exposes each controller's exact `expiresAt` boundary. Seven-day expiry and stale event/hybrid retirement during session recovery emit `loops:expired` and a hidden Pi wake that reports whether the controller was deleted or paused. Renewal is explicit: recreate the loop only when its schedule is still required.
+Use `maxFires` for polling or other bounded work so a loop cannot run indefinitely. New loops expire after seven days by default. Set `PI_LOOP_EXPIRES_IN` (for example, `14d`) to change the runtime default, or pass `expiresIn` to `LoopCreate`, `WorkflowCreate`, or `OrchestrationCreate`; explicit durations may exceed seven days. Existing controllers retain their persisted absolute `expiresAt`. Values must be positive safe-integer durations whose resulting deadline fits JavaScript's valid date range; invalid runtime configuration fails extension activation instead of falling back. `LoopList` exposes each controller's exact boundary. Expiry and stale event/hybrid retirement during session recovery emit `loops:expired` and a hidden Pi wake that reports whether the controller was deleted or paused. Renewal is explicit: recreate the loop only when its schedule is still required.
 
 ### Event loops
 
@@ -189,10 +190,10 @@ Output is buffered and emitted as `monitor:output`. A monitor finishes as one of
 
 - clean exit: emits `monitor:done`
 - nonzero exit or spawn failure: emits `monitor:error`
-- inactivity timeout: stops the process after no output or structured progress, emits `monitor:error`, and always wakes the agent after the process reaps
+- inactivity timeout: stops the process after no output or structured progress, emits `monitor:error`, and wakes the agent after reaping when its callback controller is still unexpired
 - explicit `MonitorStop`: cancels the monitor without an `onDone` wake; workflow-owned monitors resume their current state with `status=stopped`
 
-Pass `onDone` whenever the agent should resume work after success or failure. Its one-shot wake also fires on timeout; monitors without `onDone` still send a timeout-only alert. `timeout` is an inactivity threshold, not a total-runtime limit: stdout/stderr bytes, JSONL progress, and `MonitorUpdate` renew it. The default is five quiet minutes; use `timeout=0` to disable stale detection.
+Pass `onDone` whenever the agent should resume work after success or failure. Its one-shot wake also fires on timeout; monitors without `onDone` send a timeout-only alert while that callback controller remains unexpired. `timeout` is an inactivity threshold, not a total-runtime limit: stdout/stderr bytes, JSONL progress, and `MonitorUpdate` renew it. The default is five quiet minutes; use `timeout=0` to disable stale detection.
 
 For a monitor launched from an active workflow, use `workflowId` instead of `onDone`:
 
@@ -200,7 +201,7 @@ For a monitor launched from an active workflow, use `workflowId` instead of `onD
 MonitorCreate command="npm test" description="Validate release" workflowId="29"
 ```
 
-The workflow pauses its cadence while the monitor runs. While the same Pi runtime remains active, success, failure, timeout, or explicit `MonitorStop` resumes the same state once with status, stop reason, exit code, and output count; inspect the result and call `WorkflowTransition` with a declared outcome. At or after the controller's expiry boundary, monitor completion retires the workflow before clearing the wait, rearming, or waking it. Do not poll with `LoopUpdate` while it waits.
+The workflow pauses its cadence while the monitor runs. Monitor completion and timeout-alert loops use the same configured loop lifetime as every other new controller. If that boundary arrives before the monitor settles, expiry retirement wins and the completion wake is not delivered; choose an `expiresIn` that covers the expected monitor lifetime. While the same Pi runtime remains active, success, failure, timeout, or explicit `MonitorStop` resumes the same state once with status, stop reason, exit code, and output count; inspect the result and call `WorkflowTransition` with a declared outcome. At or after the controller's expiry boundary, monitor completion retires the workflow before clearing the wait, rearming, or waking it. Do not poll with `LoopUpdate` while it waits.
 
 A session shutdown or switch interrupts the monitor: its in-memory process and wait are discarded without a terminal workflow wake. In session or project scope, inspect the resumed workflow and start a new monitor if the work still needs to run; memory-scoped workflows are discarded.
 
@@ -305,6 +306,7 @@ Requests include `requestId`; replies arrive on `<channel>:reply:<requestId>` as
 |---|---|---|
 | `PI_LOOP` | Store path override; use `off` to disable persistence | derived from scope |
 | `PI_LOOP_SCOPE` | `memory`, `session`, or `project` | `session` |
+| `PI_LOOP_EXPIRES_IN` | Default lifetime for newly created loops (`30s`, `12h`, `14d`) | `7d` |
 | `PI_LOOP_DEBUG` | Debug logging to stderr | unset |
 
 Scope behavior:

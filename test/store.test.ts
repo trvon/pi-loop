@@ -2,6 +2,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_LOOP_EXPIRY_MS } from "../src/loop-expiry.js";
 import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
 import type { Trigger, WorkflowRunState } from "../src/types.js";
@@ -35,11 +36,63 @@ describe("LoopStore (in-memory)", () => {
     expect(l1.trigger.type).toBe("cron");
   });
 
-  it("sets expiry 7 days from creation", () => {
-    const l = store.create(cronTrigger, "test", { recurring: true });
-    const sevenDays = 7 * 24 * 60 * 60 * 1000;
-    expect(l.expiresAt).toBeGreaterThan(l.createdAt + sevenDays - 1000);
-    expect(l.expiresAt).toBeLessThan(l.createdAt + sevenDays + 1000);
+  it("uses the seven-day fallback, configured default, and per-loop override", () => {
+    const fallback = store.create(cronTrigger, "fallback", { recurring: true });
+    expect(fallback.expiresAt - fallback.createdAt).toBe(DEFAULT_LOOP_EXPIRY_MS);
+
+    const configured = new LoopStore(undefined, 14 * 24 * 60 * 60 * 1000);
+    const inherited = configured.create(cronTrigger, "inherited", { recurring: true });
+    const overridden = configured.create(cronTrigger, "overridden", { recurring: true, expiresIn: "12h" });
+
+    expect(inherited.expiresAt - inherited.createdAt).toBe(14 * 24 * 60 * 60 * 1000);
+    expect(overridden.expiresAt - overridden.createdAt).toBe(12 * 60 * 60 * 1000);
+  });
+
+  it("rejects fire and workflow mutations at the absolute expiry boundary", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const entry = store.create({ type: "dynamic" }, "Ship", {
+      recurring: true,
+      actor,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Work.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+    entry.expiresAt = Date.now();
+    const before = structuredClone(store.get(entry.id));
+
+    expect(store.fire(entry.id)).toBeUndefined();
+    expect(store.reviseWorkflow(entry.id, {
+      expectedRevision: 1,
+      expectedState: "work",
+      expectedTransitionSeq: 0,
+      reason: "Too late",
+      changes: [],
+    }, actor)).toMatchObject({ applied: false, error: expect.stringContaining("expired") });
+    expect(store.transitionWorkflow(entry.id, { outcome: "done", actor })).toMatchObject({
+      applied: false,
+      error: expect.stringContaining("expired"),
+    });
+    expect(store.claimWorkflowExecution(entry.id, actor)).toMatchObject({
+      claimed: false,
+      error: expect.stringContaining("expired"),
+    });
+    expect(store.attachWorkflowMonitor(entry.id, "monitor-1", { stateId: "work", transitionSeq: 0 })).toBeUndefined();
+    expect(store.get(entry.id)).toEqual(before);
+
+    expect(store.fireOrExpire(entry.id)).toMatchObject({
+      kind: "expired",
+      record: { disposition: "paused" },
+    });
+    expect(store.transitionWorkflow(entry.id, { outcome: "done", evidence: "late", actor })).toMatchObject({
+      applied: false,
+      error: expect.stringContaining("expired"),
+    });
+    expect(store.get(entry.id)?.status).toBe("paused");
   });
 
   it("gets a loop by ID", () => {
@@ -788,6 +841,14 @@ describe("LoopStore (file-backed)", () => {
 
     const store2 = new LoopStore(filePath);
     expect(store2.list()).toHaveLength(0);
+  });
+
+  it("does not rewrite persisted expiry when the runtime default changes", () => {
+    const original = new LoopStore(filePath, 2 * 24 * 60 * 60 * 1000);
+    const created = original.create(cronTrigger, "test", { recurring: true });
+
+    const restarted = new LoopStore(filePath, 30 * 24 * 60 * 60 * 1000);
+    expect(restarted.get(created.id)?.expiresAt).toBe(created.expiresAt);
   });
 
   it("does not restore a completed workflow controller after restart", () => {

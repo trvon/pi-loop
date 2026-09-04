@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { parseLoopDurationMs } from "../loop-expiry.js";
 import { formatTrigger } from "../loop-format.js";
 import { parseInterval } from "../loop-parse.js";
 import type { LoopEntry, Trigger } from "../types.js";
@@ -19,6 +20,7 @@ interface LoopStoreLike {
     taskBacklog?: boolean;
     readOnly?: boolean;
     maxFires?: number;
+    expiresIn?: string;
     dynamic?: Partial<NonNullable<LoopEntry["dynamic"]>>;
   }): LoopEntry;
   pause(id: string): LoopEntry | undefined;
@@ -103,14 +105,11 @@ function formatRemaining(ms: number): string {
 }
 
 function parseDelayMs(input: string): number | undefined {
-  const match = input.trim().match(/^(\d+)\s*(s|m|h|d)$/i);
-  if (!match) return undefined;
-  const value = Number.parseInt(match[1] ?? "", 10);
-  const unit = (match[2] ?? "").toLowerCase();
-  const multiplier = unit === "s" ? 1000 : unit === "m" ? 60000 : unit === "h" ? 3600000 : 86400000;
-  const delayMs = value * multiplier;
-  if (!Number.isSafeInteger(delayMs) || delayMs <= 0 || delayMs > 7 * 24 * 60 * 60 * 1000) return undefined;
-  return delayMs;
+  try {
+    return parseLoopDurationMs(input);
+  } catch {
+    return undefined;
+  }
 }
 
 interface LoopUpdateParams {
@@ -243,9 +242,10 @@ export function registerLoopTools(options: LoopToolsOptions): void {
       debounceMs: Type.Optional(Type.Number({ description: "Debounce for hybrid triggers (default: 30000)", default: 30000 })),
       readOnly: Type.Optional(Type.Boolean({ description: "Restrict the agent to read-only tools when this loop fires (default: false)", default: false })),
       maxFires: Type.Optional(Type.Integer({ description: "Auto-stop after N fires. Prevents infinite token burn on polling loops.", minimum: 1 })),
+      expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new loop, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
     }),
     async execute(_toolCallId, params) {
-      const { trigger: triggerInput, prompt, recurring, autoTask, taskBacklog, triggerType, debounceMs, readOnly, maxFires } = params;
+      const { trigger: triggerInput, prompt, recurring, autoTask, taskBacklog, triggerType, debounceMs, readOnly, maxFires, expiresIn } = params;
 
       let trigger: Trigger;
       const inferred = triggerType ?? inferTriggerType(triggerInput);
@@ -308,16 +308,29 @@ export function registerLoopTools(options: LoopToolsOptions): void {
         }));
       }
 
-      const entry = getStore().create(trigger, prompt, {
-        recurring: taskBacklog ? true : recurring ?? (inferred !== "event"),
-        autoTask,
-        taskBacklog,
-        readOnly,
-        maxFires: maxFires ?? (taskBacklog ? 25 : undefined),
-        dynamic: trigger.type === "dynamic"
-          ? { goal: prompt, iteration: 0 }
-          : undefined,
-      });
+      let entry: LoopEntry;
+      try {
+        entry = getStore().create(trigger, prompt, {
+          recurring: taskBacklog ? true : recurring ?? (inferred !== "event"),
+          autoTask,
+          taskBacklog,
+          readOnly,
+          maxFires: maxFires ?? (taskBacklog ? 25 : undefined),
+          expiresIn,
+          dynamic: trigger.type === "dynamic"
+            ? { goal: prompt, iteration: 0 }
+            : undefined,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return textResult(message, {
+          kind: "loop",
+          action: "create",
+          tone: "error",
+          summary: "Loop was not created",
+          expanded: [message],
+        });
+      }
 
       getTriggerSystem().add(entry);
       if (trigger.type === "dynamic") onDynamicLoopActivated?.(entry);

@@ -46,6 +46,7 @@ interface WorkflowStoreLike {
   create(trigger: Trigger, prompt: string, opts: {
     recurring: boolean;
     maxFires?: number;
+    expiresIn?: string;
     dynamic?: Partial<NonNullable<LoopEntry["dynamic"]>>;
     workflow?: WorkflowDefinition;
     actor?: WorkflowRuntimeActor;
@@ -229,6 +230,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       goal: Type.String({ description: "Overall workflow goal" }),
       definition: Type.String({ description: "Workflow definition JSON; see the tool description for the schema" }),
       maxFires: Type.Optional(Type.Integer({ description: "Maximum workflow wakes before automatic expiry (default: 30)", default: 30, minimum: 1 })),
+      expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new workflow, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
     }),
     async execute(_toolCallId, params) {
       const parsed = parseWorkflowDefinition(params.definition);
@@ -247,13 +249,22 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         });
       }
       const store = getStore();
-      const entry = store.create({ type: "dynamic" }, params.goal, {
-        recurring: true,
-        maxFires: params.maxFires ?? workflowDefaultMaxFires(parsed.definition),
-        dynamic: { goal: params.goal, state: parsed.definition.initialState, iteration: 0 },
-        workflow: parsed.definition,
-        actor,
-      });
+      let entry: LoopEntry;
+      try {
+        entry = store.create({ type: "dynamic" }, params.goal, {
+          recurring: true,
+          maxFires: params.maxFires ?? workflowDefaultMaxFires(parsed.definition),
+          expiresIn: params.expiresIn,
+          dynamic: { goal: params.goal, state: parsed.definition.initialState, iteration: 0 },
+          workflow: parsed.definition,
+          actor,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return textResult(message, {
+          kind: "workflow", action: "create", tone: "error", summary: "Workflow was not created", expanded: [message],
+        });
+      }
       getTriggerSystem().add(entry);
       if (stateShouldWakeImmediately(entry)) onDynamicLoopActivated?.(entry);
       const current = store.get(entry.id) ?? entry;

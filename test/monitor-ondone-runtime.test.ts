@@ -30,20 +30,25 @@ function mockManager(config: { onCompleteReturns: boolean; onTerminalReturns?: b
   };
 }
 
-function setup(manager: ReturnType<typeof mockManager>, isContextCurrent = () => true) {
+function setup(
+  manager: ReturnType<typeof mockManager>,
+  isContextCurrent = () => true,
+  expireLoop = vi.fn(() => false),
+) {
   const onLoopFire = vi.fn();
   const deleteLoop = vi.fn();
   const runtime = createMonitorOnDoneRuntime({
     monitorManager: manager as any,
     getLoop: (id: string) => (id === doneLoop.id ? doneLoop : undefined),
     deleteLoop,
+    expireLoop,
     onLoopFire,
     isContextCurrent,
     settleWorkflowMonitorWait: vi.fn(() => ({ kind: "stale" as const })),
     rearmWorkflow: vi.fn(),
     wakeWorkflow: vi.fn(),
   });
-  return { runtime, onLoopFire, deleteLoop };
+  return { runtime, onLoopFire, deleteLoop, expireLoop };
 }
 
 const flush = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -62,6 +67,7 @@ describe("monitor-ondone-runtime", () => {
       monitorManager: manager as any,
       getLoop: (id) => (id === timeoutLoop.id ? timeoutLoop : undefined),
       deleteLoop,
+      expireLoop: vi.fn(() => false),
       onLoopFire,
       isContextCurrent: () => true,
       settleWorkflowMonitorWait: vi.fn(() => ({ kind: "stale" as const })),
@@ -106,6 +112,20 @@ describe("monitor-ondone-runtime", () => {
     expect(onLoopFire).toHaveBeenCalledTimes(1);
     expect(onLoopFire).toHaveBeenCalledWith(doneLoop);
     expect(deleteLoop).toHaveBeenCalledWith("5");
+  });
+
+  it("retires an expired completion loop without delivering its wake", async () => {
+    const manager = mockManager({ onCompleteReturns: true });
+    const expireLoop = vi.fn(() => true);
+    const { runtime, onLoopFire, deleteLoop } = setup(manager, () => true, expireLoop);
+
+    runtime.register(doneLoop, "3");
+    manager.fireCaptured();
+    await flush();
+
+    expect(expireLoop).toHaveBeenCalledWith(doneLoop.id, expect.any(Number));
+    expect(onLoopFire).not.toHaveBeenCalled();
+    expect(deleteLoop).not.toHaveBeenCalled();
   });
 
   it("does not mutate loop state when completion belongs to a stale context", async () => {
@@ -213,6 +233,7 @@ describe("monitor-ondone-runtime", () => {
       monitorManager: manager as any,
       getLoop: () => undefined,
       deleteLoop: vi.fn(),
+      expireLoop: vi.fn(() => false),
       onLoopFire: vi.fn(),
       isContextCurrent: () => true,
       settleWorkflowMonitorWait,
@@ -285,6 +306,7 @@ describe("monitor-ondone-runtime", () => {
         monitorManager: manager as any,
         getLoop: () => workflow,
         deleteLoop: vi.fn(),
+        expireLoop: vi.fn(() => false),
         onLoopFire: vi.fn(),
         isContextCurrent: () => true,
         settleWorkflowMonitorWait,

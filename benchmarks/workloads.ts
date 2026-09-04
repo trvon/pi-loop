@@ -24,6 +24,7 @@ function buildLoopState(): LoopReducerState {
         prompt: `loop-${index}`,
         trigger: { type: "cron", schedule: "*/5 * * * *" },
         recurring: true,
+        expiresAt: index + 604_800_000,
       },
     }).state;
   }

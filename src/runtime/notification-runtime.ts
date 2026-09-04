@@ -32,6 +32,7 @@ export interface LoopFireEvent {
   prompt: string;
   trigger: Trigger | string;
   timestamp: number;
+  expiresAt?: number;
   readOnly?: boolean;
   recurring?: boolean;
   persistent?: boolean;
@@ -358,6 +359,15 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       && current.workflow.activeExecution?.id === queued.activeExecution?.id;
   }
 
+  function orchestrationNotificationIsCurrent(notification: ReducerNotification): boolean {
+    const sequence = notification.orchestrationWakeSequence;
+    if (sequence === undefined || !getLoop) return true;
+    const current = getLoop(notification.loopId);
+    if (!current?.orchestration) return false;
+    if (notification.controllerStatus !== undefined && current.status !== notification.controllerStatus) return false;
+    return current.orchestration.pendingWake?.sequence === sequence;
+  }
+
   async function deliverNotification(notification: ReducerNotification): Promise<boolean> {
     const deliveryGeneration = notification.sessionGeneration ?? sessionGeneration;
     if (notification.autoTask) {
@@ -377,8 +387,16 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       debug?.(`loop:fire #${notification.loopId} — session changed before delivery, dropping wake`);
       return false;
     }
+    if (notification.expiresAt !== undefined && Date.now() >= notification.expiresAt) {
+      debug?.(`loop:fire #${notification.loopId} — expiry boundary passed before delivery, dropping wake`);
+      return false;
+    }
     if (!workflowNotificationIsCurrent(notification)) {
       debug?.(`loop:fire #${notification.loopId} — workflow execution changed before delivery, dropping wake`);
+      return false;
+    }
+    if (!orchestrationNotificationIsCurrent(notification)) {
+      debug?.(`loop:fire #${notification.loopId} — orchestration wake changed before delivery, dropping wake`);
       return false;
     }
     syncRuntimeState({ agentRunning: true });

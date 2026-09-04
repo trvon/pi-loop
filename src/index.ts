@@ -18,6 +18,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerLoopCommand } from "./commands/loop-command.js";
+import { resolveDefaultLoopExpiryMs } from "./loop-expiry.js";
 import { atMaxFires } from "./loop-reducer.js";
 import { MonitorManager } from "./monitor-manager.js";
 import { rpcCall, rpcProbe } from "./rpc/cross-extension-rpc.js";
@@ -62,8 +63,9 @@ export default function (pi: ExtensionAPI) {
   let orchestrationRuntime: SubagentOrchestrationRuntime | undefined;
 
   const getScopeOptions = () => ({ piLoopEnv, loopScope });
+  const defaultLoopExpiryMs = resolveDefaultLoopExpiryMs(process.env.PI_LOOP_EXPIRES_IN);
 
-  let store = new LoopStore(resolveLoopStorePath(getScopeOptions()));
+  let store = new LoopStore(resolveLoopStorePath(getScopeOptions()), defaultLoopExpiryMs);
   const memoryLoopStores = new Map<string, LoopStore>();
   const monitorManager = new MonitorManager(pi);
   const monitorWorkflowAdmissionProvider = createMonitorWorkflowAdmissionProvider((id) => monitorManager.get(id));
@@ -108,6 +110,12 @@ export default function (pi: ExtensionAPI) {
     getLoop: (id) => store.get(id),
     deleteLoop: (id) => {
       store.delete(id);
+    },
+    expireLoop: (id, now) => {
+      const record = store.expireEntry(id, now);
+      if (!record) return false;
+      emitLoopExpired(record.entry, record.disposition, "monitor", record.reason);
+      return true;
     },
     onLoopFire: (entry) => onLoopFire(entry, undefined, "monitor", entry.prompt),
     isContextCurrent: isCurrentExtensionContext,
@@ -244,6 +252,7 @@ export default function (pi: ExtensionAPI) {
       prompt: entry.prompt,
       trigger: entry.trigger,
       timestamp: Date.now(),
+      expiresAt: entry.expiresAt,
       readOnly: entry.readOnly,
       recurring: entry.recurring,
       persistent: entry.recurring,
@@ -276,6 +285,14 @@ export default function (pi: ExtensionAPI) {
     promptOverride?: string,
   ): void {
     if (!isCurrentExtensionContext()) return;
+    const expirySource = origin === "monitor" ? "monitor" : "scheduler";
+    const retireIfExpired = () => {
+      const expired = store.expireEntry(entry.id, Date.now());
+      if (!expired) return false;
+      emitLoopExpired(expired.entry, expired.disposition, expirySource, expired.reason);
+      return true;
+    };
+    if (retireIfExpired()) return;
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     const current = store.get(entry.id);
     if (current?.status !== "active" || isTerminalWorkflowRun(current?.workflow)) {
@@ -301,9 +318,14 @@ export default function (pi: ExtensionAPI) {
       widget.update();
       return;
     }
+    const fireResult = store.fireOrExpire(current.id, origin);
+    if (fireResult.kind === "expired") {
+      emitLoopExpired(fireResult.record.entry, fireResult.record.disposition, expirySource, fireResult.record.reason);
+      return;
+    }
+    if (fireResult.kind === "ignored" || retireIfExpired()) return;
+    const fired = fireResult.entry;
     if (isTaskBacklog) activeTaskBacklogWakes.add(current.id);
-    const fired = store.fire(current.id, origin);
-    if (!fired) return;
 
     const firedAt = Date.now();
     const stateLoop = fired.workflow && getActiveWorkflowStateLoop(fired.workflow);
@@ -317,6 +339,10 @@ export default function (pi: ExtensionAPI) {
         }) ?? fired
       : fired;
     const firedEntry = updatedEntry;
+    if (retireIfExpired()) {
+      activeTaskBacklogWakes.delete(current.id);
+      return;
+    }
 
     if (atMaxFires(firedEntry)) {
       triggerSystem.remove(firedEntry.id);
@@ -329,6 +355,12 @@ export default function (pi: ExtensionAPI) {
       triggerSystem.remove(firedEntry.id);
       store.pause(firedEntry.id, "controller_limit", "workflow state fire cap reached");
       widget.update();
+    }
+
+    if (Date.now() >= firedEntry.expiresAt) {
+      retireIfExpired();
+      activeTaskBacklogWakes.delete(current.id);
+      return;
     }
 
     if (current.autoTask) {
@@ -355,6 +387,7 @@ export default function (pi: ExtensionAPI) {
     getGeneration: () => sessionGeneration,
     rpcCall: (channel, params, timeoutMs) => rpcCall(pi.events, channel, params, timeoutMs),
     emitWake: (entry, wake) => emitLoopFire(entry, undefined, wake.sequence),
+    onExpired: (entry, disposition) => emitLoopExpired(entry, disposition, "scheduler", "expires_at"),
     updateWidget: () => widget.update(),
     isContextCurrent: isCurrentExtensionContext,
     debug,
@@ -368,9 +401,9 @@ export default function (pi: ExtensionAPI) {
     advanceSessionGeneration: () => ++sessionGeneration,
     recreateSessionStore: (sessionId: string) => {
       const path = resolveLoopStorePath(getScopeOptions(), sessionId);
-      if (path) store = new LoopStore(path);
+      if (path) store = new LoopStore(path, defaultLoopExpiryMs);
       else {
-        store = memoryLoopStores.get(sessionId) ?? new LoopStore();
+        store = memoryLoopStores.get(sessionId) ?? new LoopStore(undefined, defaultLoopExpiryMs);
         memoryLoopStores.set(sessionId, store);
       }
       widget.setStore(store);

@@ -39,6 +39,7 @@ describe("subagent orchestration tools", () => {
       maxAttempts: 2,
       model: "test/model",
       maxTurns: 8,
+      expiresIn: "14d",
     });
     const out = created.content[0].text as string;
 
@@ -50,6 +51,7 @@ describe("subagent orchestration tools", () => {
       summary: "Orchestration #1 running · 0/2 complete · 0 running · 2 queued",
     });
     expect(h.probeSubagents).toHaveBeenCalledTimes(1);
+    expect(h.store.get("1")!.expiresAt - h.store.get("1")!.createdAt).toBe(14 * 24 * 60 * 60 * 1000);
     expect(h.store.get("1")).toMatchObject({
       trigger: { type: "dynamic" },
       recurring: true,

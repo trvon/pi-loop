@@ -54,6 +54,39 @@ describe("registerLoopCommand", () => {
     expect(ctx.notifications[0].level).toBe("info");
   });
 
+  it("applies a leading expiration override", async () => {
+    const ctx = createCtx();
+    await h.command.handler!("--expires-in 14d 5m check the deploy", ctx);
+
+    const entry = h.store.get("1")!;
+    expect(entry.expiresAt - entry.createdAt).toBe(14 * 24 * 60 * 60 * 1000);
+  });
+
+  it.each([
+    ["--expires-in 2d event deploy:completed summarize the release", "event", 2 * 24 * 60 * 60 * 1000],
+    ["--expires-in 12h investigate flaky tests", "dynamic", 12 * 60 * 60 * 1000],
+  ])("applies expiration override to %s", async (args, triggerType, expectedLifetime) => {
+    const ctx = createCtx();
+    await h.command.handler!(args, ctx);
+
+    const entry = h.store.get("1")!;
+    expect(entry.trigger.type).toBe(triggerType);
+    expect(entry.expiresAt - entry.createdAt).toBe(expectedLifetime);
+  });
+
+  it.each([
+    "--expires-in forever 5m check the deploy",
+    "--expires-in forever event deploy:completed summarize",
+    "--expires-in forever investigate flaky tests",
+  ])("rejects an invalid expiration override without creating a loop: %s", async (args) => {
+    const ctx = createCtx();
+    await h.command.handler!(args, ctx);
+
+    expect(h.store.list()).toHaveLength(0);
+    expect(ctx.notifications[0]).toMatchObject({ level: "error" });
+    expect(ctx.notifications[0].message).toContain('Invalid loop expiration "forever"');
+  });
+
   it("warns when an interval is given without a prompt", async () => {
     const ctx = createCtx();
     await h.command.handler!("5m", ctx);

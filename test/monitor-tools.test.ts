@@ -23,13 +23,17 @@ function setup(managerOverrides: Partial<{
   list: () => MonitorEntry[];
   stop: (id: string) => Promise<boolean>;
   updateProgress: (id: string, progress: any) => MonitorEntry | undefined;
-}> = {}) {
+}> = {}, defaultExpiryMs?: number) {
   const { pi, toolMap } = createMockPi();
-  const store = new LoopStore();
+  const store = new LoopStore(undefined, defaultExpiryMs);
   let nextId = 1;
   const manager = {
     list: managerOverrides.list ?? (() => []),
-    create: vi.fn((command: string) => makeMonitor({ id: String(nextId++), command })),
+    create: vi.fn((command: string, _description?: string, timeout?: number) => makeMonitor({
+      id: String(nextId++),
+      command,
+      timeout: timeout ?? 300_000,
+    })),
     stop: managerOverrides.stop ?? vi.fn(async () => true),
     updateProgress: managerOverrides.updateProgress ?? vi.fn((_id: string, progress: any) => makeMonitor({
       progress: { ...progress, source: "agent", updatedAt: Date.now() },
@@ -69,6 +73,54 @@ describe("MonitorCreate", () => {
     expect(h.toolMap.get("MonitorCreate")?.renderShell).not.toBe("self");
     expect(h.toolMap.get("MonitorCreate")?.renderCall).toBeTypeOf("function");
     expect(h.toolMap.get("MonitorCreate")?.renderResult).toBeTypeOf("function");
+  });
+
+  it("applies the configured lifetime to monitor-created wake loops", async () => {
+    const h = setup({}, 30_000);
+    await h.text("MonitorCreate", { command: "npm test", timeout: 120_000, onDone: "Report results" });
+
+    const wake = h.store.get("1")!;
+    expect(wake.expiresAt - wake.createdAt).toBe(30_000);
+  });
+
+  it("applies a monitor wake expiration override", async () => {
+    const h = setup({}, 30_000);
+    await h.text("MonitorCreate", {
+      command: "npm test",
+      timeout: 120_000,
+      onDone: "Report results",
+      expiresIn: "2m",
+    });
+
+    const wake = h.store.get("1")!;
+    expect(wake.expiresAt - wake.createdAt).toBe(120_000);
+  });
+
+  it("stops a spawned monitor when its wake loop cannot be created", async () => {
+    const h = setup();
+    const result = await h.result("MonitorCreate", {
+      command: "npm test",
+      onDone: "Report results",
+      expiresIn: "forever",
+    });
+
+    expect(result.content[0].text).toContain('Invalid loop expiration "forever"');
+    expect(result.details).toMatchObject({ tone: "error", summary: "Monitor wake was not created" });
+    expect(h.manager.stop).toHaveBeenCalledWith("1");
+    expect(h.store.list()).toHaveLength(0);
+  });
+
+  it("does not claim cleanup succeeded when stopping a failed wake cannot be confirmed", async () => {
+    const h = setup({ stop: vi.fn(async () => false) });
+    const result = await h.result("MonitorCreate", {
+      command: "npm test",
+      onDone: "Report results",
+      expiresIn: "forever",
+    });
+
+    expect(result.details).toMatchObject({
+      expanded: [expect.stringContaining("cleanup could not be confirmed"), expect.any(String)],
+    });
   });
 
   it("rejects negative inactivity timeouts", () => {

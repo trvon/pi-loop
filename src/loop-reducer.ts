@@ -3,8 +3,6 @@ import type { DynamicLoopState, LoopEntry, LoopFireOrigin, LoopPauseKind, Orches
 import { createWorkflowRun, transitionWorkflowRun } from "./workflow-reducer.js";
 import { reviseWorkflowRun, type WorkflowRevisionSummary } from "./workflow-revision.js";
 
-export const MAX_LOOP_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
-
 /**
  * Whether a loop has reached its fire cap. Single source of truth for the
  * `maxFires` check shared by the fire callbacks (`onLoopFire` pre-fire guard and
@@ -41,6 +39,7 @@ export type LoopReducerEvent =
       workflow?: WorkflowDefinition;
       actor?: WorkflowRuntimeActor;
       orchestration?: { definition: OrchestrationDefinitionInput; owner: OrchestrationActor };
+      expiresAt: number;
     };
   }
   | {
@@ -214,7 +213,7 @@ export function reduceLoopState(state: LoopReducerState, event: LoopReducerEvent
       recurring: event.payload.recurring,
       createdAt: event.at,
       updatedAt: event.at,
-      expiresAt: event.at + MAX_LOOP_EXPIRY_MS,
+      expiresAt: event.payload.expiresAt,
       autoTask: event.payload.autoTask,
       taskBacklog: event.payload.taskBacklog,
       readOnly: event.payload.readOnly,
