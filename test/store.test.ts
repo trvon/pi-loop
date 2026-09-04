@@ -48,6 +48,50 @@ describe("LoopStore (in-memory)", () => {
     expect(overridden.expiresAt - overridden.createdAt).toBe(12 * 60 * 60 * 1000);
   });
 
+  it("rejects fire and workflow mutations at the absolute expiry boundary", () => {
+    const actor = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const entry = store.create({ type: "dynamic" }, "Ship", {
+      recurring: true,
+      actor,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Work.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+    entry.expiresAt = Date.now();
+    const before = structuredClone(store.get(entry.id));
+
+    expect(store.fire(entry.id)).toBeUndefined();
+    expect(store.reviseWorkflow(entry.id, {
+      expectedRevision: 1,
+      expectedState: "work",
+      expectedTransitionSeq: 0,
+      reason: "Too late",
+      changes: [],
+    }, actor)).toMatchObject({ applied: false, error: expect.stringContaining("expired") });
+    expect(store.transitionWorkflow(entry.id, { outcome: "done", actor })).toMatchObject({
+      applied: false,
+      error: expect.stringContaining("expired"),
+    });
+    expect(store.claimWorkflowExecution(entry.id, actor)).toMatchObject({
+      claimed: false,
+      error: expect.stringContaining("expired"),
+    });
+    expect(store.attachWorkflowMonitor(entry.id, "monitor-1", { stateId: "work", transitionSeq: 0 })).toBeUndefined();
+    expect(store.get(entry.id)).toEqual(before);
+
+    expect(store.expireEntry(entry.id)).toMatchObject({ disposition: "paused" });
+    expect(store.transitionWorkflow(entry.id, { outcome: "done", evidence: "late", actor })).toMatchObject({
+      applied: false,
+      error: expect.stringContaining("expired"),
+    });
+    expect(store.get(entry.id)?.status).toBe("paused");
+  });
+
   it("gets a loop by ID", () => {
     store.create(cronTrigger, "test", { recurring: true });
     const entry = store.get("1");
