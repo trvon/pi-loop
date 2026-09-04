@@ -113,6 +113,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       if (getScope() !== "session") return errorResult("Orchestration requires the default file-backed session scope; memory and project scopes are unsupported.");
       if (getPiLoopEnv() !== undefined) return errorResult("Orchestration is unavailable when PI_LOOP overrides storage; unset PI_LOOP and use session scope.");
       const actor = getActor();
+      const store = getStore();
       if (!actor) return errorResult("Orchestration requires an active session runtime.");
       const validationError = validateCreate(params);
       if (validationError) return errorResult(validationError);
@@ -124,11 +125,18 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         return errorResult(`Orchestration requires pi-subagents protocol v2: ${error instanceof Error ? error.message : String(error)}`);
       }
       if (protocolVersion(probe) !== 2) return errorResult("Orchestration requires pi-subagents protocol v2; no compatible provider replied.");
+      const currentActor = getActor();
+      if (getScope() !== "session" || getPiLoopEnv() !== undefined || getStore() !== store
+        || currentActor?.sessionId !== actor.sessionId
+        || currentActor?.runtimeId !== actor.runtimeId
+        || currentActor?.generation !== actor.generation) {
+        return errorResult("Orchestration context changed during provider probing; retry in the current session.");
+      }
 
       const definition = definitionFrom(params);
       let entry: ReturnType<LoopStore["create"]>;
       try {
-        entry = getStore().create({ type: "dynamic" }, definition.goal, {
+        entry = store.create({ type: "dynamic" }, definition.goal, {
           recurring: true,
           expiresIn: params.expiresIn,
           dynamic: { goal: definition.goal, awaitingUpdate: true, iteration: 0 },

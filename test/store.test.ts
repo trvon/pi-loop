@@ -6,6 +6,7 @@ import { DEFAULT_LOOP_EXPIRY_MS } from "../src/loop-expiry.js";
 import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
 import type { Trigger, WorkflowRunState } from "../src/types.js";
+import { currentMonitorAttachmentIdentity, currentWorkflowIdentity } from "./helpers/workflow-identity.js";
 
 const cronTrigger: Trigger = { type: "cron", schedule: "*/5 * * * *" };
 const trustedAdmission = {
@@ -73,7 +74,7 @@ describe("LoopStore (in-memory)", () => {
       reason: "Too late",
       changes: [],
     }, actor)).toMatchObject({ applied: false, error: expect.stringContaining("expired") });
-    expect(store.transitionWorkflow(entry.id, { outcome: "done", actor })).toMatchObject({
+    expect(store.transitionWorkflow(entry.id, { outcome: "done", actor }, currentWorkflowIdentity(store, entry.id))).toMatchObject({
       applied: false,
       error: expect.stringContaining("expired"),
     });
@@ -81,14 +82,14 @@ describe("LoopStore (in-memory)", () => {
       claimed: false,
       error: expect.stringContaining("expired"),
     });
-    expect(store.attachWorkflowMonitor(entry.id, "monitor-1", { stateId: "work", transitionSeq: 0 })).toBeUndefined();
+    expect(store.attachWorkflowMonitor(entry.id, "monitor-1", currentMonitorAttachmentIdentity(store, entry.id), actor)).toBeUndefined();
     expect(store.get(entry.id)).toEqual(before);
 
     expect(store.fireOrExpire(entry.id)).toMatchObject({
       kind: "expired",
       record: { disposition: "paused" },
     });
-    expect(store.transitionWorkflow(entry.id, { outcome: "done", evidence: "late", actor })).toMatchObject({
+    expect(store.transitionWorkflow(entry.id, { outcome: "done", evidence: "late", actor }, currentWorkflowIdentity(store, entry.id))).toMatchObject({
       applied: false,
       error: expect.stringContaining("expired"),
     });
@@ -176,7 +177,7 @@ describe("LoopStore (in-memory)", () => {
         },
       },
     });
-    const result = store.transitionWorkflow("1", { outcome: "blocked" });
+    const result = store.transitionWorkflow("1", { outcome: "blocked" }, currentWorkflowIdentity(store, "1"));
 
     expect(result).toMatchObject({ applied: false, error: expect.stringContaining("require trusted admission") });
     expect(store.get("1")).toMatchObject({ status: "active", workflow: { currentState: "investigate" } });
@@ -194,7 +195,7 @@ describe("LoopStore (in-memory)", () => {
         },
       },
     });
-    const result = store.transitionWorkflow("1", { outcome: "blocked", admission: trustedAdmission });
+    const result = store.transitionWorkflow("1", { outcome: "blocked", admission: trustedAdmission }, currentWorkflowIdentity(store, "1"));
 
     expect(result.terminal).toBe("paused");
     expect(store.resume("1")).toBeUndefined();
@@ -219,7 +220,7 @@ describe("LoopStore (in-memory)", () => {
       },
     });
 
-    const result = store.transitionWorkflow(workflow.id, { outcome: "done" });
+    const result = store.transitionWorkflow(workflow.id, { outcome: "done" }, currentWorkflowIdentity(store, workflow.id));
 
     expect(result).toMatchObject({
       applied: true,
@@ -604,7 +605,7 @@ describe("LoopStore (file-backed)", () => {
     const result = store1.transitionWorkflow(workflow.id, {
       outcome: "still_missing",
       evidence: "No authority change.",
-    });
+    }, currentWorkflowIdentity(store1, workflow.id));
 
     expect(result).toMatchObject({ applied: false, error: expect.stringContaining(expectedError) });
     expect(readFileSync(filePath)).toEqual(before);
@@ -640,7 +641,7 @@ describe("LoopStore (file-backed)", () => {
     expect(store1.get(workflow.id)?.status).toBe("paused");
     const before = readFileSync(filePath);
 
-    expect(store1.transitionWorkflow(workflow.id, { outcome: "ready" })).toMatchObject({
+    expect(store1.transitionWorkflow(workflow.id, { outcome: "ready" }, currentWorkflowIdentity(store1, workflow.id))).toMatchObject({
       applied: false,
       error: expect.stringContaining("requires evidence"),
     });
@@ -649,7 +650,7 @@ describe("LoopStore (file-backed)", () => {
     expect(store1.transitionWorkflow(workflow.id, {
       outcome: "ready",
       evidence: "Release endpoint reports ready.",
-    })).toMatchObject({ applied: true, entry: { status: "active" } });
+    }, currentWorkflowIdentity(store1, workflow.id))).toMatchObject({ applied: true, entry: { status: "active" } });
     expect(store1.get(workflow.id)).toMatchObject({
       status: "active",
       workflow: { currentState: "finish", transitionSeq: 1 },
@@ -680,7 +681,7 @@ describe("LoopStore (file-backed)", () => {
     expect(store1.transitionWorkflow(workflow.id, {
       outcome: "ready",
       evidence: "Release is ready.",
-    })).toMatchObject({
+    }, currentWorkflowIdentity(store1, workflow.id))).toMatchObject({
       applied: false,
       error: expect.stringContaining("only a terminal transition may proceed"),
     });
@@ -707,7 +708,7 @@ describe("LoopStore (file-backed)", () => {
     expect(store1.transitionWorkflow(workflow.id, {
       outcome: "done",
       evidence: "Acceptance checks passed before the cap.",
-    })).toMatchObject({
+    }, currentWorkflowIdentity(store1, workflow.id))).toMatchObject({
       applied: true,
       terminal: "completed",
       entry: { status: "active", pause: undefined },
@@ -825,7 +826,7 @@ describe("LoopStore (file-backed)", () => {
         observations: ["monitor@1"],
         decidedAt: Date.now(),
       },
-    });
+    }, currentWorkflowIdentity(store, "1"));
     const data = JSON.parse(readFileSync(filePath, "utf8"));
     data.loops[0].workflow.lastTransition.admission.observations = Array.from({ length: 9 }, () => "monitor@1");
     writeFileSync(filePath, JSON.stringify(data));
@@ -865,7 +866,7 @@ describe("LoopStore (file-backed)", () => {
       },
     });
 
-    expect(store1.transitionWorkflow(workflow.id, { outcome: "done" }).terminal).toBe("completed");
+    expect(store1.transitionWorkflow(workflow.id, { outcome: "done" }, currentWorkflowIdentity(store1, workflow.id)).terminal).toBe("completed");
 
     const restartedStore = new LoopStore(filePath);
     expect(restartedStore.get(workflow.id)).toBeUndefined();
@@ -901,7 +902,7 @@ describe("LoopStore (file-backed)", () => {
       outcome: "ready",
       evidence: "Implementation complete",
       actor: implementer,
-    }).applied).toBe(true);
+    }, currentWorkflowIdentity(store1, workflow.id)).applied).toBe(true);
 
     const store2 = new LoopStore(filePath);
     const claim = store2.claimWorkflowExecution(workflow.id, reviewer, 60);
@@ -989,7 +990,7 @@ describe("LoopStore (file-backed)", () => {
       workflow: workflowDefinition,
       actor,
     });
-    expect(restarted.transitionWorkflow(second.id, { outcome: "ready", actor }).applied).toBe(true);
+    expect(restarted.transitionWorkflow(second.id, { outcome: "ready", actor }, currentWorkflowIdentity(restarted, second.id)).applied).toBe(true);
     expect(store2.reviseWorkflow(second.id, { ...input, reason: "Stale after transition." }, actor)).toMatchObject({
       applied: false,
       failure: { code: "run_conflict", currentState: "implement", currentTransitionSeq: 1 },
@@ -1159,10 +1160,11 @@ describe("LoopStore (absolute path)", () => {
         },
       },
     });
-    const attached = store.attachWorkflowMonitor(workflow.id, "18", {
-      stateId: "validate",
-      transitionSeq: 0,
-    });
+    const attached = store.attachWorkflowMonitor(
+      workflow.id,
+      "18",
+      currentMonitorAttachmentIdentity(store, workflow.id),
+    );
     const wait = attached?.workflow?.waitingMonitor;
 
     expect(wait).toMatchObject({ monitorId: "18", stateId: "validate", transitionSeq: 0 });
@@ -1189,10 +1191,11 @@ describe("LoopStore (absolute path)", () => {
         },
       },
     });
-    const attached = store.attachWorkflowMonitor(workflow.id, "18", {
-      stateId: "validate",
-      transitionSeq: 0,
-    });
+    const attached = store.attachWorkflowMonitor(
+      workflow.id,
+      "18",
+      currentMonitorAttachmentIdentity(store, workflow.id),
+    );
     const wait = attached?.workflow?.waitingMonitor;
 
     expect(store.settleWorkflowMonitorWait(workflow.id, wait!, workflow.expiresAt)).toMatchObject({
@@ -1220,9 +1223,9 @@ describe("LoopStore (absolute path)", () => {
         },
       },
     });
-    store.attachWorkflowMonitor(workflow.id, "18", { stateId: "validate", transitionSeq: 0 });
+    store.attachWorkflowMonitor(workflow.id, "18", currentMonitorAttachmentIdentity(store, workflow.id));
 
-    const transition = store.transitionWorkflow(workflow.id, { outcome: "passed" });
+    const transition = store.transitionWorkflow(workflow.id, { outcome: "passed" }, currentWorkflowIdentity(store, workflow.id));
 
     expect(transition.entry?.workflow?.waitingMonitor).toBeUndefined();
   });

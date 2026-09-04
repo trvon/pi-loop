@@ -474,7 +474,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   transitionWorkflow(
     id: string,
     input: WorkflowTransitionInput,
-    expected?: { currentState: string; transitionSeq: number; definitionRevision: number; activeExecutionId?: string },
+    expected: { currentState: string; transitionSeq: number; definitionRevision: number; activeExecutionId?: string },
   ): { entry?: LoopEntry; applied: boolean; error?: string; failure?: WorkflowTransitionFailure; terminal?: WorkflowTerminalStatus } {
     return this.withLock(() => {
       const entry = this.entries.get(id);
@@ -482,17 +482,17 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       if (!entry.workflow) return { applied: false, error: `Loop #${id} is not a workflow loop` };
       const now = Date.now();
       if (now >= entry.expiresAt) return { applied: false, error: `Workflow #${id} has expired and cannot be transitioned` };
-      if (expected && (
+      const pausePolicy = workflowTransitionPausePolicy(entry, input);
+      if (pausePolicy.error) return { applied: false, error: pausePolicy.error };
+      if (!expected) return { applied: false, error: `Workflow #${id} transition requires current execution identity; inspect LoopList and retry.` };
+      if (
         entry.workflow.currentState !== expected.currentState
         || entry.workflow.transitionSeq !== expected.transitionSeq
         || entry.workflow.definitionRevision !== expected.definitionRevision
         || entry.workflow.activeExecution?.id !== expected.activeExecutionId
-      )) {
+      ) {
         return { applied: false, error: `Workflow #${id} changed; inspect LoopList and retry the transition.` };
       }
-      const pausePolicy = workflowTransitionPausePolicy(entry, input);
-      if (pausePolicy.error) return { applied: false, error: pausePolicy.error };
-
       const result = transitionWorkflowRun(entry.workflow, input, now);
       if (!result.applied) {
         return { applied: false, error: result.error, failure: result.failure };
@@ -589,13 +589,25 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   attachWorkflowMonitor(
     id: string,
     monitorId: string,
-    expected: Pick<WorkflowMonitorWait, "stateId" | "transitionSeq">,
+    expected: Pick<WorkflowMonitorWait, "stateId" | "transitionSeq"> & {
+      definitionRevision: number;
+      activeExecutionId?: string;
+    },
+    actor?: WorkflowRuntimeActor,
   ): LoopEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
       const now = Date.now();
       if (!entry?.workflow || entry.status !== "active" || now >= entry.expiresAt || entry.workflow.waitingMonitor) return undefined;
-      if (entry.workflow.currentState !== expected.stateId || entry.workflow.transitionSeq !== expected.transitionSeq) {
+      const execution = entry.workflow.activeExecution;
+      const lease = execution?.lease;
+      if (entry.workflow.currentState !== expected.stateId
+        || entry.workflow.transitionSeq !== expected.transitionSeq
+        || entry.workflow.definitionRevision !== expected.definitionRevision
+        || execution?.id !== expected.activeExecutionId
+        || (execution && (!lease || lease.expiresAt <= now
+          || lease.ownerSessionId !== actor?.sessionId
+          || lease.ownerRuntimeId !== actor?.runtimeId))) {
         return undefined;
       }
       const wait: WorkflowMonitorWait = {

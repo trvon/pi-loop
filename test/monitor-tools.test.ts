@@ -23,7 +23,7 @@ function setup(managerOverrides: Partial<{
   list: () => MonitorEntry[];
   stop: (id: string) => Promise<boolean>;
   updateProgress: (id: string, progress: any) => MonitorEntry | undefined;
-}> = {}, defaultExpiryMs?: number) {
+}> = {}, defaultExpiryMs?: number, actor = { sessionId: "test-session", runtimeId: "test-runtime" }) {
   const { pi, toolMap } = createMockPi();
   const store = new LoopStore(undefined, defaultExpiryMs);
   let nextId = 1;
@@ -47,6 +47,7 @@ function setup(managerOverrides: Partial<{
     getStore: () => store as any,
     getMonitorManager: () => manager as any,
     getTriggerSystem: () => triggerSystem,
+    getActor: () => actor,
     updateWidget: vi.fn(),
     handleMonitorDoneLoop,
     handleWorkflowMonitorWait,
@@ -194,7 +195,8 @@ describe("MonitorCreate", () => {
   it("AUD-08: a foreign runtime cannot attach a monitor to work under another live lease", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
     try {
-      const h = setup();
+      const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
+      const h = setup({}, undefined, foreign);
       const owner = { sessionId: "session-a", runtimeId: "runtime-a" };
       const workflow = h.store.create({ type: "dynamic" }, "Validate release", {
         recurring: true,
@@ -212,7 +214,6 @@ describe("MonitorCreate", () => {
           },
         },
       });
-      const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
       expect(h.store.claimWorkflowExecution(workflow.id, foreign).claimed).toBe(false);
       const before = structuredClone(h.store.get(workflow.id)?.workflow);
       await h.toolMap.get("MonitorCreate")!.execute!("foreign-monitor", {

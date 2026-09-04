@@ -12,6 +12,7 @@ import {
   type WorkflowAdmissionProvider,
   type WorkflowBlockerClaim,
 } from "../src/workflow-admission.js";
+import { currentWorkflowIdentity } from "./helpers/workflow-identity.js";
 
 const NOW = 1_800_000_000_000;
 const directories: string[] = [];
@@ -409,7 +410,7 @@ describe("workflow transition admission", () => {
   it("rejects a confirmed claim when a competing transition wins the CAS race", async () => {
     const { store, entry } = createStore();
     const racing = provider(({ context: scoped }) => {
-      expect(store.transitionWorkflow(entry.id, { outcome: "race" })).toMatchObject({ applied: true });
+      expect(store.transitionWorkflow(entry.id, { outcome: "race" }, currentWorkflowIdentity(store, entry.id))).toMatchObject({ applied: true });
       return [observed(scoped)];
     });
     const result = await admitWorkflowTransition({
