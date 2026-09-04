@@ -77,6 +77,19 @@ describe("LoopCreate", () => {
     expect(entry.expiresAt - entry.createdAt).toBe(14 * 24 * 60 * 60 * 1000);
   });
 
+  it("reports invalid expiration without persisting", async () => {
+    const result = await h.result("LoopCreate", {
+      trigger: "5m",
+      prompt: "check build",
+      triggerType: "cron",
+      expiresIn: "forever",
+    });
+
+    expect(result.content[0].text).toContain('Invalid loop expiration "forever"');
+    expect(result.details).toMatchObject({ tone: "error", summary: "Loop was not created" });
+    expect(h.store.list()).toHaveLength(0);
+  });
+
   it("creates an event loop that defaults to non-recurring", async () => {
     const out = await h.text("LoopCreate", { trigger: "tasks:created", prompt: "go", triggerType: "event" });
     expect(out).toContain("event: tasks:created");

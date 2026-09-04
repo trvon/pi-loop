@@ -46,6 +46,7 @@ function initialLoopState(prompt: string): LoopReducerState {
         prompt,
         trigger: { type: "dynamic" },
         recurring: true,
+        expiresAt: 604_800_000,
       },
     },
   ).state;

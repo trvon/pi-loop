@@ -3,7 +3,6 @@ import {
   atMaxFires,
   type LoopReducerEvent,
   type LoopReducerState,
-  MAX_LOOP_EXPIRY_MS,
   reduceLoopState,
 } from "../src/loop-reducer.js";
 import type { LoopEntry, Trigger, WorkflowDefinition } from "../src/types.js";
@@ -59,6 +58,7 @@ describe("loop reducer", () => {
         trigger: { type: "dynamic" },
         recurring: true,
         workflow,
+        expiresAt: 500,
       },
     });
 
@@ -95,6 +95,7 @@ describe("loop reducer", () => {
         recurring: true,
         workflow: taskWorkflow,
         actor,
+        expiresAt: 500,
       },
     }).state;
     const activeExecution = structuredClone(created.loopsById["1"].workflow?.activeExecution);
@@ -232,6 +233,7 @@ describe("loop reducer", () => {
         taskBacklog: true,
         readOnly: true,
         maxFires: 5,
+        expiresAt: 500,
       },
     });
 
@@ -251,7 +253,7 @@ describe("loop reducer", () => {
       createdAt: 100,
       updatedAt: 100,
     });
-    expect(created.expiresAt).toBe(100 + MAX_LOOP_EXPIRY_MS);
+    expect(created.expiresAt).toBe(500);
     expect(effects).toEqual([
       {
         type: "PERSIST_LOOP",

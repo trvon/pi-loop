@@ -25,6 +25,39 @@ function clearTestLoopStore(sessionId: string): void {
   rmSync(`${path}.prev`, { force: true });
 }
 
+describe("loop expiry runtime wiring", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("resolves PI_LOOP_EXPIRES_IN once for newly created loops", async () => {
+    vi.stubEnv("PI_LOOP_SCOPE", "memory");
+    vi.stubEnv("PI_LOOP_EXPIRES_IN", "14d");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-04T00:00:00Z"));
+    try {
+      const { pi, toolMap, extensionHandlers } = createMockPi();
+      extension(pi as any);
+      const ctx = createCtx();
+      ctx.sessionManager.getSessionId = () => "expiry-config-session";
+      for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+      await toolMap.get("LoopCreate")!.execute!("create", {
+        trigger: "5m",
+        triggerType: "cron",
+        prompt: "check release",
+      });
+      const listed = await toolMap.get("LoopList")!.execute!("list", {});
+      expect(listed.content[0].text).toContain("expiresAt: 2026-09-18T00:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails extension activation on invalid PI_LOOP_EXPIRES_IN", () => {
+    vi.stubEnv("PI_LOOP_EXPIRES_IN", "forever");
+    const { pi } = createMockPi();
+    expect(() => extension(pi as any)).toThrow('Invalid PI_LOOP_EXPIRES_IN: Invalid loop expiration "forever"');
+  });
+});
+
 describe("workflow runtime wiring", () => {
   const sessionIds = ["workflow-cap-session", "workflow-task-session", "workflow-reissue-session", "workflow-stale-wake-session"];
   beforeEach(() => sessionIds.forEach(clearTestLoopStore));

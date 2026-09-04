@@ -3,6 +3,7 @@ import type {
   ExtensionCommandContext,
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
+import { expiresAtFromDuration, parseLoopDurationMs } from "../loop-expiry.js";
 import { formatTrigger } from "../loop-format.js";
 import { isValidCronExpression, parseInterval } from "../loop-parse.js";
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
@@ -19,6 +20,7 @@ interface LoopStoreLike {
     taskBacklog?: boolean;
     readOnly?: boolean;
     maxFires?: number;
+    expiresIn?: string;
     dynamic?: Partial<DynamicLoopState>;
   }): LoopEntry;
   pause(id: string): LoopEntry | undefined;
@@ -48,6 +50,19 @@ type LoopCommandRoute =
   | { type: "invalid-cron"; interval: string }
   | { type: "missing-interval-prompt" }
   | { type: "dynamic"; goal: string };
+
+function extractExpiryOverride(input: string): { args: string; expiresIn?: string; error?: string } {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("--expires-in")) return { args: trimmed };
+  const match = trimmed.match(/^--expires-in\s+(\S+)(?:\s+(.*))?$/s);
+  if (!match?.[1]) return { args: "", error: "--expires-in requires a duration such as 12h or 14d." };
+  try {
+    expiresAtFromDuration(Date.now(), parseLoopDurationMs(match[1]));
+    return { args: match[2]?.trim() ?? "", expiresIn: match[1] };
+  } catch (error) {
+    return { args: "", error: (error as Error).message };
+  }
+}
 
 function parseLoopCommandRoute(input: string): LoopCommandRoute {
   const trimmed = input.trim();
@@ -82,12 +97,12 @@ function parseLoopCommandRoute(input: string): LoopCommandRoute {
 export function registerLoopCommand(options: LoopCommandOptions): void {
   const { pi, getStore, getTriggerSystem, updateWidget, maybeBootstrapTaskLoop, onDynamicLoopActivated, cancelOrchestration } = options;
 
-  function createCronLoop(ui: ExtensionUIContext, interval: string, prompt: string, notifyEvery: boolean) {
+  function createCronLoop(ui: ExtensionUIContext, interval: string, prompt: string, notifyEvery: boolean, expiresIn?: string) {
     let entry: LoopEntry | undefined;
     try {
       const parsed = parseInterval(interval);
       const trigger: Trigger = { type: "cron", schedule: parsed.cron };
-      entry = getStore().create(trigger, prompt, { recurring: true });
+      entry = getStore().create(trigger, prompt, { recurring: true, expiresIn });
       getTriggerSystem().add(entry);
       updateWidget();
       const cadence = notifyEvery ? `every ${parsed.description}` : parsed.description;
@@ -102,17 +117,17 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
     }
   }
 
-  async function scheduleLoop(ui: ExtensionUIContext, prompt?: string) {
+  async function scheduleLoop(ui: ExtensionUIContext, prompt?: string, expiresIn?: string) {
     const p = prompt || await ui.input("Prompt (what should the agent check?)");
     if (!p) return;
 
     const interval = await ui.input("Interval (e.g., 5m, 2h, 1d)");
     if (!interval) return;
 
-    createCronLoop(ui, interval, p, true);
+    createCronLoop(ui, interval, p, true, expiresIn);
   }
 
-  async function eventLoop(ui: ExtensionUIContext, prompt?: string, sourceOverride?: string) {
+  async function eventLoop(ui: ExtensionUIContext, prompt?: string, sourceOverride?: string, expiresIn?: string) {
     const p = prompt || await ui.input("Prompt");
     if (!p) return;
 
@@ -125,6 +140,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
       recurring: true,
       taskBacklog,
       maxFires: taskBacklog ? 25 : undefined,
+      expiresIn,
     });
     getTriggerSystem().add(entry);
     updateWidget();
@@ -135,10 +151,11 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
     ui.notify(`Event loop #${entry.id} created: fires on "${source}"${adoption}`, "info");
   }
 
-  function dynamicLoop(ui: ExtensionUIContext, goal: string) {
+  function dynamicLoop(ui: ExtensionUIContext, goal: string, expiresIn?: string) {
     const trigger: Trigger = { type: "dynamic" };
     const entry = getStore().create(trigger, goal, {
       recurring: true,
+      expiresIn,
       dynamic: { goal, iteration: 0 },
     });
     getTriggerSystem().add(entry);
@@ -229,7 +246,12 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
     description: "Create a loop. Use /loop [interval] [prompt] for scheduled loops, /loop event <source> <prompt> for event loops, or /loop <goal> for a dynamic goal loop.",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const ui = ctx.ui;
-      const route = parseLoopCommandRoute(args);
+      const expiry = extractExpiryOverride(args);
+      if (expiry.error) {
+        ui.notify(expiry.error, "error");
+        return;
+      }
+      const route = parseLoopCommandRoute(expiry.args);
 
       if (route.type === "menu") {
         const choice = await ui.select("Loop", [
@@ -240,14 +262,14 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
         ]);
 
         if (!choice) return;
-        if (choice.startsWith("Create scheduled")) return scheduleLoop(ui);
-        if (choice.startsWith("Create event")) return eventLoop(ui);
+        if (choice.startsWith("Create scheduled")) return scheduleLoop(ui, undefined, expiry.expiresIn);
+        if (choice.startsWith("Create event")) return eventLoop(ui, undefined, undefined, expiry.expiresIn);
         if (choice.startsWith("View loops")) return viewLoops(ui);
         return settings(ui);
       }
 
-      if (route.type === "event") return eventLoop(ui, route.prompt, route.source);
-      if (route.type === "cron") return createCronLoop(ui, route.interval, route.prompt, route.notifyEvery);
+      if (route.type === "event") return eventLoop(ui, route.prompt, route.source, expiry.expiresIn);
+      if (route.type === "cron") return createCronLoop(ui, route.interval, route.prompt, route.notifyEvery, expiry.expiresIn);
       if (route.type === "invalid-cron") {
         ui.notify(`Invalid cron expression: ${route.interval}`, "error");
         return;
@@ -256,7 +278,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
         ui.notify("Provide a prompt after the interval, e.g., /loop 5m check the deploy", "warning");
         return;
       }
-      return dynamicLoop(ui, route.goal);
+      return dynamicLoop(ui, route.goal, expiry.expiresIn);
     },
   });
 }

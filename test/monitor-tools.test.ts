@@ -23,13 +23,17 @@ function setup(managerOverrides: Partial<{
   list: () => MonitorEntry[];
   stop: (id: string) => Promise<boolean>;
   updateProgress: (id: string, progress: any) => MonitorEntry | undefined;
-}> = {}) {
+}> = {}, defaultExpiryMs?: number) {
   const { pi, toolMap } = createMockPi();
-  const store = new LoopStore();
+  const store = new LoopStore(undefined, defaultExpiryMs);
   let nextId = 1;
   const manager = {
     list: managerOverrides.list ?? (() => []),
-    create: vi.fn((command: string) => makeMonitor({ id: String(nextId++), command })),
+    create: vi.fn((command: string, _description?: string, timeout?: number) => makeMonitor({
+      id: String(nextId++),
+      command,
+      timeout: timeout ?? 300_000,
+    })),
     stop: managerOverrides.stop ?? vi.fn(async () => true),
     updateProgress: managerOverrides.updateProgress ?? vi.fn((_id: string, progress: any) => makeMonitor({
       progress: { ...progress, source: "agent", updatedAt: Date.now() },
@@ -69,6 +73,14 @@ describe("MonitorCreate", () => {
     expect(h.toolMap.get("MonitorCreate")?.renderShell).not.toBe("self");
     expect(h.toolMap.get("MonitorCreate")?.renderCall).toBeTypeOf("function");
     expect(h.toolMap.get("MonitorCreate")?.renderResult).toBeTypeOf("function");
+  });
+
+  it("keeps completion wakes alive through short configured defaults", async () => {
+    const h = setup({}, 30_000);
+    await h.text("MonitorCreate", { command: "npm test", timeout: 120_000, onDone: "Report results" });
+
+    const wake = h.store.get("1")!;
+    expect(wake.expiresAt - wake.createdAt).toBe(180_000);
   });
 
   it("rejects negative inactivity timeouts", () => {

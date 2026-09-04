@@ -18,6 +18,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerLoopCommand } from "./commands/loop-command.js";
+import { resolveDefaultLoopExpiryMs } from "./loop-expiry.js";
 import { atMaxFires } from "./loop-reducer.js";
 import { MonitorManager } from "./monitor-manager.js";
 import { rpcCall, rpcProbe } from "./rpc/cross-extension-rpc.js";
@@ -62,8 +63,9 @@ export default function (pi: ExtensionAPI) {
   let orchestrationRuntime: SubagentOrchestrationRuntime | undefined;
 
   const getScopeOptions = () => ({ piLoopEnv, loopScope });
+  const defaultLoopExpiryMs = resolveDefaultLoopExpiryMs(process.env.PI_LOOP_EXPIRES_IN);
 
-  let store = new LoopStore(resolveLoopStorePath(getScopeOptions()));
+  let store = new LoopStore(resolveLoopStorePath(getScopeOptions()), defaultLoopExpiryMs);
   const memoryLoopStores = new Map<string, LoopStore>();
   const monitorManager = new MonitorManager(pi);
   const monitorWorkflowAdmissionProvider = createMonitorWorkflowAdmissionProvider((id) => monitorManager.get(id));
@@ -368,9 +370,9 @@ export default function (pi: ExtensionAPI) {
     advanceSessionGeneration: () => ++sessionGeneration,
     recreateSessionStore: (sessionId: string) => {
       const path = resolveLoopStorePath(getScopeOptions(), sessionId);
-      if (path) store = new LoopStore(path);
+      if (path) store = new LoopStore(path, defaultLoopExpiryMs);
       else {
-        store = memoryLoopStores.get(sessionId) ?? new LoopStore();
+        store = memoryLoopStores.get(sessionId) ?? new LoopStore(undefined, defaultLoopExpiryMs);
         memoryLoopStores.set(sessionId, store);
       }
       widget.setStore(store);

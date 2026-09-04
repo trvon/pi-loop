@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_LOOP_EXPIRY_MS, expiresAtFromDuration, parseLoopDurationMs } from "./loop-expiry.js";
 import { atMaxFires, type LoopReducerEffect, type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
 import { applyOrchestrationEvent, type OrchestrationEvent, validateOrchestrationDefinition, validatePersistedOrchestration } from "./orchestration-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
@@ -143,7 +144,7 @@ const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
 export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, LoopReducerEvent, LoopStoreData, LoopReducerEffect> {
   private tombstones = new Map<string, LoopDeletionTombstone>();
 
-  constructor(listIdOrPath?: string) {
+  constructor(listIdOrPath?: string, private readonly defaultExpiryMs = DEFAULT_LOOP_EXPIRY_MS) {
     super(
       {
         baseDir: LOOPS_DIR,
@@ -160,7 +161,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     );
   }
 
-  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition; actor?: WorkflowRuntimeActor; orchestration?: { definition: OrchestrationDefinitionInput; owner: OrchestrationActor } }): LoopEntry {
+  create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; expiresIn?: string; minimumExpiryMs?: number; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition; actor?: WorkflowRuntimeActor; orchestration?: { definition: OrchestrationDefinitionInput; owner: OrchestrationActor } }): LoopEntry {
     return this.withLock(() => {
       if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
@@ -177,6 +178,11 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         if (validationError) throw new Error(`Invalid orchestration: ${validationError}`);
       }
       const now = Date.now();
+      const configuredExpiryMs = opts.expiresIn === undefined ? this.defaultExpiryMs : parseLoopDurationMs(opts.expiresIn);
+      if (opts.minimumExpiryMs !== undefined && (!Number.isSafeInteger(opts.minimumExpiryMs) || opts.minimumExpiryMs <= 0)) {
+        throw new Error("Minimum loop expiration must be a positive safe integer number of milliseconds.");
+      }
+      const expiresAt = expiresAtFromDuration(now, Math.max(configuredExpiryMs, opts.minimumExpiryMs ?? 0));
       this.applyReducerEvent({
         type: "LOOP_CREATED",
         at: now,
@@ -194,6 +200,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
           workflow: opts.workflow,
           actor: opts.actor,
           orchestration: opts.orchestration,
+          expiresAt,
         },
       });
       return this.entries.get(String(this.nextId - 1))!;

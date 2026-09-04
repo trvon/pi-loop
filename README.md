@@ -50,7 +50,7 @@ OrchestrationGet id="1"
 
 - Cron, event, hybrid, dynamic goal, and opt-in workflow loops
 - Idle-safe agent re-wakes with dynamic-loop restart/session-switch recovery
-- Observable seven-day recurring-loop expiry through `LoopList`, `loops:expired`, and a hidden Pi notification
+- Observable loop expiry with a seven-day default, configurable through `PI_LOOP_EXPIRES_IN` or per-creation `expiresIn`
 - Background command monitoring with buffered output, `onDone` wakes, and renewable inactivity alerts
 - Optional `pi-tasks` integration and a native task fallback
 - Session-scoped, bounded async subagent orchestration through protocol-v2 `pi-subagents`

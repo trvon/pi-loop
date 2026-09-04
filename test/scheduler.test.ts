@@ -470,8 +470,12 @@ describe("CronScheduler", () => {
 
     scheduler.add(entry);
 
-    expect(store.get(entry.id)).toBeUndefined();
+    expect(store.get(entry.id)).toBeDefined();
     expect(scheduler.nextFire(entry.id)).toBeUndefined();
+
+    vi.advanceTimersByTime(60_000);
+    scheduler.pump(Date.now());
+    expect(store.get(entry.id)).toBeUndefined();
     expect(expired).toEqual([{ id: entry.id, disposition: "deleted" }]);
   });
 

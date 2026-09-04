@@ -792,6 +792,14 @@ describe("LoopStore (file-backed)", () => {
     expect(store2.list()).toHaveLength(0);
   });
 
+  it("does not rewrite persisted expiry when the runtime default changes", () => {
+    const original = new LoopStore(filePath, 2 * 24 * 60 * 60 * 1000);
+    const created = original.create(cronTrigger, "test", { recurring: true });
+
+    const restarted = new LoopStore(filePath, 30 * 24 * 60 * 60 * 1000);
+    expect(restarted.get(created.id)?.expiresAt).toBe(created.expiresAt);
+  });
+
   it("does not restore a completed workflow controller after restart", () => {
     const store1 = new LoopStore(filePath);
     const workflow = store1.create({ type: "dynamic" }, "Finish", {

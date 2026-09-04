@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { DEFAULT_LOOP_EXPIRY_MS } from "../loop-expiry.js";
 import type { LoopEntry, MonitorEntry, MonitorProgress, Trigger, WorkflowMonitorWait } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { displayRows, textResult } from "./tool-result.js";
@@ -19,12 +20,20 @@ interface LoopStoreLike {
     taskBacklog?: boolean;
     readOnly?: boolean;
     maxFires?: number;
+    minimumExpiryMs?: number;
   }): LoopEntry;
   attachWorkflowMonitor(
     id: string,
     monitorId: string,
     expected: Pick<WorkflowMonitorWait, "stateId" | "transitionSeq">,
   ): LoopEntry | undefined;
+}
+
+const MONITOR_WAKE_EXPIRY_GRACE_MS = 60_000;
+
+// A short runtime default must not retire a callback before the monitor's expected inactivity deadline.
+function monitorWakeMinimumExpiryMs(timeoutMs: number): number {
+  return timeoutMs > 0 ? timeoutMs + MONITOR_WAKE_EXPIRY_GRACE_MS : DEFAULT_LOOP_EXPIRY_MS;
 }
 
 interface TriggerSystemLike {
@@ -135,7 +144,10 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     let onDoneMsg = "";
     if (params.onDone) {
       const doneTrigger: Trigger = { type: "event", source: "monitor:done", filter: JSON.stringify({ monitorId: entry.id }) };
-      const doneLoop = store.create(doneTrigger, params.onDone, { recurring: false });
+      const doneLoop = store.create(doneTrigger, params.onDone, {
+        recurring: false,
+        minimumExpiryMs: monitorWakeMinimumExpiryMs(entry.timeout),
+      });
       handleMonitorDoneLoop(doneLoop, entry.id);
       onDoneMsg = `\nCompletion wake loop #${doneLoop.id}: fires when the monitor completes — no polling needed`;
     } else if (!workflow && entry.timeout > 0) {
@@ -143,7 +155,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
       const timeoutLoop = store.create(
         timeoutTrigger,
         `Monitor #${entry.id} became stale after ${entry.timeout}ms without output or progress. Inspect MonitorList, report the failure, and decide whether to retry or recover the command.`,
-        { recurring: false },
+        { recurring: false, minimumExpiryMs: monitorWakeMinimumExpiryMs(entry.timeout) },
       );
       handleMonitorDoneLoop(timeoutLoop, entry.id);
       onDoneMsg = `\nTimeout alert loop #${timeoutLoop.id}: wakes the agent only if the monitor times out`;

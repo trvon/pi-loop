@@ -33,6 +33,7 @@ interface CreateParams {
   maxTurns?: number;
   concurrency?: number;
   maxAttempts?: number;
+  expiresIn?: string;
 }
 
 function errorResult(message: string) {
@@ -106,6 +107,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
       concurrency: Type.Optional(Type.Integer({ description: "Local worker capacity (default: 3)", minimum: 1, maximum: MAX_CONCURRENCY, default: 3 })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
+      expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new batch, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
     }),
     async execute(_toolCallId, params: CreateParams) {
       if (getScope() !== "session") return errorResult("Orchestration requires the default file-backed session scope; memory and project scopes are unsupported.");
@@ -124,11 +126,17 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       if (protocolVersion(probe) !== 2) return errorResult("Orchestration requires pi-subagents protocol v2; no compatible provider replied.");
 
       const definition = definitionFrom(params);
-      const entry = getStore().create({ type: "dynamic" }, definition.goal, {
-        recurring: true,
-        dynamic: { goal: definition.goal, awaitingUpdate: true, iteration: 0 },
-        orchestration: { definition, owner: actor },
-      });
+      let entry: ReturnType<LoopStore["create"]>;
+      try {
+        entry = getStore().create({ type: "dynamic" }, definition.goal, {
+          recurring: true,
+          expiresIn: params.expiresIn,
+          dynamic: { goal: definition.goal, awaitingUpdate: true, iteration: 0 },
+          orchestration: { definition, owner: actor },
+        });
+      } catch (error) {
+        return errorResult(error instanceof Error ? error.message : String(error));
+      }
       updateWidget();
       const message = [
         `Orchestration #${entry.id} created`,
