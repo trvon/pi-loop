@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOrchestrationState } from "../src/orchestration-reducer.js";
 import { createNotificationRuntime } from "../src/runtime/notification-runtime.js";
+import type { LoopEntry } from "../src/types.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
 describe("notification runtime session boundary", () => {
@@ -164,6 +165,53 @@ describe("notification runtime session boundary", () => {
     expect(sentMessages[0].message.content).toContain("Progress: 1/1 complete · 0 running");
     expect(sentMessages[0].message.content).not.toContain("requires parent attention");
     expect(delivered).toHaveBeenCalledWith({ loopId: "7", orchestrationWakeSequence: 3 });
+  });
+
+  it("drops a buffered orchestration wake after controller expiry", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const delivered = vi.fn();
+    const orchestration = createOrchestrationState(
+      { goal: "Parallel review", work: [{ prompt: "Inspect API", agentType: "Explore" }] },
+      { sessionId: "s", runtimeId: "r", generation: 0 },
+      100,
+    );
+    orchestration.status = "completed";
+    orchestration.work[0]!.status = "completed";
+    orchestration.pendingWake = { reason: "completed", sequence: 3, createdAt: 101 };
+    const current = {
+      id: "7",
+      status: "active",
+      orchestration,
+    } as LoopEntry;
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: vi.fn(async () => 0),
+      cleanDoneTasks: vi.fn(async () => {}),
+      getHasPendingMessages: () => false,
+      getLoop: () => current,
+      onLoopNotificationDelivered: delivered,
+    });
+
+    runtime.syncRuntimeState({ agentRunning: true });
+    await runtime.queueOrDeliverNotification({
+      loopId: "7",
+      prompt: "Parallel review",
+      trigger: { type: "dynamic" },
+      timestamp: 102,
+      recurring: true,
+      controllerStatus: "active",
+      orchestration: structuredClone(orchestration),
+      orchestrationWakeSequence: 3,
+    });
+    current.status = "paused";
+    current.orchestration.status = "cancelled";
+    current.orchestration.pendingWake = undefined;
+
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages).toHaveLength(0);
+    expect(delivered).not.toHaveBeenCalled();
   });
 
   it("bounds aggregate orchestration wake evidence while preserving retrieval guidance", async () => {

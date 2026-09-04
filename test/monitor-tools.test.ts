@@ -96,6 +96,20 @@ describe("MonitorCreate", () => {
     expect(wake.expiresAt - wake.createdAt).toBe(120_000);
   });
 
+  it("stops a spawned monitor when its wake loop cannot be created", async () => {
+    const h = setup();
+    const result = await h.result("MonitorCreate", {
+      command: "npm test",
+      onDone: "Report results",
+      expiresIn: "forever",
+    });
+
+    expect(result.content[0].text).toContain('Invalid loop expiration "forever"');
+    expect(result.details).toMatchObject({ tone: "error", summary: "Monitor wake was not created" });
+    expect(h.manager.stop).toHaveBeenCalledWith("1");
+    expect(h.store.list()).toHaveLength(0);
+  });
+
   it("rejects negative inactivity timeouts", () => {
     const h = setup();
     const schema = h.toolMap.get("MonitorCreate")?.parameters;
