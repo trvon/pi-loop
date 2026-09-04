@@ -284,6 +284,11 @@ export default function (pi: ExtensionAPI) {
     promptOverride?: string,
   ): void {
     if (!isCurrentExtensionContext()) return;
+    const expired = store.expireEntry(entry.id, Date.now());
+    if (expired) {
+      emitLoopExpired(expired.entry, expired.disposition, origin === "monitor" ? "monitor" : "scheduler", expired.reason);
+      return;
+    }
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     const current = store.get(entry.id);
     if (current?.status !== "active" || isTerminalWorkflowRun(current?.workflow)) {

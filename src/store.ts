@@ -106,6 +106,9 @@ function workflowTransitionPausePolicy(
 ): { error?: string; resumeAfterStateLimitExit: boolean } {
   if (entry.status !== "paused") return { resumeAfterStateLimitExit: false };
   if (!entry.workflow) return { error: `Loop #${entry.id} is not a workflow loop`, resumeAfterStateLimitExit: false };
+  if (Date.now() >= entry.expiresAt || entry.pause?.reason === "loop expiry reached") {
+    return { error: `Workflow #${entry.id} has expired and cannot be resumed or transitioned`, resumeAfterStateLimitExit: false };
+  }
   if (entry.pause?.kind !== "controller_limit") {
     const reason = entry.pause?.kind === "administrative"
       ? "is administratively paused; resume it before transitioning"
@@ -280,10 +283,11 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   fire(id: string, origin: LoopFireOrigin = "scheduler"): LoopEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
-      if (entry?.status !== "active" || isTerminalWorkflowRun(entry?.workflow)) return undefined;
+      const now = Date.now();
+      if (entry?.status !== "active" || now >= entry.expiresAt || isTerminalWorkflowRun(entry?.workflow)) return undefined;
       this.applyReducerEvent({
         type: "LOOP_FIRED",
-        at: Date.now(),
+        at: now,
         source: "system",
         entityType: "loop",
         entityId: id,
@@ -422,13 +426,18 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         const error = `Loop #${id} is not a workflow loop.`;
         return { applied: false, error, failure: { code: "not_workflow", message: error } };
       }
+      const now = Date.now();
+      if (now >= entry.expiresAt) {
+        const error = `Workflow #${id} has expired and cannot be revised.`;
+        return { applied: false, error };
+      }
       if (!actor) {
         const error = "Workflow revision requires an active session runtime.";
         return { applied: false, error, failure: { code: "actor_required", message: error } };
       }
       const reduced = this.applyReducerEvent({
         type: "LOOP_WORKFLOW_REVISED",
-        at: Date.now(),
+        at: now,
         source: "tool",
         entityType: "loop",
         entityId: id,
@@ -456,6 +465,8 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       const entry = this.entries.get(id);
       if (!entry) return { applied: false, error: `Loop #${id} not found` };
       if (!entry.workflow) return { applied: false, error: `Loop #${id} is not a workflow loop` };
+      const now = Date.now();
+      if (now >= entry.expiresAt) return { applied: false, error: `Workflow #${id} has expired and cannot be transitioned` };
       if (expected && (
         entry.workflow.currentState !== expected.currentState
         || entry.workflow.transitionSeq !== expected.transitionSeq
@@ -467,7 +478,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       const pausePolicy = workflowTransitionPausePolicy(entry, input);
       if (pausePolicy.error) return { applied: false, error: pausePolicy.error };
 
-      const result = transitionWorkflowRun(entry.workflow, input, Date.now());
+      const result = transitionWorkflowRun(entry.workflow, input, now);
       if (!result.applied) {
         return { applied: false, error: result.error, failure: result.failure };
       }
@@ -513,7 +524,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       if (pausePolicy.resumeAfterStateLimitExit) {
         this.applyReducerEvent({
           type: "LOOP_RESUMED",
-          at: Date.now(),
+          at: now,
           source: "tool",
           entityType: "loop",
           entityId: id,
@@ -533,11 +544,14 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     return this.withLock(() => {
       const entry = this.entries.get(id);
       if (!entry) return { claimed: false, error: `Loop #${id} not found` };
+      const now = Date.now();
+      if (now >= entry.expiresAt || entry.pause?.reason === "loop expiry reached") {
+        return { claimed: false, error: `Workflow #${id} has expired and cannot be claimed` };
+      }
       const execution = entry.workflow?.activeExecution;
       if (execution?.status !== "active") {
         return { claimed: false, error: `Workflow #${id} has no active execution` };
       }
-      const now = Date.now();
       const lease = execution.lease;
       const sameOwner = lease
         && lease.ownerSessionId === actor.sessionId
@@ -564,7 +578,8 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   ): LoopEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
-      if (!entry?.workflow || entry.status !== "active" || entry.workflow.waitingMonitor) return undefined;
+      const now = Date.now();
+      if (!entry?.workflow || entry.status !== "active" || now >= entry.expiresAt || entry.workflow.waitingMonitor) return undefined;
       if (entry.workflow.currentState !== expected.stateId || entry.workflow.transitionSeq !== expected.transitionSeq) {
         return undefined;
       }
@@ -572,7 +587,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         monitorId,
         stateId: expected.stateId,
         transitionSeq: expected.transitionSeq,
-        attachedAt: Date.now(),
+        attachedAt: now,
       };
       this.applyReducerEvent({
         type: "LOOP_WORKFLOW_MONITOR_ATTACHED",
