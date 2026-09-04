@@ -2,6 +2,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_LOOP_EXPIRY_MS } from "../src/loop-expiry.js";
 import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
 import type { Trigger, WorkflowRunState } from "../src/types.js";
@@ -35,7 +36,10 @@ describe("LoopStore (in-memory)", () => {
     expect(l1.trigger.type).toBe("cron");
   });
 
-  it("uses the configured default expiry and per-loop override", () => {
+  it("uses the seven-day fallback, configured default, and per-loop override", () => {
+    const fallback = store.create(cronTrigger, "fallback", { recurring: true });
+    expect(fallback.expiresAt - fallback.createdAt).toBe(DEFAULT_LOOP_EXPIRY_MS);
+
     const configured = new LoopStore(undefined, 14 * 24 * 60 * 60 * 1000);
     const inherited = configured.create(cronTrigger, "inherited", { recurring: true });
     const overridden = configured.create(cronTrigger, "overridden", { recurring: true, expiresIn: "12h" });

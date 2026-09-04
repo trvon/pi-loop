@@ -243,7 +243,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
   }
 
   pi.registerCommand("loop", {
-    description: "Create a loop. Use /loop [interval] [prompt] for scheduled loops, /loop event <source> <prompt> for event loops, or /loop <goal> for a dynamic goal loop.",
+    description: "Create a loop. Prefix with --expires-in <duration> to override its lifetime; then use [interval] [prompt], event <source> <prompt>, or <goal> for a dynamic goal loop.",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const ui = ctx.ui;
       const expiry = extractExpiryOverride(args);

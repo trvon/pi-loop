@@ -4,7 +4,6 @@
  * the package `exports` map deliberately blocks deep imports.
  */
 
-export { DEFAULT_LOOP_EXPIRY_MS, expiresAtFromDuration, parseLoopDurationMs, resolveDefaultLoopExpiryMs } from "./loop-expiry.js";
 export {
   type ClaimTaskParams,
   type ClaimTaskReply,
