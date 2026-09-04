@@ -65,6 +65,18 @@ describe("LoopCreate", () => {
       .toEqual(["Loop create · check build"]);
   });
 
+  it("applies an explicit expiration override", async () => {
+    await h.text("LoopCreate", {
+      trigger: "5m",
+      prompt: "check build",
+      triggerType: "cron",
+      expiresIn: "14d",
+    });
+
+    const entry = h.store.get("1")!;
+    expect(entry.expiresAt - entry.createdAt).toBe(14 * 24 * 60 * 60 * 1000);
+  });
+
   it("creates an event loop that defaults to non-recurring", async () => {
     const out = await h.text("LoopCreate", { trigger: "tasks:created", prompt: "go", triggerType: "event" });
     expect(out).toContain("event: tasks:created");
@@ -458,6 +470,22 @@ describe("LoopUpdate", () => {
     expect(h.store.get("1")).toEqual(before);
   });
 
+  it("accepts intervals beyond seven days only within the persisted lifetime", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-04T00:00:00Z"));
+    try {
+      h.store.get("1")!.expiresAt = Date.now() + 15 * 24 * 60 * 60 * 1000;
+      await expect(h.text("LoopUpdate", { id: "1", status: "continue", nextInterval: "8d" }))
+        .resolves.toContain("Dynamic loop #1 updated");
+
+      h.store.get("1")!.expiresAt = Date.now() + 8 * 24 * 60 * 60 * 1000;
+      await expect(h.text("LoopUpdate", { id: "1", status: "continue", nextInterval: "8d" }))
+        .resolves.toContain("exceeds loop #1's remaining lifetime");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects continuing an expired dynamic controller", async () => {
     h.store.get("1")!.expiresAt = Date.now();
     h.triggerSystem.add.mockClear();
@@ -514,6 +542,12 @@ describe("Workflow tools", () => {
 
   beforeEach(() => {
     h = setup();
+  });
+
+  it("applies a workflow expiration override", async () => {
+    await h.text("WorkflowCreate", { goal: "Fix the regression", definition, expiresIn: "14d" });
+    const entry = h.store.get("1")!;
+    expect(entry.expiresAt - entry.createdAt).toBe(14 * 24 * 60 * 60 * 1000);
   });
 
   it("rejects a terminal initial state", async () => {

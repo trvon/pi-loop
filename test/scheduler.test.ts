@@ -460,6 +460,21 @@ describe("CronScheduler", () => {
     expect(fired).toHaveLength(0);
   });
 
+  it("does not arm a dynamic wake at the exact expiry boundary", () => {
+    const boundary = Date.now() + 60_000;
+    const entry = store.create({ type: "dynamic" }, "boundary", {
+      recurring: true,
+      dynamic: { nextWakeAt: boundary },
+    });
+    entry.expiresAt = boundary;
+
+    scheduler.add(entry);
+
+    expect(store.get(entry.id)).toBeUndefined();
+    expect(scheduler.nextFire(entry.id)).toBeUndefined();
+    expect(expired).toEqual([{ id: entry.id, disposition: "deleted" }]);
+  });
+
   it("tracks event-only loops to the same observable expiry boundary", () => {
     const entry = store.create({ type: "event", source: "deploy:finished" }, "event expiry", {
       recurring: true,

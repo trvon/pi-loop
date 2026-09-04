@@ -35,11 +35,13 @@ describe("LoopStore (in-memory)", () => {
     expect(l1.trigger.type).toBe("cron");
   });
 
-  it("sets expiry 7 days from creation", () => {
-    const l = store.create(cronTrigger, "test", { recurring: true });
-    const sevenDays = 7 * 24 * 60 * 60 * 1000;
-    expect(l.expiresAt).toBeGreaterThan(l.createdAt + sevenDays - 1000);
-    expect(l.expiresAt).toBeLessThan(l.createdAt + sevenDays + 1000);
+  it("uses the configured default expiry and per-loop override", () => {
+    const configured = new LoopStore(undefined, 14 * 24 * 60 * 60 * 1000);
+    const inherited = configured.create(cronTrigger, "inherited", { recurring: true });
+    const overridden = configured.create(cronTrigger, "overridden", { recurring: true, expiresIn: "12h" });
+
+    expect(inherited.expiresAt - inherited.createdAt).toBe(14 * 24 * 60 * 60 * 1000);
+    expect(overridden.expiresAt - overridden.createdAt).toBe(12 * 60 * 60 * 1000);
   });
 
   it("gets a loop by ID", () => {
