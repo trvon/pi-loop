@@ -48,7 +48,7 @@ export interface SubagentOrchestrationRuntimeOptions {
   getGeneration: () => number;
   rpcCall: (channel: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
   emitWake: (entry: LoopEntry, wake: OrchestrationPendingWake) => void;
-  onExpired?: (entry: LoopEntry, disposition: LoopExpiryDisposition) => void;
+  onExpired: (entry: LoopEntry, disposition: LoopExpiryDisposition) => void;
   updateWidget: () => void;
   now?: () => number;
   scheduleReconcile?: (fn: () => void) => void;
@@ -140,7 +140,7 @@ export function createSubagentOrchestrationRuntime(
   const scheduleReconcile = options.scheduleReconcile ?? queueMicrotask;
   const isContextCurrent = options.isContextCurrent ?? (() => true);
   const getPiLoopEnv = options.getPiLoopEnv ?? (() => undefined);
-  const onExpired = options.onExpired ?? (() => {});
+  const { onExpired } = options;
   const earlyEvents = new Map<string, EarlyLifecycleEvent>();
   const wakeQueued = new Set<string>();
   const consumeInFlight = new Set<string>();
