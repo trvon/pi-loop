@@ -100,6 +100,11 @@ export interface ExpiredLoopRecord {
   reason: LoopExpiryReason;
 }
 
+export type LoopFireResult =
+  | { kind: "fired"; entry: LoopEntry }
+  | { kind: "expired"; record: ExpiredLoopRecord }
+  | { kind: "ignored" };
+
 function workflowTransitionPausePolicy(
   entry: LoopEntry,
   input: WorkflowTransitionInput,
@@ -280,21 +285,31 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     });
   }
 
-  fire(id: string, origin: LoopFireOrigin = "scheduler"): LoopEntry | undefined {
-    return this.withLock(() => {
-      const entry = this.entries.get(id);
-      const now = Date.now();
-      if (entry?.status !== "active" || now >= entry.expiresAt || isTerminalWorkflowRun(entry?.workflow)) return undefined;
-      this.applyReducerEvent({
-        type: "LOOP_FIRED",
-        at: now,
-        source: "system",
-        entityType: "loop",
-        entityId: id,
-        payload: { id, origin },
-      });
-      return this.entries.get(id);
+  private fireUnlocked(id: string, origin: LoopFireOrigin, now: number, settleExpiry: boolean): LoopFireResult {
+    const entry = this.entries.get(id);
+    if (entry?.status !== "active" || isTerminalWorkflowRun(entry?.workflow)) return { kind: "ignored" };
+    if (now >= entry.expiresAt) {
+      const record = settleExpiry ? this.expireEntryUnlocked(id, now) : undefined;
+      return record ? { kind: "expired", record } : { kind: "ignored" };
+    }
+    this.applyReducerEvent({
+      type: "LOOP_FIRED",
+      at: now,
+      source: "system",
+      entityType: "loop",
+      entityId: id,
+      payload: { id, origin },
     });
+    return { kind: "fired", entry: this.entries.get(id)! };
+  }
+
+  fire(id: string, origin: LoopFireOrigin = "scheduler"): LoopEntry | undefined {
+    const result = this.withLock(() => this.fireUnlocked(id, origin, Date.now(), false));
+    return result.kind === "fired" ? result.entry : undefined;
+  }
+
+  fireOrExpire(id: string, origin: LoopFireOrigin = "scheduler", now = Date.now()): LoopFireResult {
+    return this.withLock(() => this.fireUnlocked(id, origin, now, true));
   }
 
   updateMetadata(id: string, fields: { trigger?: Trigger; prompt?: string; taskBacklog?: boolean }): { entry: LoopEntry | undefined; changedFields: string[] } {

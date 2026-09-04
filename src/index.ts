@@ -284,11 +284,14 @@ export default function (pi: ExtensionAPI) {
     promptOverride?: string,
   ): void {
     if (!isCurrentExtensionContext()) return;
-    const expired = store.expireEntry(entry.id, Date.now());
-    if (expired) {
-      emitLoopExpired(expired.entry, expired.disposition, origin === "monitor" ? "monitor" : "scheduler", expired.reason);
-      return;
-    }
+    const expirySource = origin === "monitor" ? "monitor" : "scheduler";
+    const retireIfExpired = () => {
+      const expired = store.expireEntry(entry.id, Date.now());
+      if (!expired) return false;
+      emitLoopExpired(expired.entry, expired.disposition, expirySource, expired.reason);
+      return true;
+    };
+    if (retireIfExpired()) return;
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     const current = store.get(entry.id);
     if (current?.status !== "active" || isTerminalWorkflowRun(current?.workflow)) {
@@ -314,9 +317,14 @@ export default function (pi: ExtensionAPI) {
       widget.update();
       return;
     }
+    const fireResult = store.fireOrExpire(current.id, origin);
+    if (fireResult.kind === "expired") {
+      emitLoopExpired(fireResult.record.entry, fireResult.record.disposition, expirySource, fireResult.record.reason);
+      return;
+    }
+    if (fireResult.kind === "ignored" || retireIfExpired()) return;
+    const fired = fireResult.entry;
     if (isTaskBacklog) activeTaskBacklogWakes.add(current.id);
-    const fired = store.fire(current.id, origin);
-    if (!fired) return;
 
     const firedAt = Date.now();
     const stateLoop = fired.workflow && getActiveWorkflowStateLoop(fired.workflow);
@@ -342,6 +350,11 @@ export default function (pi: ExtensionAPI) {
       triggerSystem.remove(firedEntry.id);
       store.pause(firedEntry.id, "controller_limit", "workflow state fire cap reached");
       widget.update();
+    }
+
+    if (retireIfExpired()) {
+      activeTaskBacklogWakes.delete(current.id);
+      return;
     }
 
     if (current.autoTask) {
