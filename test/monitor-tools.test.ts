@@ -75,12 +75,12 @@ describe("MonitorCreate", () => {
     expect(h.toolMap.get("MonitorCreate")?.renderResult).toBeTypeOf("function");
   });
 
-  it("keeps completion wakes alive through short configured defaults", async () => {
+  it("applies the configured lifetime to monitor-created wake loops", async () => {
     const h = setup({}, 30_000);
     await h.text("MonitorCreate", { command: "npm test", timeout: 120_000, onDone: "Report results" });
 
     const wake = h.store.get("1")!;
-    expect(wake.expiresAt - wake.createdAt).toBe(180_000);
+    expect(wake.expiresAt - wake.createdAt).toBe(30_000);
   });
 
   it("rejects negative inactivity timeouts", () => {
