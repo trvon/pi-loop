@@ -52,7 +52,7 @@ describe("orchestration presentation", () => {
 
     const text = orchestrationControllerText(entry);
     expect(text).toContain("Orchestration #1 · needs attention");
-    expect(text).toContain("0/2 complete · 0 running · 1 failed · 1 uncertain");
+    expect(text).toContain("0/2 complete · 0 reserved · 1 failed · 1 uncertain");
     expect(text).not.toContain("needs_attention");
     expect(orchestrationTone(state)).toBe("warning");
   });
@@ -126,13 +126,13 @@ describe("orchestration presentation", () => {
     expect(details).toMatchObject({
       kind: "orchestration",
       tone: "success",
-      summary: "Orchestration #1 complete · 2/2 complete · 0 running",
+      summary: "Orchestration #1 complete · 2/2 complete · 0 reserved",
     });
     expect(details.expanded!.length).toBeLessThanOrEqual(9);
 
     const inspection = formatOrchestrationInspection(entry);
     expect(inspection).toContain("Orchestration #1 · complete");
-    expect(inspection).toContain("Progress: 2/2 complete · 0 running");
+    expect(inspection).toContain("Progress: 2/2 complete · 0 reserved");
     expect(inspection).not.toContain('Trigger: {"type":"dynamic"}');
   });
 });

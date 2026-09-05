@@ -378,8 +378,8 @@ describe("LoopList", () => {
     });
 
     const out = await h.text("LoopList", {});
-    expect(out).toContain("[orchestration:running]");
-    expect(out).toContain("0/1 complete · 0 running · 1 queued");
+    expect(out).toContain("[orchestration:active]");
+    expect(out).toContain("0/1 complete · 0 reserved · 1 pending");
     expect(out).not.toContain("pending=1 active=0");
   });
 });
@@ -626,7 +626,7 @@ describe("Workflow tools", () => {
       kind: "workflow",
       action: "create",
       tone: "success",
-      summary: expect.stringContaining("Workflow #1 active · investigate · attempt 1 · running"),
+      summary: expect.stringContaining("Workflow #1 active · investigate · attempt 1 · claimed"),
     });
     expect(createResult.details.expanded).toEqual(expect.arrayContaining([
       "Goal: Fix the regression",
@@ -647,7 +647,7 @@ describe("Workflow tools", () => {
       kind: "workflow",
       action: "claim",
       tone: "success",
-      summary: expect.stringContaining("Workflow #1 lease active · fix · running"),
+      summary: expect.stringContaining("Workflow #1 lease active · fix · claimed"),
     });
 
     const reviseResult = await h.result("WorkflowRevise", {
@@ -662,7 +662,7 @@ describe("Workflow tools", () => {
       kind: "workflow",
       action: "revise",
       tone: "success",
-      summary: expect.stringContaining("Workflow #1 revised · r1 → r2 · running"),
+      summary: expect.stringContaining("Workflow #1 revised · r1 → r2 · claimed"),
     });
   });
 
