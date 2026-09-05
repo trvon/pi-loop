@@ -4,7 +4,7 @@ import type { LoopEntry } from "../types.js";
 import { formatWorkflowGraphWarnings } from "../workflow-graph.js";
 import { getWorkflowOutcomeAvailability, type WorkflowOutcomeAvailability } from "../workflow-reducer.js";
 
-export type WorkflowActivityStatus = "running" | "paused" | "idle" | "stopped";
+export type WorkflowActivityStatus = "claimed" | "waiting" | "paused" | "idle" | "stopped";
 
 type UnavailableOutcome = WorkflowOutcomeAvailability["unavailable"][number];
 
@@ -58,10 +58,10 @@ export function deriveWorkflowActivity(entry: LoopEntry, now = Date.now()): Work
     statusSince = execution?.settledAt ?? execution?.updatedAt ?? entry.updatedAt;
     lifetimeEnd = statusSince;
   } else if (workflow.waitingMonitor) {
-    status = "idle";
+    status = "waiting";
     statusSince = workflow.waitingMonitor.attachedAt;
   } else if (execution?.lease && execution.lease.expiresAt > now) {
-    status = "running";
+    status = "claimed";
     statusSince = execution.lease.acquiredAt;
   } else {
     status = "idle";

@@ -20,21 +20,22 @@ export function orchestrationCancellationMessage(id: string, result: Orchestrati
 }
 
 export function orchestrationStatusLabel(status: OrchestrationStatus): string {
-  if (status === "active") return "running";
+  if (status === "active") return "active";
   if (status === "needs_attention") return "needs attention";
   if (status === "completed") return "complete";
   return "cancelled";
 }
 
 export function orchestrationWorkStatusLabel(status: OrchestrationWorkStatus): string {
-  if (status === "pending") return "queued";
-  if (status === "active") return "running";
+  if (status === "pending") return "pending";
+  if (status === "active") return "reserved";
   if (status === "completed") return "complete";
   return status;
 }
 
 function orchestrationDispatchStatusLabel(status: OrchestrationDispatchStatus): string {
   if (status === "spawning") return "starting";
+  if (status === "running") return "reported running";
   if (status === "completed") return "complete";
   return status;
 }
@@ -51,9 +52,13 @@ export function orchestrationProgressLabel(state: OrchestrationState): string {
   const counts = getOrchestrationCounts(state);
   const parts = [
     `${counts.completed}/${state.work.length} complete`,
-    `${counts.active} running`,
+    `${counts.active} reserved`,
   ];
-  if (counts.pending > 0) parts.push(`${counts.pending} queued`);
+  for (const status of ["spawning", "queued", "running"] as const) {
+    const count = state.work.filter((item) => item.status === "active" && item.dispatches.at(-1)?.status === status).length;
+    if (count > 0) parts.push(`${count} ${orchestrationDispatchStatusLabel(status)}`);
+  }
+  if (counts.pending > 0) parts.push(`${counts.pending} pending`);
   if (counts.failed > 0) parts.push(`${counts.failed} failed`);
   if (counts.uncertain > 0) parts.push(`${counts.uncertain} uncertain`);
   if (counts.cancelled > 0) parts.push(`${counts.cancelled} cancelled`);
@@ -93,6 +98,7 @@ export function orchestrationControllerText(entry: LoopEntry): string {
     `Goal: ${state.goal}`,
     `Progress: ${orchestrationProgressLabel(state)}`,
     `Limits: concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`,
+    "Reserved: local capacity; dispatch state is last reported, not proof of current execution.",
     ...state.work.map(orchestrationWorkSummary),
   ].join("\n");
 }
@@ -153,7 +159,7 @@ export function orchestrationWidgetSummary(entry: LoopEntry): string {
 }
 
 export function orchestrationWakeHeading(id: string, state: OrchestrationState): string {
-  if (state.status === "active") return `[pi-loop] Orchestration #${id} running.`;
+  if (state.status === "active") return `[pi-loop] Orchestration #${id} active.`;
   if (state.status === "completed") return `[pi-loop] Orchestration #${id} complete.`;
   if (state.status === "cancelled") return `[pi-loop] Orchestration #${id} cancelled.`;
   return `[pi-loop] Orchestration #${id} needs attention.`;
