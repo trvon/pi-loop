@@ -12,8 +12,8 @@ function setup() {
   const maybeBootstrapTaskLoop = vi.fn(async () => false);
   const onDynamicLoopActivated = vi.fn();
   const cancelOrchestration = vi.fn(async (id: string, action: "pause" | "delete") => {
-    if (action === "delete") return store.delete(id);
-    return store.pause(id) !== undefined;
+    if (action === "delete") return store.delete(id) ? "deleted" as const : "retained" as const;
+    return store.pause(id) !== undefined ? "paused" as const : "rejected" as const;
   });
   registerLoopCommand({
     pi,
@@ -380,7 +380,8 @@ describe("registerLoopCommand", () => {
     expect(ui.notify).toHaveBeenCalledWith("Loop #1 deleted", "info");
   });
 
-  it("delegates orchestration cancellation before command deletion", async () => {
+  it.each([false, true])("reports orchestration command retention honestly (%s)", async (retained) => {
+    if (retained) h.cancelOrchestration.mockResolvedValueOnce("retained");
     h.store.create({ type: "dynamic" }, "Parallel review", {
       recurring: true,
       orchestration: {
@@ -415,8 +416,13 @@ describe("registerLoopCommand", () => {
     expect(detail).toContain("Progress: 0/1 complete · 0 running · 1 queued");
     expect(detail).not.toContain('Trigger: {"type":"dynamic"}');
     expect(h.cancelOrchestration).toHaveBeenCalledWith("1", "delete");
-    expect(h.store.get("1")).toBeUndefined();
-    expect(ui.notify).toHaveBeenCalledWith("Orchestration #1 deleted", "info");
+    if (retained) {
+      expect(h.store.get("1")).toBeDefined();
+      expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("termination is unconfirmed"), "warning");
+    } else {
+      expect(h.store.get("1")).toBeUndefined();
+      expect(ui.notify).toHaveBeenCalledWith("Orchestration #1 cancelled and deleted", "info");
+    }
   });
 
   it("deletes a workflow loop and its trigger from the command", async () => {

@@ -1,4 +1,5 @@
 import { getOrchestrationCounts } from "../orchestration-reducer.js";
+import type { OrchestrationCancellation } from "../runtime/subagent-orchestration-runtime.js";
 import { displayRows, type ToolDisplayDetails, type ToolDisplayTone } from "../tools/tool-result.js";
 import type {
   LoopEntry,
@@ -9,6 +10,14 @@ import type {
   OrchestrationWorkItem,
   OrchestrationWorkStatus,
 } from "../types.js";
+
+export function orchestrationCancellationMessage(id: string, result: OrchestrationCancellation): string {
+  if (result === "deleted") return `Orchestration #${id} cancelled and deleted`;
+  if (result === "paused") return `Orchestration #${id} cancelled and paused`;
+  if (result === "retained") return `Orchestration #${id} cancellation recorded; retained and paused because worker termination is unconfirmed. No automatic retry or consume. Inspect OrchestrationGet; protocol v2 cannot prove safe cleanup.`;
+  if (result === "context_changed") return `Orchestration #${id} session changed during cancellation; inspect the original session before retrying. Deletion is not confirmed.`;
+  return `Orchestration #${id} cancellation failed; inspect OrchestrationGet and retry.`;
+}
 
 export function orchestrationStatusLabel(status: OrchestrationStatus): string {
   if (status === "active") return "running";
@@ -101,6 +110,7 @@ export function orchestrationWorkText(entry: LoopEntry, item: OrchestrationWorkI
     lines.push(`Dispatch ${dispatch.attempt}: ${orchestrationDispatchStatusLabel(dispatch.status)}${dispatch.agentId ? ` · agent=${dispatch.agentId}` : ""}`);
     if (dispatch.result) lines.push(`Result: ${dispatch.result}`);
     if (dispatch.error) lines.push(`Error: ${dispatch.error}`);
+    if (dispatch.status === "uncertain") lines.push("Termination: unconfirmed; automatic retry/consume disabled. Controller retained for inspection.");
     lines.push(`Output: ${outputOwnershipLabel(dispatch.consumeStatus)}`);
   }
   return lines.join("\n");

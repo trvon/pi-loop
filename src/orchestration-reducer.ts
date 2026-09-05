@@ -111,6 +111,7 @@ export type OrchestrationEvent =
   | { type: "owner_renewed"; at: number; expected: ExpectedOrchestration }
   | { type: "dispatch_requested"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string }
   | { type: "dispatch_bound"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; agentId: string }
+  | { type: "cleanup_bound"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; attempt: number; agentId: string }
   | { type: "dispatch_started"; at: number; expected: ExpectedOrchestration; agentId: string }
   | { type: "dispatch_settled"; at: number; expected: ExpectedOrchestration; agentId: string; outcome: "completed" | "failed"; result?: string; error?: string; usage?: OrchestrationUsage }
   | { type: "dispatch_spawn_failed"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
@@ -187,10 +188,42 @@ function setPendingWake(state: OrchestrationState, reason: OrchestrationWakeReas
   state.pendingWake = { reason, sequence: state.nextWakeSequence, createdAt: at };
 }
 
+export function isUnconfirmedDispatch(dispatch: OrchestrationDispatch): boolean {
+  return dispatch.status === "spawning" || dispatch.status === "queued" || dispatch.status === "running"
+    || dispatch.status === "uncertain" || dispatch.status === "interrupted" || dispatch.status === "stopped";
+}
+
+export function hasUnconfirmedDispatches(state: OrchestrationState): boolean {
+  return state.work.some((item) => item.dispatches.some(isUnconfirmedDispatch));
+}
+
+export function normalizeOrchestrationStops(state: OrchestrationState): OrchestrationState {
+  const next = cloneState(state);
+  let changed = false;
+  for (const item of next.work) {
+    for (const dispatch of item.dispatches) {
+      if (dispatch.status !== "interrupted" && dispatch.status !== "stopped" && dispatch.status !== "uncertain") continue;
+      if (dispatch.status !== "uncertain" || dispatch.consumeStatus !== "unavailable") {
+        dispatch.status = "uncertain";
+        dispatch.consumeStatus = "unavailable";
+        changed = true;
+      }
+      if (item.status !== "active" && item.status !== "cancelled" && item.status !== "uncertain") {
+        item.status = "uncertain";
+        changed = true;
+      }
+    }
+  }
+  if (!changed) return state;
+  refreshControllerStatus(next, next.updatedAt);
+  next.revision += 1;
+  return next;
+}
+
 function refreshControllerStatus(state: OrchestrationState, at: number): void {
   if (state.status === "cancelled") return;
   const hasActiveWork = state.work.some((item) => item.status === "active");
-  if (state.work.some((item) => item.status === "uncertain")) {
+  if (state.work.some((item) => item.status === "uncertain" || item.dispatches.some((dispatch) => dispatch.status === "uncertain"))) {
     state.status = "needs_attention";
     if (!hasActiveWork) setPendingWake(state, "uncertain", at);
     return;
@@ -287,7 +320,8 @@ export function applyOrchestrationEvent(
 
   const mismatch = matchesExpected(state, event.expected);
   if (mismatch) return rejected(state, mismatch);
-  if (state.status === "cancelled" && event.type !== "consume_recorded") return rejected(state, "controller_cancelled");
+  if (state.status === "cancelled" && event.type !== "consume_recorded" && event.type !== "cleanup_bound" && event.type !== "cancelled") return rejected(state, "controller_cancelled");
+  if (state.status === "cancelled" && event.type === "cancelled") return { applied: true, state };
 
   const next = cloneState(state);
   next.owner.leaseExpiresAt = event.at + ORCHESTRATION_OWNER_LEASE_MS;
@@ -295,6 +329,8 @@ export function applyOrchestrationEvent(
   if (event.type === "owner_renewed") return applied(next, event.at);
 
   if (event.type === "dispatch_requested") {
+    if (state.status !== "active") return rejected(state, "controller_not_active");
+    if (state.work.some((item) => item.dispatches.some((dispatch) => dispatch.status === "uncertain" || dispatch.status === "interrupted" || dispatch.status === "stopped"))) return rejected(state, "termination_unconfirmed");
     const item = next.work.find((candidate) => candidate.id === event.workId);
     if (!item) return rejected(state, "work_not_found");
     if (item.status !== "pending") return rejected(state, "work_not_pending");
@@ -328,6 +364,17 @@ export function applyOrchestrationEvent(
     return applied(next, event.at);
   }
 
+  if (event.type === "cleanup_bound") {
+    const item = next.work.find((candidate) => candidate.id === event.workId);
+    const dispatch = item?.dispatches.find((candidate) => candidate.dispatchId === event.dispatchId && candidate.attempt === event.attempt);
+    if (dispatch?.status !== "uncertain" || dispatch.agentId
+      || dispatch.ownerRuntimeId !== event.expected.ownerRuntimeId || dispatch.ownerGeneration !== event.expected.generation) return rejected(state, "stale_cleanup");
+    if (!event.agentId || next.work.some((candidate) => candidate.dispatches.some((d) => d.agentId === event.agentId))) return rejected(state, "duplicate_agent");
+    dispatch.agentId = event.agentId;
+    dispatch.boundAt = event.at;
+    return applied(next, event.at);
+  }
+
   if (event.type === "dispatch_started") {
     const found = findByAgent(next, event.agentId);
     if (!found) return rejected(state, "agent_not_active");
@@ -356,13 +403,11 @@ export function applyOrchestrationEvent(
     const item = next.work.find((candidate) => candidate.id === event.workId);
     const dispatch = item && activeDispatch(item);
     if (!item || !dispatch || dispatch.dispatchId !== event.dispatchId) return rejected(state, "stale_dispatch");
-    const uncertain = event.type === "dispatch_uncertain";
-    if (uncertain) dispatch.status = "uncertain";
-    else if (event.type === "dispatch_interrupted") dispatch.status = "interrupted";
-    else dispatch.status = "failed";
+    const uncertain = event.type !== "dispatch_spawn_failed";
+    dispatch.status = uncertain ? "uncertain" : "failed";
     dispatch.error = truncate(event.error, MAX_ORCHESTRATION_ERROR_CHARS);
     dispatch.settledAt = event.at;
-    dispatch.consumeStatus = dispatch.agentId ? "pending" : "not_applicable";
+    dispatch.consumeStatus = uncertain ? "unavailable" : dispatch.agentId ? "pending" : "not_applicable";
     item.status = uncertain ? "uncertain" : "failed";
     if (!uncertain) settleFailure(item, next);
     refreshControllerStatus(next, event.at);
@@ -371,7 +416,7 @@ export function applyOrchestrationEvent(
 
   if (event.type === "consume_recorded") {
     const dispatch = next.work.flatMap((item) => item.dispatches).find((candidate) => candidate.agentId === event.agentId);
-    if (dispatch?.consumeStatus !== "pending") return rejected(state, "consume_not_pending");
+    if (dispatch?.consumeStatus !== "pending" || isUnconfirmedDispatch(dispatch)) return rejected(state, "consume_not_pending");
     dispatch.consumeAttempts += 1;
     if (event.consumed) dispatch.consumeStatus = "consumed";
     else if (dispatch.consumeAttempts >= 3) dispatch.consumeStatus = "unavailable";
@@ -392,9 +437,10 @@ export function applyOrchestrationEvent(
       if (item.status === "completed") continue;
       const dispatch = activeDispatch(item);
       if (dispatch) {
-        dispatch.status = "stopped";
+        dispatch.status = "uncertain";
+        dispatch.error = "Cancellation requested; worker termination is unconfirmed. No automatic retry or consume.";
         dispatch.settledAt = event.at;
-        dispatch.consumeStatus = dispatch.agentId ? "pending" : "not_applicable";
+        dispatch.consumeStatus = "unavailable";
       }
       item.status = "cancelled";
     }
