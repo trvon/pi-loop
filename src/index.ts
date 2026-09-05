@@ -253,6 +253,8 @@ export default function (pi: ExtensionAPI) {
       trigger: entry.trigger,
       timestamp: Date.now(),
       expiresAt: entry.expiresAt,
+      controllerCreatedAt: entry.createdAt,
+      fireCount: entry.fireCount,
       readOnly: entry.readOnly,
       recurring: entry.recurring,
       persistent: entry.recurring,

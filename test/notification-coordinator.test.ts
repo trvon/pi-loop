@@ -11,6 +11,7 @@ function notification(overrides: Partial<ReducerNotification> = {}): ReducerNoti
   return {
     key: "loop:1",
     loopId: "1",
+    prompt: "hello",
     message: "hello",
     timestamp: 100,
     trigger: { type: "cron", schedule: "*/5 * * * *" },

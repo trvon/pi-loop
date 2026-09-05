@@ -121,6 +121,40 @@ describe("embedded workflow execution integration", () => {
     return { ...harness, ctx, taskPath, loopPath };
   }
 
+  it("AUD-03: revising future work preserves the pending current execution wake at the new revision", async () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const h = await setup();
+    try {
+      await h.emitExtension("agent_start", null, h.ctx);
+      await h.toolMap.get("WorkflowCreate")!.execute!("create", {
+        goal: "Implement requirements",
+        definition: JSON.stringify(ORIGINAL_REQUIREMENTS_WORKFLOW),
+      });
+      const before = new LoopStore(h.loopPath).get("1")!;
+      expect(before.dynamic?.awaitingUpdate).toBe(true);
+      expect(h.sentMessages).toEqual([]);
+      const revised = await h.toolMap.get("WorkflowRevise")!.execute!("revise", {
+        id: "1",
+        expectedRevision: 1,
+        expectedState: "investigate",
+        expectedTransitionSeq: 0,
+        reason: "Clarify future implementation.",
+        changes: [{ op: "revise_state", stateId: "implement", prompt: "Implement the clarified requirement." }],
+      });
+      expect(revised.content[0].text).toContain("revision 1 → 2");
+      expect(new LoopStore(h.loopPath).get("1")?.workflow?.activeExecution).toEqual(before.workflow?.activeExecution);
+      await h.emitExtension("agent_end", null, h.ctx);
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(h.sentMessages).toHaveLength(1);
+      expect(h.sentMessages[0]?.message.content).toContain("Determine the implementation constraints.");
+      expect(h.sentMessages[0]?.message.content).toContain("Definition revision: 2");
+      expect(new LoopStore(h.loopPath).get("1")?.workflow).toMatchObject({ currentState: "investigate", definitionRevision: 2 });
+    } finally {
+      await h.emitExtension("session_shutdown", null, h.ctx);
+    }
+  });
+
   it("AUD-06: the default budget permits an ordinary phase followed by one cadence fire and completion", async () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     const h = await setup();

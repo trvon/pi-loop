@@ -1,10 +1,161 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOrchestrationState } from "../src/orchestration-reducer.js";
 import { createNotificationRuntime } from "../src/runtime/notification-runtime.js";
+import { LoopStore } from "../src/store.js";
 import type { LoopEntry } from "../src/types.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
 describe("notification runtime session boundary", () => {
+  it.each(["delete", "pause", "complete"] as const)("AUD-04: explicit %s invalidates a buffered loop wake", async (action) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const { pi, sentMessages } = createMockPi();
+      const store = new LoopStore();
+      const entry = store.create(action === "complete" ? { type: "dynamic" } : { type: "cron", schedule: "* * * * *" }, "Cancelled work", {
+        recurring: true,
+        ...(action === "complete" ? { dynamic: { goal: "Cancelled work", awaitingUpdate: false } } : {}),
+      });
+      const runtime = createNotificationRuntime({
+        pi,
+        hasPendingTasks: async () => 0,
+        cleanDoneTasks: async () => {},
+        getHasPendingMessages: () => false,
+        getLoop: (id) => store.get(id),
+      });
+      runtime.syncRuntimeState({ agentRunning: true });
+      store.fire(entry.id);
+      await runtime.queueOrDeliverNotification({
+        loopId: entry.id,
+        prompt: entry.prompt,
+        trigger: entry.trigger,
+        timestamp: 1_000,
+        expiresAt: entry.expiresAt,
+        recurring: true,
+        dynamic: entry.dynamic,
+        controllerStatus: "active",
+      });
+      expect(sentMessages).toEqual([]);
+      if (action === "pause") store.pause(entry.id);
+      else if (action === "complete") {
+        const current = store.get(entry.id)!;
+        expect(store.stopDynamic(entry.id, "completed", {
+          status: current.status, iteration: current.dynamic!.iteration, updatedAt: current.updatedAt,
+        })).toBe(true);
+      } else store.delete(entry.id);
+      runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+      await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+      expect(sentMessages).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a buffered wake after the controller fires again", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const store = new LoopStore();
+    const entry = store.create({ type: "cron", schedule: "* * * * *" }, "Old work", {
+      recurring: true,
+      maxFires: 3,
+    });
+    const first = store.fire(entry.id)!;
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: async () => 0,
+      cleanDoneTasks: async () => {},
+      getHasPendingMessages: () => false,
+      getLoop: (id) => store.get(id),
+    });
+    runtime.syncRuntimeState({ agentRunning: true });
+    await runtime.queueOrDeliverNotification({
+      loopId: first.id,
+      prompt: first.prompt,
+      trigger: first.trigger,
+      timestamp: first.updatedAt,
+      recurring: true,
+      controllerStatus: first.status,
+      fireCount: first.fireCount,
+    });
+    store.fire(entry.id);
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages).toEqual([]);
+  });
+
+  it.each(["one-shot", "fire-cap"] as const)("delivers a legitimate %s final fire after controller cleanup", async (kind) => {
+    const { pi, sentMessages } = createMockPi();
+    const store = new LoopStore();
+    const entry = store.create({ type: "cron", schedule: "* * * * *" }, "Final work", {
+      recurring: kind === "fire-cap",
+      ...(kind === "fire-cap" ? { maxFires: 1 } : {}),
+    });
+    const fired = store.fire(entry.id)!;
+    if (kind === "one-shot") store.delete(entry.id);
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: async () => 0,
+      cleanDoneTasks: async () => {},
+      getHasPendingMessages: () => false,
+      getLoop: (id) => store.get(id),
+    });
+    runtime.syncRuntimeState({ agentRunning: true });
+    await runtime.queueOrDeliverNotification({
+      loopId: fired.id,
+      prompt: fired.prompt,
+      trigger: fired.trigger,
+      timestamp: fired.updatedAt,
+      recurring: fired.recurring,
+      controllerStatus: fired.status,
+      fireLimitReached: kind === "fire-cap",
+    });
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]?.message.content).toContain("Final work");
+  });
+
+  it("AUD-05: a task lookup finishing while busy retains the wake for exactly one idle delivery", async () => {
+    const { pi, sentMessages } = createMockPi();
+    let entered!: () => void;
+    let release!: (count: number) => void;
+    const lookupEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const lookupReply = new Promise<number>((resolve) => { release = resolve; });
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: () => { entered(); return lookupReply; },
+      cleanDoneTasks: async () => {},
+      getHasPendingMessages: () => false,
+    });
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    const delivering = runtime.queueOrDeliverNotification({
+      loopId: "1",
+      prompt: "Adopt pending work",
+      trigger: { type: "cron", schedule: "* * * * *" },
+      timestamp: 1_000,
+      autoTask: true,
+      recurring: true,
+    });
+    await lookupEntered;
+    runtime.syncRuntimeState({ agentRunning: true });
+    release(1);
+    await delivering;
+    const deliveriesWhileBusy = sentMessages.length;
+
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+    const deliveriesAfterIdle = sentMessages.length;
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect.soft(deliveriesWhileBusy).toBe(0);
+    expect.soft(deliveriesAfterIdle - deliveriesWhileBusy).toBe(1);
+    expect.soft(sentMessages).toHaveLength(1);
+    expect.soft(sentMessages[0]?.message.content).toContain("Adopt pending work");
+  });
+
   it("delivers an explicit recurring-loop expiry notification", async () => {
     const { pi, sentMessages } = createMockPi();
     const runtime = createNotificationRuntime({

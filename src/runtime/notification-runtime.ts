@@ -33,6 +33,8 @@ export interface LoopFireEvent {
   trigger: Trigger | string;
   timestamp: number;
   expiresAt?: number;
+  controllerCreatedAt?: number;
+  fireCount?: number;
   readOnly?: boolean;
   recurring?: boolean;
   persistent?: boolean;
@@ -347,16 +349,27 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     };
   }
 
-  function workflowNotificationIsCurrent(notification: ReducerNotification): boolean {
+  function refreshWorkflowNotification(notification: ReducerNotification): ReducerNotification | undefined {
     const queued = notification.workflow;
-    if (!queued || !getLoop || notification.controllerStatus === undefined) return true;
+    if (!queued || !getLoop || notification.controllerStatus === undefined) return notification;
     const current = getLoop(notification.loopId);
-    if (!current?.workflow) return false;
-    if (notification.controllerStatus !== undefined && current.status !== notification.controllerStatus) return false;
-    return (current.workflow.definitionRevision ?? 1) === (queued.definitionRevision ?? 1)
-      && current.workflow.currentState === queued.currentState
-      && current.workflow.transitionSeq === queued.transitionSeq
-      && current.workflow.activeExecution?.id === queued.activeExecution?.id;
+    if (!current?.workflow || current.status !== notification.controllerStatus) return undefined;
+    if (current.workflow.currentState !== queued.currentState
+      || current.workflow.transitionSeq !== queued.transitionSeq
+      || current.workflow.activeExecution?.id !== queued.activeExecution?.id) return undefined;
+    if ((current.workflow.definitionRevision ?? 1) === (queued.definitionRevision ?? 1)) return notification;
+    const refreshed = { ...notification, workflow: current.workflow };
+    return { ...refreshed, message: buildLoopFireMessage(refreshed) };
+  }
+
+  function loopNotificationIsCurrent(notification: ReducerNotification): boolean {
+    if (!getLoop || notification.controllerStatus === undefined) return true;
+    const current = getLoop(notification.loopId);
+    if (!current) return notification.recurring === false
+      || (notification.fireLimitReached === true && !notification.workflow && !notification.orchestration);
+    if (notification.controllerCreatedAt !== undefined && current.createdAt !== notification.controllerCreatedAt) return false;
+    if (notification.fireCount !== undefined && (current.fireCount ?? 0) !== notification.fireCount) return false;
+    return current.status === notification.controllerStatus;
   }
 
   function orchestrationNotificationIsCurrent(notification: ReducerNotification): boolean {
@@ -368,7 +381,8 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     return current.orchestration.pendingWake?.sequence === sequence;
   }
 
-  async function deliverNotification(notification: ReducerNotification): Promise<boolean> {
+  async function deliverNotification(queuedNotification: ReducerNotification): Promise<boolean> {
+    let notification = queuedNotification;
     const deliveryGeneration = notification.sessionGeneration ?? sessionGeneration;
     if (notification.autoTask) {
       const pending = await hasPendingTasks();
@@ -391,12 +405,30 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       debug?.(`loop:fire #${notification.loopId} — expiry boundary passed before delivery, dropping wake`);
       return false;
     }
-    if (!workflowNotificationIsCurrent(notification)) {
+    if (!loopNotificationIsCurrent(notification)) {
+      debug?.(`loop:fire #${notification.loopId} — controller changed before delivery, dropping wake`);
+      return false;
+    }
+    const refreshed = refreshWorkflowNotification(notification);
+    if (!refreshed) {
       debug?.(`loop:fire #${notification.loopId} — workflow execution changed before delivery, dropping wake`);
       return false;
     }
+    notification = refreshed;
     if (!orchestrationNotificationIsCurrent(notification)) {
       debug?.(`loop:fire #${notification.loopId} — orchestration wake changed before delivery, dropping wake`);
+      return false;
+    }
+    if (notificationState.agentRunning) {
+      debug?.(`loop:fire #${notification.loopId} — runtime became busy before delivery, retaining wake`);
+      applyNotificationEvent({
+        type: "NOTIFICATION_QUEUED",
+        at: Date.now(),
+        source: "system",
+        entityType: "notification",
+        entityId: notification.key,
+        payload: { notification },
+      });
       return false;
     }
     syncRuntimeState({ agentRunning: true });
