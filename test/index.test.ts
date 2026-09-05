@@ -167,8 +167,9 @@ describe("workflow runtime wiring", () => {
 
   it("stale activation cannot fire a workflow destination that disabled immediate start", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
-    extension(pi as any);
     const sessionId = "workflow-prefire-race-session";
+    clearTestLoopStore(sessionId);
+    extension(pi as any);
     const ctx = createCtx({ sessionId });
     for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
     const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
@@ -210,8 +211,9 @@ describe("workflow runtime wiring", () => {
 
   it("post-fire administrative pause suppresses workflow delivery", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
-    extension(pi as any);
     const sessionId = "workflow-postfire-pause-session";
+    clearTestLoopStore(sessionId);
+    extension(pi as any);
     const ctx = createCtx({ sessionId });
     for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
     const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
@@ -241,8 +243,9 @@ describe("workflow runtime wiring", () => {
 
   it("post-fire bookkeeping cannot mutate an advanced cadence destination", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
-    extension(pi as any);
     const sessionId = "workflow-bookkeeping-race-session";
+    clearTestLoopStore(sessionId);
+    extension(pi as any);
     const ctx = createCtx({ sessionId });
     for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
     const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
@@ -1714,6 +1717,7 @@ describe("native task fallback", () => {
   });
 
   it("delivers the final bounded idle wake after atomic controller retirement", async () => {
+    vi.stubEnv("PI_LOOP_SCOPE", "memory");
     const { pi, toolMap, sentMessages } = createMockPi();
     extension(pi as any);
 
@@ -1723,10 +1727,11 @@ describe("native task fallback", () => {
       triggerType: "idle",
       maxFires: 1,
     });
-    await flushAsync();
+    await Promise.resolve();
 
     expect((await toolMap.get("LoopList")!.execute!("list", {})).content[0].text).toContain("No loops configured");
     expect(sentMessages.filter((sent) => sent.message.content.includes("Deliver the final idle iteration."))).toHaveLength(1);
+    vi.unstubAllEnvs();
   });
 
   it("does not consume a final fire when a stale runtime cannot dispatch its wake", async () => {

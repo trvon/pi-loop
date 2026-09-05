@@ -329,7 +329,17 @@ export default function (pi: ExtensionAPI) {
       widget.update();
       return;
     }
-    const fireResult = store.fireOrExpire(current.id, origin);
+    const fireResult = store.fireOrExpire(current.id, origin, undefined, {
+      createdAt: current.createdAt,
+      updatedAt: current.updatedAt,
+      status: current.status,
+      fireCount: current.fireCount ?? 0,
+      workflowState: current.workflow?.currentState,
+      workflowTransitionSeq: current.workflow?.transitionSeq,
+      workflowDefinitionRevision: current.workflow?.definitionRevision,
+      workflowExecutionId: current.workflow?.activeExecution?.id,
+      workflowMonitorId: current.workflow?.waitingMonitor?.monitorId,
+    });
     if (fireResult.kind === "expired") {
       emitLoopExpired(fireResult.record.entry, fireResult.record.disposition, expirySource, fireResult.record.reason);
       return;
@@ -350,13 +360,17 @@ export default function (pi: ExtensionAPI) {
         },
       }, fired.workflow ? {
         createdAt: fired.createdAt,
+        status: fired.status,
         currentState: fired.workflow.currentState,
         transitionSeq: fired.workflow.transitionSeq,
         definitionRevision: fired.workflow.definitionRevision,
         activeExecutionId: fired.workflow.activeExecution?.id,
       } : undefined);
-      if (!updatedEntry) return;
-      firedEntry = updatedEntry;
+      if (!updatedEntry) {
+        if (fireResult.settlement !== "deleted_by_fire_limit") return;
+      } else {
+        firedEntry = updatedEntry;
+      }
     }
     if (retireIfExpired()) {
       activeTaskBacklogWakes.delete(current.id);
@@ -373,6 +387,7 @@ export default function (pi: ExtensionAPI) {
     if (postFireEntry?.status !== "active") {
       triggerSystem.remove(firedEntry.id);
       widget.update();
+      if (postFireEntry && postFireEntry.pause?.kind !== "controller_limit") return;
     }
 
     if (Date.now() >= firedEntry.expiresAt) {

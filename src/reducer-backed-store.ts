@@ -38,21 +38,54 @@ function staleOwner(contents: string): boolean {
   return pidPrefix ? !isProcessRunning(Number(pidPrefix[1])) : contents.length > 0;
 }
 
-function removeStaleDirectoryLock(lockPath: string): boolean {
+function removeStaleDirectoryLock(lockPath: string, token: string): boolean {
   try {
     const names = readdirSync(lockPath);
     if (names.length === 0) {
       rmdirSync(lockPath);
       return true;
     }
-    if (names.length !== 1 || !names[0]?.startsWith("owner-")) return false;
-    const ownerPath = join(lockPath, names[0]);
-    if (!staleOwner(readFileSync(ownerPath, "utf-8"))) return false;
-    // The UUID-bearing owner name is the identity claim. A replacement
-    // directory cannot contain this exact pathname.
-    unlinkSync(ownerPath);
-    try { rmdirSync(lockPath); } catch { /* a replacement non-empty directory stays fenced */ }
-    return !existsSync(lockPath);
+    if (names.length === 1 && names[0] === "owner") {
+      const ownerPath = join(lockPath, "owner");
+      const upgradePath = join(lockPath, `.upgrade-${process.pid}-${token}`);
+      try {
+        // Keep the predecessor directory non-empty while inspecting a hard link
+        // to its exact owner inode, so no replacement can be published beneath us.
+        linkSync(ownerPath, upgradePath);
+        if (!staleOwner(readFileSync(upgradePath, "utf-8"))) return false;
+        try { unlinkSync(ownerPath); } catch { return false; }
+      } finally {
+        try { unlinkSync(upgradePath); } catch { /* no upgrade claim was published */ }
+      }
+      try { rmdirSync(lockPath); } catch { /* another identity claim still fences the directory */ }
+      return !existsSync(lockPath);
+    }
+    if (names.length === 1) {
+      const name = names[0]!;
+      const claimant = /^\.(?:cleanup|upgrade)-(\d+)-[0-9a-f-]+$/.exec(name);
+      if (claimant) {
+        if (isProcessRunning(Number(claimant[1]))) return false;
+        unlinkSync(join(lockPath, name));
+        try { rmdirSync(lockPath); } catch { /* a replacement remains fenced */ }
+        return !existsSync(lockPath);
+      }
+      if (!name.startsWith("owner-")) return false;
+      const ownerPath = join(lockPath, name);
+      if (!staleOwner(readFileSync(ownerPath, "utf-8"))) return false;
+      // The UUID-bearing owner name is the identity claim. A replacement
+      // directory cannot contain this exact pathname.
+      unlinkSync(ownerPath);
+      try { rmdirSync(lockPath); } catch { /* a replacement non-empty directory stays fenced */ }
+      return !existsSync(lockPath);
+    }
+    const abandonedUpgrade = names.find((name) => {
+      const match = /^\.upgrade-(\d+)-[0-9a-f-]+$/.exec(name);
+      return match !== null && !isProcessRunning(Number(match[1]));
+    });
+    if (names.includes("owner") && abandonedUpgrade) {
+      unlinkSync(join(lockPath, abandonedUpgrade));
+    }
+    return false;
   } catch {
     return false;
   }
@@ -77,7 +110,7 @@ function removeStaleLegacyLock(lockPath: string, token: string): boolean {
 function removeStaleLock(lockPath: string, token: string): boolean {
   try {
     return statSync(lockPath).isDirectory()
-      ? removeStaleDirectoryLock(lockPath)
+      ? removeStaleDirectoryLock(lockPath, token)
       : removeStaleLegacyLock(lockPath, token);
   } catch {
     return false;

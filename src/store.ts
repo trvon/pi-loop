@@ -122,8 +122,20 @@ export interface ExpiredLoopRecord {
   reason: LoopExpiryReason;
 }
 
+export interface LoopFireExpectedIdentity {
+  createdAt: number;
+  updatedAt: number;
+  status: LoopEntry["status"];
+  fireCount: number;
+  workflowState?: string;
+  workflowTransitionSeq?: number;
+  workflowDefinitionRevision?: number;
+  workflowExecutionId?: string;
+  workflowMonitorId?: string;
+}
+
 export type LoopFireResult =
-  | { kind: "fired"; entry: LoopEntry }
+  | { kind: "fired"; entry: LoopEntry; settlement?: "deleted_by_fire_limit" }
   | { kind: "expired"; record: ExpiredLoopRecord }
   | { kind: "ignored" };
 
@@ -305,9 +317,24 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     });
   }
 
-  private fireUnlocked(id: string, origin: LoopFireOrigin, now: number, settleExpiry: boolean): LoopFireResult {
+  private fireUnlocked(
+    id: string,
+    origin: LoopFireOrigin,
+    now: number,
+    settleExpiry: boolean,
+    expected?: LoopFireExpectedIdentity,
+  ): LoopFireResult {
     const entry = this.entries.get(id);
     if (entry?.status !== "active" || isTerminalWorkflowRun(entry?.workflow)) return { kind: "ignored" };
+    if (expected && (entry.createdAt !== expected.createdAt
+      || entry.updatedAt !== expected.updatedAt
+      || entry.status !== expected.status
+      || entry.fireCount !== expected.fireCount
+      || entry.workflow?.currentState !== expected.workflowState
+      || entry.workflow?.transitionSeq !== expected.workflowTransitionSeq
+      || entry.workflow?.definitionRevision !== expected.workflowDefinitionRevision
+      || entry.workflow?.activeExecution?.id !== expected.workflowExecutionId
+      || entry.workflow?.waitingMonitor?.monitorId !== expected.workflowMonitorId)) return { kind: "ignored" };
     if (now >= entry.expiresAt) {
       const record = settleExpiry ? this.expireEntryUnlocked(id, now) : undefined;
       return record ? { kind: "expired", record } : { kind: "ignored" };
@@ -330,7 +357,12 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       ? structuredClone(fired)
       : undefined;
     if (limitReached) this.settleFireLimitUnlocked(fired, now);
-    return { kind: "fired", entry: this.entries.get(id) ?? deletedDelivery ?? fired };
+    const settled = this.entries.get(id);
+    return {
+      kind: "fired",
+      entry: settled ?? deletedDelivery ?? fired,
+      ...(!settled ? { settlement: "deleted_by_fire_limit" as const } : {}),
+    };
   }
 
   private settleFireLimitUnlocked(entry: LoopEntry, at: number): void {
@@ -365,8 +397,13 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     return result.kind === "fired" ? result.entry : undefined;
   }
 
-  fireOrExpire(id: string, origin: LoopFireOrigin = "scheduler", now?: number): LoopFireResult {
-    return this.withLock(() => this.fireUnlocked(id, origin, now ?? Date.now(), true));
+  fireOrExpire(
+    id: string,
+    origin: LoopFireOrigin = "scheduler",
+    now?: number,
+    expected?: LoopFireExpectedIdentity,
+  ): LoopFireResult {
+    return this.withLock(() => this.fireUnlocked(id, origin, now ?? Date.now(), true, expected));
   }
 
   updateMetadata(id: string, fields: { trigger?: Trigger; prompt?: string; taskBacklog?: boolean }): { entry: LoopEntry | undefined; changedFields: string[] } {
@@ -410,6 +447,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     fields: { prompt?: string; dynamic: Partial<DynamicLoopState> },
     expectedWorkflow?: {
       createdAt: number;
+      status: LoopEntry["status"];
       currentState: string;
       transitionSeq: number;
       definitionRevision: number;
@@ -420,6 +458,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       const entry = this.entries.get(id);
       if (!entry) return undefined;
       if (expectedWorkflow && (entry.createdAt !== expectedWorkflow.createdAt
+        || entry.status !== expectedWorkflow.status
         || !entry.workflow
         || entry.workflow.currentState !== expectedWorkflow.currentState
         || entry.workflow.transitionSeq !== expectedWorkflow.transitionSeq

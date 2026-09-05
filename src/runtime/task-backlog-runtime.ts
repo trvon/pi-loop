@@ -81,6 +81,7 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
 
   function isAutoTaskWorkerLoop(entry: LoopEntry): boolean {
     return entry.status === "active"
+      && !entry.autoTask
       && !entry.workflow
       && !entry.orchestration
       && isAutoTaskWorkerPrompt(entry.prompt)
@@ -89,6 +90,7 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
 
   function isTaskBacklogLoop(entry: LoopEntry): boolean {
     return entry.status === "active"
+      && !entry.autoTask
       && !entry.workflow
       && !entry.orchestration
       && triggerHasEventSource(entry.trigger, "tasks:created")
@@ -102,7 +104,7 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
   function migrateAutoTaskWorkerPrompts(): number {
     let migrated = 0;
     for (const entry of getLoops()) {
-      if (entry.workflow || entry.orchestration) continue;
+      if (entry.autoTask || entry.workflow || entry.orchestration) continue;
       if (!isAutoTaskWorkerPrompt(entry.prompt)) continue;
       if (!triggerHasEventSource(entry.trigger, "tasks:created")) continue;
       if (entry.prompt === AUTO_TASK_WORKER_PROMPT && entry.taskBacklog) continue;
@@ -156,18 +158,19 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
       return current?.createdAt === entry.createdAt && isTaskBacklogLoop(current);
     });
     if (deletable.length === 0) return 0;
-    const deletedLoopIds = deletable.map((entry) => entry.id);
-    emitTaskBacklogEmpty?.(buildTaskBacklogEmptyPayload(deletedLoopIds));
-    let deleted = 0;
+    const deletedLoopIds: string[] = [];
     for (const entry of deletable) {
       if (isCurrent && !isCurrent()) break;
       const current = getLoops().find((candidate) => candidate.id === entry.id);
       if (current?.createdAt !== entry.createdAt || !isTaskBacklogLoop(current)) continue;
       deleteTaskBacklogLoop(entry, pending);
-      deleted++;
+      deletedLoopIds.push(entry.id);
     }
-    if (deleted > 0) updateWidget();
-    return deleted;
+    if (deletedLoopIds.length > 0) {
+      updateWidget();
+      emitTaskBacklogEmpty?.(buildTaskBacklogEmptyPayload(deletedLoopIds));
+    }
+    return deletedLoopIds.length;
   }
 
   type TaskBacklogDispatchResult = {
