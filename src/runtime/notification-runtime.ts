@@ -368,7 +368,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     if (!current) return notification.recurring === false
       || (notification.fireLimitReached === true && !notification.workflow && !notification.orchestration);
     if (notification.controllerCreatedAt !== undefined && current.createdAt !== notification.controllerCreatedAt) return false;
-    if (notification.fireCount !== undefined && (current.fireCount ?? 0) < notification.fireCount) return false;
+    if (notification.fireCount !== undefined && (current.fireCount ?? 0) !== notification.fireCount) return false;
     return current.status === notification.controllerStatus;
   }
 
