@@ -118,7 +118,6 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     removeTrigger(entry.id);
     recordDeletionTombstone?.(entry.id, { reason: "task_backlog_empty", pendingCount });
     deleteLoop(entry.id);
-    emitLoopAutodeleted?.(buildLoopAutodeletedPayload(entry, pendingCount));
   }
 
   async function adoptTaskBacklogLoops(
@@ -158,19 +157,22 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
       return current?.createdAt === entry.createdAt && isTaskBacklogLoop(current);
     });
     if (deletable.length === 0) return 0;
-    const deletedLoopIds: string[] = [];
+    const deletedEntries: LoopEntry[] = [];
     for (const entry of deletable) {
       if (isCurrent && !isCurrent()) break;
       const current = getLoops().find((candidate) => candidate.id === entry.id);
       if (current?.createdAt !== entry.createdAt || !isTaskBacklogLoop(current)) continue;
       deleteTaskBacklogLoop(entry, pending);
-      deletedLoopIds.push(entry.id);
+      deletedEntries.push(entry);
     }
-    if (deletedLoopIds.length > 0) {
+    if (deletedEntries.length > 0) {
       updateWidget();
-      emitTaskBacklogEmpty?.(buildTaskBacklogEmptyPayload(deletedLoopIds));
+      for (const entry of deletedEntries) {
+        emitLoopAutodeleted?.(buildLoopAutodeletedPayload(entry, pending));
+      }
+      emitTaskBacklogEmpty?.(buildTaskBacklogEmptyPayload(deletedEntries.map((entry) => entry.id)));
     }
-    return deletedLoopIds.length;
+    return deletedEntries.length;
   }
 
   type TaskBacklogDispatchResult = {

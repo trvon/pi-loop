@@ -402,10 +402,9 @@ export default function (pi: ExtensionAPI) {
       });
     }
 
-    const authoritativeEntry = store.get(firedEntry.id) ?? firedEntry;
     emitLoopFire({
-      ...authoritativeEntry,
-      prompt: promptOverride ?? authoritativeEntry.prompt,
+      ...firedEntry,
+      prompt: promptOverride ?? firedEntry.prompt,
     }, monitor);
   }
 
