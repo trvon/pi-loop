@@ -60,7 +60,7 @@ function workflowEntry(overrides: Partial<LoopEntry> = {}): LoopEntry {
 }
 
 describe("workflow activity presentation", () => {
-  it("derives running from a live execution lease and exposes bounded timing", () => {
+  it("reports a live execution lease as claimed, not observed running", () => {
     const entry = workflowEntry();
     entry.workflow!.activeExecution!.lease = {
       ownerSessionId: "session",
@@ -72,7 +72,7 @@ describe("workflow activity presentation", () => {
     };
 
     expect(deriveWorkflowActivity(entry, NOW)).toEqual({
-      status: "running",
+      status: "claimed",
       statusSince: 6_000,
       activityMs: 4_000,
       workflowAgeMs: 9_000,
@@ -81,7 +81,7 @@ describe("workflow activity presentation", () => {
     expect(workflowLeaseLabel(entry, NOW)).toContain("active until");
   });
 
-  it("derives idle for unowned, expired, monitor-waiting, and non-task work", () => {
+  it("separates monitor waits from unowned, expired, and non-task idle work", () => {
     const unowned = workflowEntry();
     expect(deriveWorkflowActivity(unowned, NOW)).toMatchObject({ status: "idle", statusSince: 5_000 });
 
@@ -104,7 +104,7 @@ describe("workflow activity presentation", () => {
       transitionSeq: 0,
       attachedAt: 7_000,
     };
-    expect(deriveWorkflowActivity(waiting, NOW)).toMatchObject({ status: "idle", statusSince: 7_000 });
+    expect(deriveWorkflowActivity(waiting, NOW)).toMatchObject({ status: "waiting", statusSince: 7_000 });
 
     const nonTask = workflowEntry();
     nonTask.workflow!.definition.states.work = { prompt: "Review.", on: { done: "done" } };

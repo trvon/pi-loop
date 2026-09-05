@@ -42,6 +42,13 @@ Lint currently reports four established optional-chain warnings; new warnings ar
 
 Unit tests use Vitest, fake timers for schedules, in-memory stores for pure behavior, temporary files for persistence/restart, and one shared Pi event-bus mock.
 
+## Harness review campaigns
+
+See [bounded review campaigns](./HARNESS_REVIEW_CAMPAIGNS.md) for the test-only
+coverage/closure reference policy and traceable boundary inventory. Failed or
+skipped mandatory discovery is incomplete, never a clean review. The inventory
+checks references; the normal suite executes the underlying regressions.
+
 ## Workflow coverage
 
 The workflow suites prove:

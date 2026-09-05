@@ -5,8 +5,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { formatTrigger } from "../loop-format.js";
 import { isValidCronExpression, parseInterval } from "../loop-parse.js";
+import type { OrchestrationCancellation } from "../runtime/subagent-orchestration-runtime.js";
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
-import { formatOrchestrationInspection, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
+import { formatOrchestrationInspection, orchestrationCancellationMessage, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
 import { formatWorkflowInspection, workflowActivityLabel } from "../ui/workflow-presentation.js";
 import { isTerminalWorkflowRun } from "../workflow-reducer.js";
 
@@ -39,7 +40,7 @@ export interface LoopCommandOptions {
   updateWidget: () => void;
   maybeBootstrapTaskLoop?: (entry: LoopEntry) => Promise<boolean>;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
-  cancelOrchestration?: (id: string, action: "pause" | "delete") => Promise<boolean>;
+  cancelOrchestration?: (id: string, action: "pause" | "delete") => Promise<OrchestrationCancellation>;
 }
 
 type LoopCommandRoute =
@@ -212,22 +213,21 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
             : `#${entry.id}: ${entry.prompt}\nTrigger: ${JSON.stringify(entry.trigger)}`;
         const action = await ui.select(detail, actions);
 
+        if (entry.orchestration && (action === "x Delete" || action === "- Pause")) {
+          const result = await cancelOrchestration?.(entry.id, action === "x Delete" ? "delete" : "pause") ?? "rejected";
+          ui.notify(orchestrationCancellationMessage(entry.id, result), result === "rejected" ? "error" : result === "deleted" ? "info" : "warning");
+          return viewLoops(ui);
+        }
         if (action === "x Delete") {
-          if (entry.orchestration) await cancelOrchestration?.(entry.id, "delete");
-          else {
-            getTriggerSystem().remove(entry.id);
-            getStore().delete(entry.id);
-            updateWidget();
-          }
-          ui.notify(`${entry.orchestration ? "Orchestration" : "Loop"} #${entry.id} deleted`, "info");
+          getTriggerSystem().remove(entry.id);
+          getStore().delete(entry.id);
+          updateWidget();
+          ui.notify(`Loop #${entry.id} deleted`, "info");
         } else if (action === "- Pause") {
-          if (entry.orchestration) await cancelOrchestration?.(entry.id, "pause");
-          else {
-            getStore().pause(entry.id);
-            getTriggerSystem().remove(entry.id);
-            updateWidget();
-          }
-          ui.notify(`${entry.orchestration ? "Orchestration" : "Loop"} #${entry.id} paused`, "info");
+          getStore().pause(entry.id);
+          getTriggerSystem().remove(entry.id);
+          updateWidget();
+          ui.notify(`Loop #${entry.id} paused`, "info");
         } else if (action === "* Resume") {
           const resumed = getStore().resume(entry.id);
           if (!resumed) return viewLoops(ui);

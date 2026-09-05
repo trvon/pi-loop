@@ -3,8 +3,9 @@ import { Type } from "typebox";
 import { parseLoopDurationMs } from "../loop-expiry.js";
 import { formatTrigger } from "../loop-format.js";
 import { parseInterval } from "../loop-parse.js";
+import type { OrchestrationCancellation } from "../runtime/subagent-orchestration-runtime.js";
 import type { LoopEntry, Trigger } from "../types.js";
-import { orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
+import { orchestrationCancellationMessage, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "../ui/workflow-presentation.js";
 import { getActiveWorkflowStateLoop } from "../workflow-reducer.js";
@@ -66,7 +67,7 @@ export interface LoopToolsOptions {
   maybeBootstrapTaskLoop: (entry: LoopEntry) => Promise<boolean>;
   isTaskSystemReady: () => boolean;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
-  cancelOrchestration?: (id: string, action: "pause" | "delete") => Promise<boolean>;
+  cancelOrchestration?: (id: string, action: "pause" | "delete") => Promise<OrchestrationCancellation>;
 }
 
 function validateTrigger(trigger: Trigger): string | null {
@@ -539,16 +540,11 @@ export function registerLoopTools(options: LoopToolsOptions): void {
       const existing = getStore().get(id);
       if (existing?.orchestration) {
         const orchestrationAction: "pause" | "delete" = action === "pause" ? "pause" : "delete";
-        const cancelled = await cancelOrchestration?.(id, orchestrationAction);
-        if (!cancelled) {
-          const message = `Orchestration #${id} cancellation failed`;
-          return textResult(message, {
-            kind: "loop", action: orchestrationAction, tone: "error", summary: message, expanded: ["Inspect OrchestrationGet and retry."],
-          });
-        }
-        const message = orchestrationAction === "pause" ? `Orchestration #${id} cancelled and paused` : `Orchestration #${id} cancelled and deleted`;
+        const result = await cancelOrchestration?.(id, orchestrationAction) ?? "rejected";
+        const message = orchestrationCancellationMessage(id, result);
         return textResult(message, {
-          kind: "loop", action: orchestrationAction, tone: orchestrationAction === "pause" ? "warning" : "success", summary: message, expanded: [],
+          kind: "loop", action: orchestrationAction, tone: result === "rejected" ? "error" : result === "deleted" ? "success" : "warning",
+          summary: message, expanded: [],
         });
       }
 
