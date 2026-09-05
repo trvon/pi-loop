@@ -54,6 +54,7 @@ export interface LoopFireEvent {
 export interface PendingNotification extends LoopFireEvent {
   key: string;
   message: string;
+  queueSequence: number;
 }
 
 export interface MonitorStartedEvent {
@@ -94,6 +95,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
   };
   let flushPromise: Promise<void> | undefined;
   let sessionGeneration = 0;
+  let nextQueueSequence = 1;
 
   type NotificationDispatchResult = {
     kind: "delivery";
@@ -303,6 +305,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     return {
       ...data,
       sessionGeneration: data.sessionGeneration ?? sessionGeneration,
+      queueSequence: nextQueueSequence++,
       key,
       message: buildLoopFireMessage(data),
     };
@@ -314,6 +317,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     const isStaleEvent = data.reason === "resume_event_stale";
     return {
       sessionGeneration: data.sessionGeneration ?? sessionGeneration,
+      queueSequence: nextQueueSequence++,
       loopId: data.loopId,
       prompt: data.prompt,
       trigger: data.trigger,
@@ -337,6 +341,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     const label = data.description ?? data.command.slice(0, 80);
     return {
       sessionGeneration: data.sessionGeneration ?? sessionGeneration,
+      queueSequence: nextQueueSequence++,
       loopId: `monitor:${data.monitorId}`,
       prompt: label,
       trigger: { type: "event", source: "monitor:started" },
@@ -353,7 +358,7 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     const queued = notification.workflow;
     if (!queued || !getLoop || notification.controllerStatus === undefined) return notification;
     const current = getLoop(notification.loopId);
-    if (!current?.workflow || current.status !== notification.controllerStatus) return undefined;
+    if (!current?.workflow || current.status !== notification.controllerStatus || current.workflow.waitingMonitor) return undefined;
     if (current.workflow.currentState !== queued.currentState
       || current.workflow.transitionSeq !== queued.transitionSeq
       || current.workflow.activeExecution?.id !== queued.activeExecution?.id) return undefined;
@@ -421,7 +426,8 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
     }
     if (notificationState.agentRunning) {
       debug?.(`loop:fire #${notification.loopId} — runtime became busy before delivery, retaining wake`);
-      applyNotificationEvent({
+      const newer = notificationState.notificationsByKey[notification.key];
+      if (!newer || newer.queueSequence < notification.queueSequence) applyNotificationEvent({
         type: "NOTIFICATION_QUEUED",
         at: Date.now(),
         source: "system",

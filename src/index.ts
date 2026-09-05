@@ -148,9 +148,13 @@ export default function (pi: ExtensionAPI) {
   async function maybeBootstrapTaskLoop(entry: LoopEntry): Promise<boolean> {
     if (!entry.recurring || !entry.taskBacklog) return false;
     if (!triggerHasEventSource(entry.trigger, "tasks:created")) return false;
+    const operationStore = store;
+    const operationGeneration = sessionGeneration;
 
     const pending = await hasPendingTasks();
-    if (pending <= 0) return false;
+    const current = operationStore.get(entry.id);
+    if (pending <= 0 || store !== operationStore || sessionGeneration !== operationGeneration
+      || current?.createdAt !== entry.createdAt) return false;
 
     debug(`loop #${entry.id} — bootstrapping existing pending tasks (${pending})`);
     onLoopFire(entry);
@@ -297,7 +301,7 @@ export default function (pi: ExtensionAPI) {
     if (retireIfExpired()) return;
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     const current = store.get(entry.id);
-    if (current?.status !== "active" || isTerminalWorkflowRun(current?.workflow)) {
+    if (current?.createdAt !== entry.createdAt || current.status !== "active" || isTerminalWorkflowRun(current.workflow)) {
       triggerSystem.remove(entry.id);
       return;
     }
@@ -346,16 +350,15 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    if (atMaxFires(firedEntry)) {
-      triggerSystem.remove(firedEntry.id);
-      if (firedEntry.workflow || firedEntry.taskBacklog) store.pause(firedEntry.id, "controller_limit", "loop fire cap reached");
-      else store.delete(firedEntry.id);
-      widget.update();
+    const postFireEntry = store.get(firedEntry.id);
+    if (firedEntry.workflow && postFireEntry?.workflow
+      && (postFireEntry.workflow.currentState !== firedEntry.workflow.currentState
+        || postFireEntry.workflow.transitionSeq !== firedEntry.workflow.transitionSeq
+        || postFireEntry.workflow.activeExecution?.id !== firedEntry.workflow.activeExecution?.id)) {
+      return;
     }
-
-    if (firedEntry.workflow && atWorkflowStateFireLimit(firedEntry.workflow)) {
+    if (postFireEntry?.status !== "active") {
       triggerSystem.remove(firedEntry.id);
-      store.pause(firedEntry.id, "controller_limit", "workflow state fire cap reached");
       widget.update();
     }
 
@@ -365,7 +368,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    if (current.autoTask) {
+    if (current.autoTask && !current.workflow) {
       taskProvider?.autoCreateTask(current).then((taskId) => {
         if (taskId) debug(`loop #${current.id} → task #${taskId}`);
       });

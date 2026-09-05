@@ -14,6 +14,7 @@ function notification(overrides: Partial<ReducerNotification> = {}): ReducerNoti
     prompt: "hello",
     message: "hello",
     timestamp: 100,
+    queueSequence: 1,
     trigger: { type: "cron", schedule: "*/5 * * * *" },
     recurring: true,
     ...overrides,

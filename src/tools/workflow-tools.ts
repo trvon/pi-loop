@@ -138,6 +138,7 @@ function workflowDefaultMaxFires(definition: WorkflowDefinition): number {
       hasCadence = true;
       if (state.loop.maxFires === undefined) hasUnboundedCadence = true;
       else automaticFires += state.loop.maxFires;
+      if (state.loop.startImmediately) automaticFires += 1;
     } else {
       automaticFires += state.maxAttempts ?? 1;
     }

@@ -189,6 +189,50 @@ describe("embedded workflow execution integration", () => {
     }
   });
 
+  it("RA-03: inferred budget reserves an extra fire for startImmediately cadence", async () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const h = await setup();
+    try {
+      await h.emitExtension("agent_start", null, h.ctx);
+      await h.toolMap.get("WorkflowCreate")!.execute!("create", {
+        goal: "Poll then finish",
+        definition: JSON.stringify({
+          version: 1,
+          initialState: "poll",
+          states: {
+            poll: {
+              prompt: "Poll release.",
+              loop: { schedule: "* * * * *", maxFires: 1, startImmediately: true },
+              on: { ready: "finish" },
+            },
+            finish: { prompt: "Finish release.", on: { done: "done" } },
+            done: { prompt: "Report success.", terminal: "completed" },
+          },
+        }),
+      });
+      expect(new LoopStore(h.loopPath).get("1")).toMatchObject({ maxFires: 3, fireCount: 1 });
+      await h.emitExtension("agent_end", null, h.ctx);
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      const transitioned = await h.toolMap.get("WorkflowTransition")!.execute!("ready", {
+        id: "1", outcome: "ready", evidence: "Release is ready.",
+      });
+      expect(transitioned.content[0].text).toContain("poll → finish");
+      expect(new LoopStore(h.loopPath).get("1")).toMatchObject({
+        status: "paused",
+        fireCount: 3,
+        workflow: { currentState: "finish", transitionSeq: 1 },
+      });
+      const completed = await h.toolMap.get("WorkflowTransition")!.execute!("done", {
+        id: "1", outcome: "done", evidence: "Finish work completed.",
+      });
+      expect(completed.content[0].text).toContain("completed and deleted");
+      expect(new LoopStore(h.loopPath).get("1")).toBeUndefined();
+    } finally {
+      await h.emitExtension("session_shutdown", null, h.ctx);
+    }
+  });
+
   it("creates task-bearing workflow work before task-provider detection and leaves TaskStore empty", async () => {
     const h = await setup();
     const created = await h.toolMap.get("WorkflowCreate")!.execute!("create", {
