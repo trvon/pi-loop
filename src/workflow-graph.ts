@@ -82,7 +82,9 @@ export function diagnoseWorkflowGraph(run: WorkflowRunState): WorkflowGraphWarni
   for (const id of ids) {
     const availability = getWorkflowOutcomeAvailability({ ...run, currentState: id });
     live.set(id, availability.available.map((outcome) => states[id]!.on![outcome]!).filter((target) => Object.hasOwn(states, target)));
-    for (const edge of availability.unavailable) blocked.push({ from: id, outcome: edge.outcome, to: edge.targetState });
+    for (const edge of availability.unavailable) {
+      if ("maxAttempts" in edge) blocked.push({ from: id, outcome: edge.outcome, to: edge.targetState });
+    }
   }
   const currentReachable = reachable(live, [run.currentState]);
   if (terminalReachable.has(run.currentState) && !terminals.some((id) => currentReachable.has(id))) {
