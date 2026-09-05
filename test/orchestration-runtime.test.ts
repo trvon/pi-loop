@@ -472,6 +472,53 @@ describe("subagent orchestration runtime", () => {
     expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.consumeStatus).toBe("provider_owned");
   });
 
+  it.each(["success", "reject", "throw"] as const)("reconciles legacy confirmed-terminal consumption with %s", async (mode) => {
+    const rpc = vi.fn((channel: string) => {
+      if (channel === "subagents:rpc:spawn") return Promise.resolve({ id: "legacy-result" });
+      if (channel === "subagents:rpc:consume" && mode === "throw") throw new Error("consume transport failed");
+      if (channel === "subagents:rpc:consume" && mode === "reject") return Promise.reject(new Error("consume unavailable"));
+      return Promise.resolve(undefined);
+    });
+    const h = setup({ workCount: 1, rpc });
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:completed", { id: "legacy-result", result: "confirmed terminal result" });
+    // A preceding version may have persisted a confirmed terminal result whose
+    // output transfer is still pending. Uncertainty migration must not erase it.
+    h.store.get(h.entry.id)!.orchestration!.work[0]!.dispatches[0]!.consumeStatus = "pending";
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await h.runtime.pump();
+      await h.drain();
+    }
+    const dispatch = h.store.get(h.entry.id)!.orchestration!.work[0]!.dispatches[0]!;
+    expect(dispatch).toMatchObject({
+      status: "completed", result: "confirmed terminal result",
+      consumeStatus: mode === "success" ? "consumed" : "unavailable",
+      consumeAttempts: mode === "success" ? 1 : 3,
+    });
+    expect(rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume")).toHaveLength(mode === "success" ? 1 : 3);
+    expect(spawnCalls(rpc)).toHaveLength(1);
+  });
+
+  it("coalesces pending terminal consumes and rejects late replies to a stale context", async () => {
+    let release!: () => void;
+    const reply = new Promise<void>((resolve) => { release = resolve; });
+    const rpc = vi.fn((channel: string) => channel === "subagents:rpc:spawn"
+      ? Promise.resolve({ id: "legacy-result" }) : reply);
+    const h = setup({ workCount: 1, rpc });
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:completed", { id: "legacy-result", result: "legacy" });
+    h.store.get(h.entry.id)!.orchestration!.work[0]!.dispatches[0]!.consumeStatus = "pending";
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:completed", { id: "legacy-result", result: "duplicate" });
+    await h.runtime.pump();
+    expect(rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume")).toHaveLength(1);
+    const before = structuredClone(h.store.get(h.entry.id));
+    h.setContextCurrent(false);
+    release();
+    await h.drain();
+    expect(h.store.get(h.entry.id)).toEqual(before);
+  });
+
   it("does not consume again for duplicate terminal lifecycle events", async () => {
     const h = setup({ workCount: 1 });
     await h.runtime.pump();
