@@ -3,6 +3,7 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -24,33 +25,50 @@ export class StoreCorruptionError extends Error {
   }
 }
 
-function acquireLock(lockPath: string): void {
-  mkdirSync(dirname(lockPath), { recursive: true });
-  for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
-    try {
-      writeFileSync(lockPath, `${process.pid}`, { flag: "wx" });
-      return;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "EEXIST") {
-        try {
-          const pid = parseInt(readFileSync(lockPath, "utf-8"), 10);
-          if (!pid || !isProcessRunning(pid)) {
-            try { unlinkSync(lockPath); } catch { /* ignore */ }
-            continue;
-          }
-        } catch { /* ignore read errors */ }
-        const start = Date.now();
-        while (Date.now() - start < LOCK_RETRY_MS) { /* busy wait */ }
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw new Error(`Failed to acquire lock: ${lockPath}`);
+interface LockOwner {
+  contents: string;
 }
 
-function releaseLock(lockPath: string): void {
-  try { unlinkSync(lockPath); } catch { /* ignore */ }
+function acquireLock(lockPath: string): LockOwner {
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const token = randomUUID();
+  const owner: LockOwner = { contents: `${process.pid}:${token}` };
+  const candidatePath = `${lockPath}.${token}.candidate`;
+  writeFileSync(candidatePath, owner.contents, { flag: "wx" });
+  try {
+    for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
+      try {
+        // A hard link publishes the complete owner record atomically. Creating the
+        // final lock and filling it in separate syscalls leaves a stealable empty inode.
+        linkSync(candidatePath, lockPath);
+        return owner;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+          try {
+            const contents = readFileSync(lockPath, "utf-8");
+            const pidPrefix = /^(\d+)/.exec(contents);
+            if (contents.length > 0 && (!pidPrefix || !isProcessRunning(Number(pidPrefix[1])))) {
+              try { unlinkSync(lockPath); } catch { /* another acquirer won stale cleanup */ }
+              continue;
+            }
+          } catch { /* unreadable or concurrently replaced locks stay fenced */ }
+          const start = Date.now();
+          while (Date.now() - start < LOCK_RETRY_MS) { /* busy wait */ }
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw new Error(`Failed to acquire lock: ${lockPath}`);
+  } finally {
+    try { unlinkSync(candidatePath); } catch { /* linked lock retains the inode */ }
+  }
+}
+
+function releaseLock(lockPath: string, owner: LockOwner): void {
+  try {
+    if (readFileSync(lockPath, "utf-8") === owner.contents) unlinkSync(lockPath);
+  } catch { /* never remove a lock whose ownership cannot be confirmed */ }
 }
 
 function isProcessRunning(pid: number): boolean {
@@ -210,11 +228,11 @@ export abstract class ReducerBackedStore<
         this.recoverPrevious(error);
         return;
       }
-      acquireLock(this.lockPath);
+      const lockOwner = acquireLock(this.lockPath);
       try {
         this.load(true, true);
       } finally {
-        releaseLock(this.lockPath);
+        releaseLock(this.lockPath, lockOwner);
       }
     }
   }
@@ -235,14 +253,14 @@ export abstract class ReducerBackedStore<
 
   protected withLock<T>(fn: () => T, shouldSave: (result: T) => boolean = () => true): T {
     if (!this.lockPath) return fn();
-    acquireLock(this.lockPath);
+    const lockOwner = acquireLock(this.lockPath);
     try {
       this.load(true, true);
       const result = fn();
       if (shouldSave(result)) this.save();
       return result;
     } finally {
-      releaseLock(this.lockPath);
+      releaseLock(this.lockPath, lockOwner);
     }
   }
 
