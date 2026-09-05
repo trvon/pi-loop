@@ -482,9 +482,9 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       if (!entry.workflow) return { applied: false, error: `Loop #${id} is not a workflow loop` };
       const now = Date.now();
       if (now >= entry.expiresAt) return { applied: false, error: `Workflow #${id} has expired and cannot be transitioned` };
+      if (!expected) return { applied: false, error: `Workflow #${id} transition requires current execution identity; inspect LoopList and retry.` };
       const pausePolicy = workflowTransitionPausePolicy(entry, input);
       if (pausePolicy.error) return { applied: false, error: pausePolicy.error };
-      if (!expected) return { applied: false, error: `Workflow #${id} transition requires current execution identity; inspect LoopList and retry.` };
       if (
         entry.workflow.currentState !== expected.currentState
         || entry.workflow.transitionSeq !== expected.transitionSeq
