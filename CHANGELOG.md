@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.13](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.12...pi-loop-v0.7.13) (2026-09-05)
+
+
+### Features
+
+* **harness:** integrate safe feedback and diagnostics ([#101](https://github.com/trvon/pi-loop/issues/101)) ([d22fa57](https://github.com/trvon/pi-loop/commit/d22fa57cb76d54863407c7616bff33e208c9949f))
+* **loop:** make expiration configurable ([#87](https://github.com/trvon/pi-loop/issues/87)) ([30c060f](https://github.com/trvon/pi-loop/commit/30c060f68d1080d70a8762da1ff157394c7fecc4))
+* **orchestration:** connect status presentation ([#79](https://github.com/trvon/pi-loop/issues/79)) ([9735bf1](https://github.com/trvon/pi-loop/commit/9735bf14e6b988c3f6e88697800b8c76621a2de4))
+
+
+### Bug Fixes
+
+* **authority:** close controller boundary races ([#93](https://github.com/trvon/pi-loop/issues/93)) ([0a0b0c5](https://github.com/trvon/pi-loop/commit/0a0b0c5447cbe0ce0030f490c9eb8bb48a00f8b5))
+* **authority:** fence async execution ownership ([#89](https://github.com/trvon/pi-loop/issues/89)) ([e6ead72](https://github.com/trvon/pi-loop/commit/e6ead72f60a84dafad59a8f59429ddb9d7f26800))
+* **authority:** fence controller lifecycle races ([#92](https://github.com/trvon/pi-loop/issues/92)) ([2350f43](https://github.com/trvon/pi-loop/commit/2350f431eb3d0956cd90902830e05941ac1ccc5e))
+* **notify:** preserve only relevant pending wakes ([#91](https://github.com/trvon/pi-loop/issues/91)) ([88bc67b](https://github.com/trvon/pi-loop/commit/88bc67b94f01ce8bddbe2eaef162bb399f0080a4))
+* **store:** publish lock ownership atomically ([#88](https://github.com/trvon/pi-loop/issues/88)) ([2a399cf](https://github.com/trvon/pi-loop/commit/2a399cf3c472da9509c07b831075634f7999e4f4))
+* **workflow:** settle fire limits atomically ([#90](https://github.com/trvon/pi-loop/issues/90)) ([1e90523](https://github.com/trvon/pi-loop/commit/1e90523eae51a40f5479a57203139ac03eeca225))
+
 ## [0.7.12](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.11...pi-loop-v0.7.12) (2026-09-02)
 
 

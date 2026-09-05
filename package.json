@@ -1,6 +1,6 @@
 {
   "name": "@trevonistrevon/pi-loop",
-  "version": "0.7.12",
+  "version": "0.7.13",
   "description": "A Pi extension for scheduled/event-driven re-wakes, durable workflows, subagent orchestration, tasks, and background monitoring.",
   "author": "trevonistrevon",
   "license": "MIT",
