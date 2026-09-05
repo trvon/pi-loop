@@ -84,11 +84,30 @@ function normalizePauseRecord(entry: LoopEntry): LoopPauseRecord | undefined {
   return pause;
 }
 
+function validateControllerDomain(entry: {
+  workflow?: unknown;
+  orchestration?: unknown;
+  autoTask?: boolean;
+  taskBacklog?: boolean;
+  trigger: Trigger;
+}): void {
+  if (entry.autoTask && entry.taskBacklog) {
+    throw new Error("Malformed loop controller: auto-task and task-backlog behavior are mutually exclusive");
+  }
+  if (entry.workflow && (entry.autoTask || entry.taskBacklog || entry.orchestration)) {
+    throw new Error("Malformed loop controller: workflow cannot own standalone tasks or orchestration behavior");
+  }
+  if (entry.orchestration && (entry.autoTask || entry.taskBacklog)) {
+    throw new Error("Malformed loop controller: orchestration cannot own standalone task behavior");
+  }
+  if ((entry.workflow || entry.orchestration) && entry.trigger.type !== "dynamic") {
+    throw new Error("Malformed loop controller: workflow and orchestration controllers require a dynamic trigger");
+  }
+}
+
 function normalizeLoopEntry(entry: LoopEntry): LoopEntry {
   const pause = normalizePauseRecord(entry);
-  if (entry.workflow && (entry.autoTask || entry.taskBacklog || entry.orchestration)) {
-    throw new Error("Malformed loop controller: workflow cannot own standalone task or orchestration behavior");
-  }
+  validateControllerDomain(entry);
   return {
     ...entry,
     ...(pause ? { pause } : {}),
@@ -177,15 +196,12 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
       }
+      validateControllerDomain({ trigger, ...opts });
       if (opts.workflow) {
-        if (trigger.type !== "dynamic") throw new Error("Workflow loops require a dynamic trigger.");
-        if (opts.autoTask || opts.taskBacklog) throw new Error("Workflow controllers cannot create or adopt standalone tasks.");
         const validationError = validateWorkflowDefinition(opts.workflow);
         if (validationError) throw new Error(`Invalid workflow: ${validationError}`);
       }
       if (opts.orchestration) {
-        if (trigger.type !== "dynamic") throw new Error("Orchestration loops require a dynamic trigger.");
-        if (opts.workflow) throw new Error("A loop cannot own both workflow and orchestration state.");
         const validationError = validateOrchestrationDefinition(opts.orchestration.definition);
         if (validationError) throw new Error(`Invalid orchestration: ${validationError}`);
       }
@@ -358,6 +374,13 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       const current = this.entries.get(id);
       if (!current) return { entry: undefined, changedFields: [] };
 
+      const candidate = {
+        ...current,
+        ...(fields.trigger !== undefined ? { trigger: fields.trigger } : {}),
+        ...(fields.taskBacklog !== undefined ? { taskBacklog: fields.taskBacklog } : {}),
+      };
+      validateControllerDomain(candidate);
+
       const changedFields: string[] = [];
       const now = Date.now();
 
@@ -382,9 +405,26 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   }
 
 
-  updateDynamic(id: string, fields: { prompt?: string; dynamic: Partial<DynamicLoopState> }): LoopEntry | undefined {
+  updateDynamic(
+    id: string,
+    fields: { prompt?: string; dynamic: Partial<DynamicLoopState> },
+    expectedWorkflow?: {
+      createdAt: number;
+      currentState: string;
+      transitionSeq: number;
+      definitionRevision: number;
+      activeExecutionId?: string;
+    },
+  ): LoopEntry | undefined {
     return this.withLock(() => {
-      if (!this.entries.has(id)) return undefined;
+      const entry = this.entries.get(id);
+      if (!entry) return undefined;
+      if (expectedWorkflow && (entry.createdAt !== expectedWorkflow.createdAt
+        || !entry.workflow
+        || entry.workflow.currentState !== expectedWorkflow.currentState
+        || entry.workflow.transitionSeq !== expectedWorkflow.transitionSeq
+        || entry.workflow.definitionRevision !== expectedWorkflow.definitionRevision
+        || entry.workflow.activeExecution?.id !== expectedWorkflow.activeExecutionId)) return undefined;
       this.applyReducerEvent({
         type: "LOOP_DYNAMIC_UPDATED",
         at: Date.now(),

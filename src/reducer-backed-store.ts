@@ -30,6 +30,7 @@ export class StoreCorruptionError extends Error {
 
 interface LockOwner {
   contents: string;
+  ownerName: string;
 }
 
 function staleOwner(contents: string): boolean {
@@ -37,31 +38,22 @@ function staleOwner(contents: string): boolean {
   return pidPrefix ? !isProcessRunning(Number(pidPrefix[1])) : contents.length > 0;
 }
 
-function removeStaleDirectoryLock(lockPath: string, token: string): boolean {
-  const ownerPath = join(lockPath, "owner");
+function removeStaleDirectoryLock(lockPath: string): boolean {
   try {
-    const contents = readFileSync(ownerPath, "utf-8");
-    if (!staleOwner(contents)) return false;
-    const claimPath = join(lockPath, `.cleanup-${process.pid}-${token}`);
-    renameSync(ownerPath, claimPath);
-    unlinkSync(claimPath);
+    const names = readdirSync(lockPath);
+    if (names.length === 0) {
+      rmdirSync(lockPath);
+      return true;
+    }
+    if (names.length !== 1 || !names[0]?.startsWith("owner-")) return false;
+    const ownerPath = join(lockPath, names[0]);
+    if (!staleOwner(readFileSync(ownerPath, "utf-8"))) return false;
+    // The UUID-bearing owner name is the identity claim. A replacement
+    // directory cannot contain this exact pathname.
+    unlinkSync(ownerPath);
     try { rmdirSync(lockPath); } catch { /* a replacement non-empty directory stays fenced */ }
     return !existsSync(lockPath);
   } catch {
-    try {
-      const names = readdirSync(lockPath);
-      if (names.length === 0) {
-        rmdirSync(lockPath);
-        return true;
-      }
-      const cleanup = names.find((name) => /^\.cleanup-(\d+)-/.test(name));
-      const pid = cleanup ? Number(/^\.cleanup-(\d+)-/.exec(cleanup)?.[1]) : undefined;
-      if (cleanup && pid !== undefined && !isProcessRunning(pid)) {
-        unlinkSync(join(lockPath, cleanup));
-        rmdirSync(lockPath);
-        return true;
-      }
-    } catch { /* incomplete or concurrently replaced directories stay fenced */ }
     return false;
   }
 }
@@ -85,7 +77,7 @@ function removeStaleLegacyLock(lockPath: string, token: string): boolean {
 function removeStaleLock(lockPath: string, token: string): boolean {
   try {
     return statSync(lockPath).isDirectory()
-      ? removeStaleDirectoryLock(lockPath, token)
+      ? removeStaleDirectoryLock(lockPath)
       : removeStaleLegacyLock(lockPath, token);
   } catch {
     return false;
@@ -95,15 +87,18 @@ function removeStaleLock(lockPath: string, token: string): boolean {
 function acquireLock(lockPath: string): LockOwner {
   mkdirSync(dirname(lockPath), { recursive: true });
   const token = randomUUID();
-  const owner: LockOwner = { contents: `${process.pid}:${token}` };
+  const owner: LockOwner = {
+    contents: `${process.pid}:${token}`,
+    ownerName: `owner-${process.pid}-${token}`,
+  };
   const candidatePath = `${lockPath}.${token}.candidate`;
   mkdirSync(candidatePath);
-  writeFileSync(join(candidatePath, "owner"), owner.contents, { flag: "wx" });
+  writeFileSync(join(candidatePath, owner.ownerName), owner.contents, { flag: "wx" });
   try {
     for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
       try {
         // Renaming a complete non-empty directory publishes ownership atomically.
-        // Stale cleanup claims its fixed owner entry before removing the directory.
+        // Unique owner names make stale cleanup conditional on the inspected identity.
         renameSync(candidatePath, lockPath);
         return owner;
       } catch (error) {
@@ -125,7 +120,7 @@ function acquireLock(lockPath: string): LockOwner {
 
 function releaseLock(lockPath: string, owner: LockOwner): void {
   try {
-    const ownerPath = join(lockPath, "owner");
+    const ownerPath = join(lockPath, owner.ownerName);
     if (readFileSync(ownerPath, "utf-8") !== owner.contents) return;
     unlinkSync(ownerPath);
     try { rmdirSync(lockPath); } catch { /* never remove a replacement owner's directory */ }

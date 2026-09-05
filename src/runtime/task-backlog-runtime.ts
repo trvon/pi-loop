@@ -48,6 +48,7 @@ export interface TaskBacklogRuntimeOptions {
   triggerHasEventSource: (trigger: Trigger | string, source: string) => boolean;
   emitLoopAutodeleted?: (payload: LoopAutodeletedPayload) => void;
   emitTaskBacklogEmpty?: (payload: TaskBacklogEmptyPayload) => void;
+  captureIsCurrent?: () => () => boolean;
   debug?: (...args: unknown[]) => void;
 }
 
@@ -74,17 +75,22 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     triggerHasEventSource,
     emitLoopAutodeleted,
     emitTaskBacklogEmpty,
+    captureIsCurrent,
     debug,
   } = options;
 
   function isAutoTaskWorkerLoop(entry: LoopEntry): boolean {
     return entry.status === "active"
+      && !entry.workflow
+      && !entry.orchestration
       && isAutoTaskWorkerPrompt(entry.prompt)
       && triggerHasEventSource(entry.trigger, "tasks:created");
   }
 
   function isTaskBacklogLoop(entry: LoopEntry): boolean {
     return entry.status === "active"
+      && !entry.workflow
+      && !entry.orchestration
       && triggerHasEventSource(entry.trigger, "tasks:created")
       && (entry.taskBacklog === true || isAutoTaskWorkerLoop(entry));
   }
@@ -96,6 +102,7 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
   function migrateAutoTaskWorkerPrompts(): number {
     let migrated = 0;
     for (const entry of getLoops()) {
+      if (entry.workflow || entry.orchestration) continue;
       if (!isAutoTaskWorkerPrompt(entry.prompt)) continue;
       if (!triggerHasEventSource(entry.trigger, "tasks:created")) continue;
       if (entry.prompt === AUTO_TASK_WORKER_PROMPT && entry.taskBacklog) continue;
@@ -144,11 +151,23 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     if (isCurrent && !isCurrent()) return 0;
     if (pending < 0 || pending > 0) return 0;
 
-    const deletedLoopIds = backlogLoops.map((entry) => entry.id);
+    const deletable = backlogLoops.filter((entry) => {
+      const current = getLoops().find((candidate) => candidate.id === entry.id);
+      return current?.createdAt === entry.createdAt && isTaskBacklogLoop(current);
+    });
+    if (deletable.length === 0) return 0;
+    const deletedLoopIds = deletable.map((entry) => entry.id);
     emitTaskBacklogEmpty?.(buildTaskBacklogEmptyPayload(deletedLoopIds));
-    for (const entry of backlogLoops) deleteTaskBacklogLoop(entry, pending);
-    updateWidget();
-    return backlogLoops.length;
+    let deleted = 0;
+    for (const entry of deletable) {
+      if (isCurrent && !isCurrent()) break;
+      const current = getLoops().find((candidate) => candidate.id === entry.id);
+      if (current?.createdAt !== entry.createdAt || !isTaskBacklogLoop(current)) continue;
+      deleteTaskBacklogLoop(entry, pending);
+      deleted++;
+    }
+    if (deleted > 0) updateWidget();
+    return deleted;
   }
 
   type TaskBacklogDispatchResult = {
@@ -161,18 +180,19 @@ export function createTaskBacklogRuntime(options: TaskBacklogRuntimeOptions): Ta
     return reduceTaskBacklogEvent(incoming as TaskBacklogEvent);
   };
 
-  const taskBacklogCoordinator = createCoordinator<TaskBacklogDispatchResult>({
-    reducers: [taskBacklogReducerHandler],
-    effectHandlers: {
-      CLEANUP_TASK_BACKLOG_LOOPS: async () => ({
-        kind: "cleanup",
-        cleaned: await cleanupTaskBacklogLoops(),
-      }),
-    },
-  });
-
   async function evaluateTaskBacklog(taskStore?: TaskStore, pendingCount?: number): Promise<{ entry?: LoopEntry; created: boolean; cleaned: number }> {
+    const isCurrent = captureIsCurrent?.();
     const resolvedPending = pendingCount ?? (taskStore ? taskStore.pendingCount() : await hasPendingTasks());
+    if (isCurrent && !isCurrent()) return { created: false, cleaned: 0 };
+    const taskBacklogCoordinator = createCoordinator<TaskBacklogDispatchResult>({
+      reducers: [taskBacklogReducerHandler],
+      effectHandlers: {
+        CLEANUP_TASK_BACKLOG_LOOPS: async () => ({
+          kind: "cleanup",
+          cleaned: await cleanupTaskBacklogLoops(isCurrent),
+        }),
+      },
+    });
     const results = await taskBacklogCoordinator.dispatch({
       type: "TASK_BACKLOG_EVALUATED",
       at: Date.now(),

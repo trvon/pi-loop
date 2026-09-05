@@ -109,8 +109,11 @@ export function reduceNotificationState(
   event: NotificationReducerEvent,
 ): NotificationReduceResult {
   if (event.type === "NOTIFICATION_QUEUED") {
+    const incoming = event.payload.notification;
+    const current = state.notificationsByKey[incoming.key];
+    if (current && current.queueSequence >= incoming.queueSequence) return { state, effects: [] };
     const next = cloneState(state);
-    next.notificationsByKey[event.payload.notification.key] = event.payload.notification;
+    next.notificationsByKey[incoming.key] = incoming;
     return {
       state: next,
       effects: [{ type: "REQUEST_NOTIFICATION_FLUSH", payload: {} }],

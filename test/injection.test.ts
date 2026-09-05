@@ -522,8 +522,8 @@ describe("loop:fire custom message delivery", () => {
   it("supersession: assigns same-key wake order before asynchronous task admission completes", async () => {
     const { pi, sentMessages, emitExtension, eventHandlers } = createMockPi();
     const pendingRequests: Array<{ requestId: string }> = [];
-    let thirdLookupStarted!: () => void;
-    const thirdLookup = new Promise<void>((resolve) => { thirdLookupStarted = resolve; });
+    let lookupStarted!: () => void;
+    const lookup = new Promise<void>((resolve) => { lookupStarted = resolve; });
     pi.events.on(TASKS_RPC.ping, ({ requestId }: { requestId: string }) => {
       pi.events.emit(replyChannel(TASKS_RPC.ping, requestId), {
         success: true,
@@ -532,7 +532,7 @@ describe("loop:fire custom message delivery", () => {
     });
     pi.events.on(TASKS_RPC.pending, (request: { requestId: string }) => {
       pendingRequests.push(request);
-      if (pendingRequests.length === 3) thirdLookupStarted();
+      lookupStarted();
     });
     const extension = await import("../src/index.js");
     extension.default(pi);
@@ -548,20 +548,13 @@ describe("loop:fire custom message delivery", () => {
       loopId: "13", prompt: "Latest prompt", trigger: { type: "cron", schedule: "*/1 * * * *" },
       timestamp: 2, autoTask: true, recurring: true,
     });
-    expect(pendingRequests).toHaveLength(2);
-
-    pi.events.emit(replyChannel(TASKS_RPC.pending, pendingRequests[1]!.requestId), {
-      success: true, data: { pending: 1 },
-    });
-    await newWake;
-    pi.events.emit(replyChannel(TASKS_RPC.pending, pendingRequests[0]!.requestId), {
-      success: true, data: { pending: 1 },
-    });
-    await oldWake;
+    await Promise.all([oldWake, newWake]);
+    expect(pendingRequests).toHaveLength(0);
 
     const ended = emitExtension("agent_end", null, ctx);
-    await thirdLookup;
-    pi.events.emit(replyChannel(TASKS_RPC.pending, pendingRequests[2]!.requestId), {
+    await lookup;
+    expect(pendingRequests).toHaveLength(1);
+    pi.events.emit(replyChannel(TASKS_RPC.pending, pendingRequests[0]!.requestId), {
       success: true, data: { pending: 1 },
     });
     await ended;

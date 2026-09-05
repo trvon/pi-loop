@@ -187,6 +187,11 @@ export default function (pi: ExtensionAPI) {
     emitTaskBacklogEmpty: (payload) => {
       pi.events.emit("tasks:backlog_empty", payload);
     },
+    captureIsCurrent: () => {
+      const operationStore = store;
+      const operationGeneration = sessionGeneration;
+      return () => store === operationStore && sessionGeneration === operationGeneration;
+    },
     debug,
   });
 
@@ -335,16 +340,24 @@ export default function (pi: ExtensionAPI) {
 
     const firedAt = Date.now();
     const stateLoop = fired.workflow && getActiveWorkflowStateLoop(fired.workflow);
-    const updatedEntry = fired.trigger.type === "dynamic" && !stateLoop
-      ? store.updateDynamic(fired.id, {
-          dynamic: {
-            awaitingUpdate: true,
-            nextWakeAt: undefined,
-            lastUpdatedAt: firedAt,
-          },
-        }) ?? fired
-      : fired;
-    const firedEntry = updatedEntry;
+    let firedEntry = fired;
+    if (fired.trigger.type === "dynamic" && !stateLoop) {
+      const updatedEntry = store.updateDynamic(fired.id, {
+        dynamic: {
+          awaitingUpdate: true,
+          nextWakeAt: undefined,
+          lastUpdatedAt: firedAt,
+        },
+      }, fired.workflow ? {
+        createdAt: fired.createdAt,
+        currentState: fired.workflow.currentState,
+        transitionSeq: fired.workflow.transitionSeq,
+        definitionRevision: fired.workflow.definitionRevision,
+        activeExecutionId: fired.workflow.activeExecution?.id,
+      } : undefined);
+      if (!updatedEntry) return;
+      firedEntry = updatedEntry;
+    }
     if (retireIfExpired()) {
       activeTaskBacklogWakes.delete(current.id);
       return;
@@ -454,18 +467,7 @@ export default function (pi: ExtensionAPI) {
   // ── Loop fire handler — queues an in-memory notification, then injects a custom message when delivery is safe ──
 
   pi.events.on("loop:fire", async (event: unknown) => {
-    const data = event as LoopFireEvent;
-
-    if (data.autoTask) {
-      const pending = await hasPendingTasks();
-      if (pending === 0) {
-        debug(`loop:fire #${data.loopId} — no pending tasks, skipping, requesting cleanup`);
-        await cleanDoneTasks();
-        return;
-      }
-    }
-
-    await queueOrDeliverNotification(data);
+    await queueOrDeliverNotification(event as LoopFireEvent);
   });
 
   pi.events.on("monitor:started", async (event: unknown) => {
