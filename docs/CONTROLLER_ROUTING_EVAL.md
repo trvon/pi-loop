@@ -69,4 +69,4 @@ Because no critical or normal routing item failed across two consecutive passes 
 
 The initial full RPC run with `openai-codex/gpt-5.6-sol:minimal` passed all six scenarios at 100% checklist accuracy. The three workflow scenarios each repaired one invalid first attempt in the same user-request turn after incorrectly treating a state-level `loop` field as rework metadata. Their final workflow calls passed and preserved the intended route; the task and loop scenarios required no retries. This is recorded as schema-repair evidence, not hidden or counted as a controller-selection failure.
 
-A 9-second startup window is intentional. Native fallback task tools are registered after the protocol-v2 `pi-tasks` probe; prompting earlier can test tool-registration timing instead of controller judgment.
+A 9-second startup window is intentional. Native fallback task tools now register at `session_start`, before the first request, so the window no longer guards tool registration; it is kept so the protocol-v2 `pi-tasks` probe has settled before controller judgment is measured.
