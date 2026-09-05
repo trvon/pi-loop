@@ -109,6 +109,12 @@ Standalone tasks are independently completable backlog items. Related work that 
 
 pi-loop probes external `pi-tasks` through protocol-v2 RPC. When unavailable, the native provider and tools are registered. `autoTask` creates one standalone task per ordinary loop fire. `taskBacklog` adopts existing unfinished tasks and must use a recurring `tasks:created` trigger.
 
+## Graph convergence warnings
+
+Workflow summaries and `/loop` inspection show up to three warning witnesses, with an explicit omitted count. `diagnoseWorkflowGraph(run)` from `@trevonistrevon/pi-loop/api` returns full structured witnesses for closed nonterminal components, nonterminal dead ends, and a current-state terminal route cut off by already-exhausted destinations. It reuses outcome availability rules and does not mutate or reject workflows.
+
+These are warning-only structural and point-in-time checks, not a liveness proof or a prerequisite engine. A reachable exit is not mandatory; an intentional ongoing cycle may still be valid. Diagnostics do not simulate future attempt increments, leases, evidence admission, fire/expiry limits, or future revisions. Revise only when finite completion is intended, preserving the existing revision/transition authority checks.
+
 ## Monitors
 
 `MonitorCreate` spawns a detached process group, buffers bounded output, emits rate-limited progress, and records terminal status in memory. Its `timeout` is a renewable inactivity threshold: stdout/stderr bytes, JSONL progress, and `MonitorUpdate` renew the deadline; total runtime alone never stops an active monitor. `MonitorStop` sends TERM then KILL fallback. `onDone` creates a one-shot completion wake; `workflowId` pauses a workflow state's cadence until terminal monitor outcome.

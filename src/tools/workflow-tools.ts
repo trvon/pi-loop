@@ -6,6 +6,7 @@ import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.j
 import { workflowAttemptLabel, workflowDisplayDetails, workflowLeaseLabel, workflowTimingSummaryLine } from "../ui/workflow-presentation.js";
 import { admitWorkflowTransition, type WorkflowAdmissionProvider } from "../workflow-admission.js";
 import { validateWorkflowDefinition } from "../workflow-definition.js";
+import { formatWorkflowGraphWarnings } from "../workflow-graph.js";
 import { getActiveWorkflowStateLoop, getWorkflowOutcomeAvailability, type WorkflowTransitionFailure } from "../workflow-reducer.js";
 import type { WorkflowRevisionSummary } from "../workflow-revision.js";
 import { WorkflowRevisionChangeSchema } from "../workflow-schema.js";
@@ -174,6 +175,8 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
   const attempt = workflow.attemptsByState[workflow.currentState] ?? 1;
   const attemptLabel = state?.maxAttempts ? `${attempt}/${state.maxAttempts}` : String(attempt);
   let message = `${heading}\nGoal: ${entry.prompt}\n${workflowTimingSummaryLine(entry, now)}\nDefinition revision: ${workflow.definitionRevision ?? 1}\nCurrent state: ${workflow.currentState}\nTransition sequence: ${workflow.transitionSeq}\nAttempt: ${attemptLabel}`;
+  const graphWarnings = formatWorkflowGraphWarnings(workflow);
+  if (graphWarnings.length) message += `\n${graphWarnings.join("\n")}`;
   if (entry.pause) message += `\nPause cause: ${entry.pause.kind}${entry.pause.reason ? ` — ${entry.pause.reason}` : ""}`;
   if (workflow.lastTransition) message += `\n${formatLastTransitionLines(workflow.lastTransition).join("\n")}`;
   if (state?.prompt) message += `\nInstruction: ${state.prompt}`;
