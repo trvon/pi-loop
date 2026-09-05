@@ -176,6 +176,10 @@ export function createSubagentOrchestrationRuntime(
 
   function rememberEarly(event: LifecycleEvent): void {
     pruneEarlyEvents();
+    const prior = earlyEvents.get(event.id)?.event;
+    // Later terminal prose/status cannot upgrade an observed cancellation into
+    // proof of quiescence or retry safety, even before the spawn reply binds it.
+    if (prior?.status === "stopped" || prior?.status === "aborted") return;
     earlyEvents.set(event.id, { event, expiresAt: now() + EARLY_EVENT_TTL_MS });
     pruneEarlyEvents();
   }
