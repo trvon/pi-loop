@@ -159,11 +159,14 @@ describe("task-backlog-runtime predicates", () => {
     const { runtime } = setup();
     const workflow = makeLoop({ workflow: {} as LoopEntry["workflow"] });
     const orchestration = makeLoop({ taskBacklog: true, orchestration: {} as LoopEntry["orchestration"] });
+    const explicitAutoTask = makeLoop({ autoTask: true });
 
     expect(runtime.isAutoTaskWorkerLoop(workflow)).toBe(false);
     expect(runtime.isTaskBacklogLoop(workflow)).toBe(false);
     expect(runtime.isAutoTaskWorkerLoop(orchestration)).toBe(false);
     expect(runtime.isTaskBacklogLoop(orchestration)).toBe(false);
+    expect(runtime.isAutoTaskWorkerLoop(explicitAutoTask)).toBe(false);
+    expect(runtime.isTaskBacklogLoop(explicitAutoTask)).toBe(false);
   });
 
   it("finds the auto-task worker loop among many", () => {
@@ -305,10 +308,10 @@ describe("cleanupTaskBacklogLoops", () => {
     );
 
     const callOrder = (fn: unknown) => (fn as { mock: { invocationCallOrder: number[] } }).mock.invocationCallOrder[0];
-    expect(callOrder(opts.emitTaskBacklogEmpty)).toBeLessThan(callOrder(opts.removeTrigger));
     expect(callOrder(opts.removeTrigger)).toBeLessThan(callOrder(opts.recordDeletionTombstone));
     expect(callOrder(opts.recordDeletionTombstone)).toBeLessThan(callOrder(opts.deleteLoop));
     expect(callOrder(opts.deleteLoop)).toBeLessThan(callOrder(opts.emitLoopAutodeleted));
+    expect(callOrder(opts.emitLoopAutodeleted)).toBeLessThan(callOrder(opts.emitTaskBacklogEmpty));
   });
 
   it("keeps backlog loops when tasks are still pending", async () => {

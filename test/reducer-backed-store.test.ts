@@ -156,6 +156,23 @@ describe("ReducerBackedStore", () => {
       }
     });
 
+    it.each([
+      ["owner", "999999:deadbeef"],
+      [".cleanup-999999-deadbeef", "999998:deadbeef"],
+    ])("recovers the preceding directory lock format %s", (ownerName, contents) => {
+      const path = join(dir, "items.json");
+      const first = new ItemStore(path);
+      first.set("x", 1);
+      const lockPath = `${path}.lock`;
+      mkdirSync(lockPath);
+      writeFileSync(join(lockPath, ownerName), contents);
+
+      new ItemStore(path).set("x", 2);
+
+      expect(new ItemStore(path).get("x")).toEqual({ id: "x", value: 2 });
+      expect(existsSync(lockPath)).toBe(false);
+    });
+
     it("recovers a stale directory owner and publishes a complete replacement", () => {
       const path = join(dir, "items.json");
       const first = new ItemStore(path);
