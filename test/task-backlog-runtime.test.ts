@@ -285,6 +285,23 @@ describe("cleanupTaskBacklogLoops", () => {
     expect(opts.deleteLoop).not.toHaveBeenCalled();
   });
 
+  it("finishes batch retirement before publishing per-controller callbacks", async () => {
+    const loops: LoopEntry[] = [];
+    const { runtime } = setup({
+      getLoops: () => loops,
+      deleteLoop: vi.fn((id: string) => {
+        const index = loops.findIndex((loop) => loop.id === id);
+        if (index >= 0) loops.splice(index, 1);
+      }),
+      emitLoopAutodeleted: vi.fn(() => {
+        expect(loops).toHaveLength(0);
+      }),
+    });
+    loops.push(makeLoop({ id: "1" }), makeLoop({ id: "2", createdAt: 11 }));
+
+    expect(await runtime.cleanupTaskBacklogLoops()).toBe(2);
+  });
+
   it("deletes backlog loops when zero tasks are pending and emits explicit signals", async () => {
     const { runtime, opts, loops } = setup({ hasPendingTasks: vi.fn(async () => 0) });
     loops.push(makeLoop({ id: "1" }));

@@ -241,6 +241,61 @@ describe("workflow runtime wiring", () => {
     expect(sentMessages.some((item) => item.message.content.includes("Do not deliver paused work."))).toBe(false);
   });
 
+  it.each(["pause", "transition"] as const)("does not launder a late workflow %s through final delivery", async (action) => {
+    const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
+    const sessionId = `workflow-final-read-${action}`;
+    clearTestLoopStore(sessionId);
+    extension(pi as any);
+    const ctx = createCtx({ sessionId });
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
+    const originalUpdate = LoopStore.prototype.updateDynamic;
+    const originalGet = LoopStore.prototype.get;
+    let target: LoopStore | undefined;
+    let reads = 0;
+    let interposed = false;
+    vi.spyOn(LoopStore.prototype, "updateDynamic").mockImplementation(function (...args) {
+      const result = originalUpdate.apply(this, args);
+      if (result?.workflow?.currentState === "prepare") target = this;
+      return result;
+    });
+    vi.spyOn(LoopStore.prototype, "get").mockImplementation(function (id) {
+      if (this === target && ++reads === 2) {
+        interposed = true;
+        const peer = new LoopStore(loopPath);
+        if (action === "pause") peer.pause(id, "administrative", "Operator pause");
+        else {
+          const workflow = originalGet.call(peer, id)!.workflow!;
+          expect(peer.transitionWorkflow(id, { outcome: "ready", evidence: "Preparation completed." }, {
+            currentState: workflow.currentState,
+            transitionSeq: workflow.transitionSeq,
+            definitionRevision: workflow.definitionRevision,
+            activeExecutionId: workflow.activeExecution?.id,
+          }).applied).toBe(true);
+        }
+      }
+      return originalGet.call(this, id);
+    });
+
+    await toolMap.get("WorkflowCreate")!.execute!("workflow-final-read", {
+      goal: "Prepare then poll",
+      maxFires: 10,
+      definition: JSON.stringify({
+        version: 1,
+        initialState: "prepare",
+        states: {
+          prepare: { prompt: "Prepare only while active.", on: { ready: "poll" } },
+          poll: { prompt: "Poll only on cadence.", loop: { schedule: "* * * * *", maxFires: 2 }, on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      }),
+    });
+    await Promise.resolve();
+
+    expect(interposed).toBe(true);
+    expect(sentMessages).toHaveLength(0);
+  });
+
   it("post-fire bookkeeping cannot mutate an advanced cadence destination", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
     const sessionId = "workflow-bookkeeping-race-session";
