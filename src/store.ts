@@ -329,7 +329,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     if (expected && (entry.createdAt !== expected.createdAt
       || entry.updatedAt !== expected.updatedAt
       || entry.status !== expected.status
-      || entry.fireCount !== expected.fireCount
+      || (entry.fireCount ?? 0) !== expected.fireCount
       || entry.workflow?.currentState !== expected.workflowState
       || entry.workflow?.transitionSeq !== expected.workflowTransitionSeq
       || entry.workflow?.definitionRevision !== expected.workflowDefinitionRevision
