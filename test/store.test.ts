@@ -96,6 +96,19 @@ describe("LoopStore (in-memory)", () => {
     expect(store.get(entry.id)?.status).toBe("paused");
   });
 
+  it("treats a missing legacy fire count as zero in expected fire identity", () => {
+    const entry = store.create(cronTrigger, "legacy", { recurring: true });
+    const internal = store as unknown as { entries: Map<string, { fireCount?: number }> };
+    delete internal.entries.get(entry.id)?.fireCount;
+
+    expect(store.fireOrExpire(entry.id, "scheduler", entry.createdAt + 1, {
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      status: entry.status,
+      fireCount: 0,
+    }).kind).toBe("fired");
+  });
+
   it("gets a loop by ID", () => {
     store.create(cronTrigger, "test", { recurring: true });
     const entry = store.get("1");
