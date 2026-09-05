@@ -46,8 +46,8 @@ function acquireLock(lockPath: string): LockOwner {
         if ((e as NodeJS.ErrnoException).code === "EEXIST") {
           try {
             const contents = readFileSync(lockPath, "utf-8");
-            const match = /^(\d+)(?::[0-9a-f-]+)?$/.exec(contents);
-            if (match && !isProcessRunning(Number(match[1]))) {
+            const pidPrefix = /^(\d+)/.exec(contents);
+            if (contents.length > 0 && (!pidPrefix || !isProcessRunning(Number(pidPrefix[1])))) {
               try { unlinkSync(lockPath); } catch { /* another acquirer won stale cleanup */ }
               continue;
             }
