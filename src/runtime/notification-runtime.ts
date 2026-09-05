@@ -406,6 +406,11 @@ export function createNotificationRuntime(options: NotificationRuntimeOptions): 
       debug?.(`loop:fire #${notification.loopId} — session changed before delivery, dropping wake`);
       return false;
     }
+    const newer = notificationState.notificationsByKey[notification.key];
+    if (newer && newer.queueSequence > notification.queueSequence) {
+      debug?.(`loop:fire #${notification.loopId} — newer wake superseded in-flight delivery`);
+      return false;
+    }
     if (notification.expiresAt !== undefined && Date.now() >= notification.expiresAt) {
       debug?.(`loop:fire #${notification.loopId} — expiry boundary passed before delivery, dropping wake`);
       return false;

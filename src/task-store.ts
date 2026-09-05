@@ -252,7 +252,7 @@ export class TaskStore extends ReducerBackedStore<TaskEntry, TaskReducerState, T
 
   pendingCount(): number {
     let count = 0;
-    for (const t of this.entries.values()) {
+    for (const t of this.list()) {
       if (t.status === "pending" || t.status === "in_progress") count++;
     }
     return count;

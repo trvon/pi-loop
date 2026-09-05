@@ -165,6 +165,192 @@ describe("workflow runtime wiring", () => {
     vi.useRealTimers();
   });
 
+  it("stale activation cannot fire a workflow destination that disabled immediate start", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
+    const sessionId = "workflow-prefire-race-session";
+    clearTestLoopStore(sessionId);
+    extension(pi as any);
+    const ctx = createCtx({ sessionId });
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
+    const original = LoopStore.prototype.fireOrExpire;
+    let interposed = false;
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (...args) {
+      if (!interposed) {
+        interposed = true;
+        const workflow = new LoopStore(loopPath).get(String(args[0]))!.workflow!;
+        expect(new LoopStore(loopPath).transitionWorkflow(String(args[0]), {
+          outcome: "ready", evidence: "Preparation completed concurrently.",
+        }, {
+          currentState: workflow.currentState,
+          transitionSeq: workflow.transitionSeq,
+          definitionRevision: workflow.definitionRevision,
+          activeExecutionId: workflow.activeExecution?.id,
+        }).applied).toBe(true);
+      }
+      return original.apply(this, args);
+    });
+
+    await toolMap.get("WorkflowCreate")!.execute!("workflow-prefire-race", {
+      goal: "Prepare then poll",
+      definition: JSON.stringify({
+        version: 1,
+        initialState: "prepare",
+        states: {
+          prepare: { prompt: "Prepare.", on: { ready: "poll" } },
+          poll: { prompt: "Poll later.", loop: { schedule: "* * * * *", maxFires: 1 }, on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      }),
+    });
+    await flushAsync();
+
+    expect(new LoopStore(loopPath).get("1")).toMatchObject({ fireCount: 0, workflow: { currentState: "poll" } });
+    expect(sentMessages.some((item) => item.message.content.includes("Poll later."))).toBe(false);
+  });
+
+  it("post-fire administrative pause suppresses workflow delivery", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
+    const sessionId = "workflow-postfire-pause-session";
+    clearTestLoopStore(sessionId);
+    extension(pi as any);
+    const ctx = createCtx({ sessionId });
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
+    const original = LoopStore.prototype.fireOrExpire;
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (...args) {
+      const result = original.apply(this, args);
+      if (result.kind === "fired") new LoopStore(loopPath).pause(result.entry.id, "administrative", "Operator pause");
+      return result;
+    });
+
+    await toolMap.get("WorkflowCreate")!.execute!("workflow-postfire-pause", {
+      goal: "Pause before delivery",
+      definition: JSON.stringify({
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Do not deliver paused work.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      }),
+    });
+    await flushAsync();
+
+    expect(new LoopStore(loopPath).get("1")?.status).toBe("paused");
+    expect(sentMessages.some((item) => item.message.content.includes("Do not deliver paused work."))).toBe(false);
+  });
+
+  it.each(["pause", "transition"] as const)("does not launder a late workflow %s through final delivery", async (action) => {
+    const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
+    const sessionId = `workflow-final-read-${action}`;
+    clearTestLoopStore(sessionId);
+    extension(pi as any);
+    const ctx = createCtx({ sessionId });
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
+    const originalUpdate = LoopStore.prototype.updateDynamic;
+    const originalGet = LoopStore.prototype.get;
+    let target: LoopStore | undefined;
+    let reads = 0;
+    let interposed = false;
+    vi.spyOn(LoopStore.prototype, "updateDynamic").mockImplementation(function (...args) {
+      const result = originalUpdate.apply(this, args);
+      if (result?.workflow?.currentState === "prepare") target = this;
+      return result;
+    });
+    vi.spyOn(LoopStore.prototype, "get").mockImplementation(function (id) {
+      if (this === target && ++reads === 2) {
+        interposed = true;
+        const peer = new LoopStore(loopPath);
+        if (action === "pause") peer.pause(id, "administrative", "Operator pause");
+        else {
+          const workflow = originalGet.call(peer, id)!.workflow!;
+          expect(peer.transitionWorkflow(id, { outcome: "ready", evidence: "Preparation completed." }, {
+            currentState: workflow.currentState,
+            transitionSeq: workflow.transitionSeq,
+            definitionRevision: workflow.definitionRevision,
+            activeExecutionId: workflow.activeExecution?.id,
+          }).applied).toBe(true);
+        }
+      }
+      return originalGet.call(this, id);
+    });
+
+    await toolMap.get("WorkflowCreate")!.execute!("workflow-final-read", {
+      goal: "Prepare then poll",
+      maxFires: 10,
+      definition: JSON.stringify({
+        version: 1,
+        initialState: "prepare",
+        states: {
+          prepare: { prompt: "Prepare only while active.", on: { ready: "poll" } },
+          poll: { prompt: "Poll only on cadence.", loop: { schedule: "* * * * *", maxFires: 2 }, on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      }),
+    });
+    await Promise.resolve();
+
+    expect(interposed).toBe(true);
+    expect(sentMessages).toHaveLength(0);
+  });
+
+  it("post-fire bookkeeping cannot mutate an advanced cadence destination", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
+    const sessionId = "workflow-bookkeeping-race-session";
+    clearTestLoopStore(sessionId);
+    extension(pi as any);
+    const ctx = createCtx({ sessionId });
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
+    const original = LoopStore.prototype.fireOrExpire;
+    let interposed = false;
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (...args) {
+      const result = original.apply(this, args);
+      if (!interposed && result.kind === "fired" && result.entry.workflow?.currentState === "prepare") {
+        interposed = true;
+        const workflow = new LoopStore(loopPath).get(result.entry.id)!.workflow!;
+        expect(new LoopStore(loopPath).transitionWorkflow(result.entry.id, {
+          outcome: "ready",
+          evidence: "Preparation completed concurrently.",
+        }, {
+          currentState: workflow.currentState,
+          transitionSeq: workflow.transitionSeq,
+          definitionRevision: workflow.definitionRevision,
+          activeExecutionId: workflow.activeExecution?.id,
+        }).applied).toBe(true);
+      }
+      return result;
+    });
+
+    await toolMap.get("WorkflowCreate")!.execute!("workflow-bookkeeping-race", {
+      goal: "Prepare then poll",
+      definition: JSON.stringify({
+        version: 1,
+        initialState: "prepare",
+        states: {
+          prepare: { prompt: "Prepare.", on: { ready: "poll" } },
+          poll: {
+            prompt: "Poll later.",
+            loop: { schedule: "* * * * *", maxFires: 1, startImmediately: false },
+            on: { done: "done" },
+          },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      }),
+    });
+    await flushAsync();
+
+    expect(interposed).toBe(true);
+    expect(new LoopStore(loopPath).get("1")).toMatchObject({
+      status: "active",
+      dynamic: { state: "poll", awaitingUpdate: false },
+      workflow: { currentState: "poll", transitionSeq: 1 },
+    });
+    expect(sentMessages.some((item) => item.message.content.includes("Poll later."))).toBe(false);
+  });
+
   it("persists reissued work and delivers only the fresh workflow instruction", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
     extension(pi as any);
@@ -1583,6 +1769,24 @@ describe("native task fallback", () => {
 
     const result = await loopList!.execute?.("2", {});
     expect(result.content[0].text).toBe("No loops configured. Use LoopCreate to set up a schedule.");
+  });
+
+  it("delivers the final bounded idle wake after atomic controller retirement", async () => {
+    vi.stubEnv("PI_LOOP_SCOPE", "memory");
+    const { pi, toolMap, sentMessages } = createMockPi();
+    extension(pi as any);
+
+    await toolMap.get("LoopCreate")!.execute!("idle-final", {
+      trigger: "idle",
+      prompt: "Deliver the final idle iteration.",
+      triggerType: "idle",
+      maxFires: 1,
+    });
+    await Promise.resolve();
+
+    expect((await toolMap.get("LoopList")!.execute!("list", {})).content[0].text).toContain("No loops configured");
+    expect(sentMessages.filter((sent) => sent.message.content.includes("Deliver the final idle iteration."))).toHaveLength(1);
+    vi.unstubAllEnvs();
   });
 
   it("does not consume a final fire when a stale runtime cannot dispatch its wake", async () => {

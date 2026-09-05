@@ -187,6 +187,11 @@ export default function (pi: ExtensionAPI) {
     emitTaskBacklogEmpty: (payload) => {
       pi.events.emit("tasks:backlog_empty", payload);
     },
+    captureIsCurrent: () => {
+      const operationStore = store;
+      const operationGeneration = sessionGeneration;
+      return () => store === operationStore && sessionGeneration === operationGeneration;
+    },
     debug,
   });
 
@@ -324,7 +329,17 @@ export default function (pi: ExtensionAPI) {
       widget.update();
       return;
     }
-    const fireResult = store.fireOrExpire(current.id, origin);
+    const fireResult = store.fireOrExpire(current.id, origin, undefined, {
+      createdAt: current.createdAt,
+      updatedAt: current.updatedAt,
+      status: current.status,
+      fireCount: current.fireCount ?? 0,
+      workflowState: current.workflow?.currentState,
+      workflowTransitionSeq: current.workflow?.transitionSeq,
+      workflowDefinitionRevision: current.workflow?.definitionRevision,
+      workflowExecutionId: current.workflow?.activeExecution?.id,
+      workflowMonitorId: current.workflow?.waitingMonitor?.monitorId,
+    });
     if (fireResult.kind === "expired") {
       emitLoopExpired(fireResult.record.entry, fireResult.record.disposition, expirySource, fireResult.record.reason);
       return;
@@ -335,16 +350,28 @@ export default function (pi: ExtensionAPI) {
 
     const firedAt = Date.now();
     const stateLoop = fired.workflow && getActiveWorkflowStateLoop(fired.workflow);
-    const updatedEntry = fired.trigger.type === "dynamic" && !stateLoop
-      ? store.updateDynamic(fired.id, {
-          dynamic: {
-            awaitingUpdate: true,
-            nextWakeAt: undefined,
-            lastUpdatedAt: firedAt,
-          },
-        }) ?? fired
-      : fired;
-    const firedEntry = updatedEntry;
+    let firedEntry = fired;
+    if (fired.trigger.type === "dynamic" && !stateLoop) {
+      const updatedEntry = store.updateDynamic(fired.id, {
+        dynamic: {
+          awaitingUpdate: true,
+          nextWakeAt: undefined,
+          lastUpdatedAt: firedAt,
+        },
+      }, fired.workflow ? {
+        createdAt: fired.createdAt,
+        status: fired.status,
+        currentState: fired.workflow.currentState,
+        transitionSeq: fired.workflow.transitionSeq,
+        definitionRevision: fired.workflow.definitionRevision,
+        activeExecutionId: fired.workflow.activeExecution?.id,
+      } : undefined);
+      if (!updatedEntry) {
+        if (fireResult.settlement !== "deleted_by_fire_limit") return;
+      } else {
+        firedEntry = updatedEntry;
+      }
+    }
     if (retireIfExpired()) {
       activeTaskBacklogWakes.delete(current.id);
       return;
@@ -360,6 +387,7 @@ export default function (pi: ExtensionAPI) {
     if (postFireEntry?.status !== "active") {
       triggerSystem.remove(firedEntry.id);
       widget.update();
+      if (postFireEntry && postFireEntry.pause?.kind !== "controller_limit") return;
     }
 
     if (Date.now() >= firedEntry.expiresAt) {
@@ -374,10 +402,9 @@ export default function (pi: ExtensionAPI) {
       });
     }
 
-    const authoritativeEntry = store.get(firedEntry.id) ?? firedEntry;
     emitLoopFire({
-      ...authoritativeEntry,
-      prompt: promptOverride ?? authoritativeEntry.prompt,
+      ...firedEntry,
+      prompt: promptOverride ?? firedEntry.prompt,
     }, monitor);
   }
 
@@ -454,18 +481,7 @@ export default function (pi: ExtensionAPI) {
   // ── Loop fire handler — queues an in-memory notification, then injects a custom message when delivery is safe ──
 
   pi.events.on("loop:fire", async (event: unknown) => {
-    const data = event as LoopFireEvent;
-
-    if (data.autoTask) {
-      const pending = await hasPendingTasks();
-      if (pending === 0) {
-        debug(`loop:fire #${data.loopId} — no pending tasks, skipping, requesting cleanup`);
-        await cleanDoneTasks();
-        return;
-      }
-    }
-
-    await queueOrDeliverNotification(data);
+    await queueOrDeliverNotification(event as LoopFireEvent);
   });
 
   pi.events.on("monitor:started", async (event: unknown) => {

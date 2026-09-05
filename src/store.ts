@@ -84,11 +84,30 @@ function normalizePauseRecord(entry: LoopEntry): LoopPauseRecord | undefined {
   return pause;
 }
 
+function validateControllerDomain(entry: {
+  workflow?: unknown;
+  orchestration?: unknown;
+  autoTask?: boolean;
+  taskBacklog?: boolean;
+  trigger: Trigger;
+}): void {
+  if (entry.autoTask && entry.taskBacklog) {
+    throw new Error("Malformed loop controller: auto-task and task-backlog behavior are mutually exclusive");
+  }
+  if (entry.workflow && (entry.autoTask || entry.taskBacklog || entry.orchestration)) {
+    throw new Error("Malformed loop controller: workflow cannot own standalone tasks or orchestration behavior");
+  }
+  if (entry.orchestration && (entry.autoTask || entry.taskBacklog)) {
+    throw new Error("Malformed loop controller: orchestration cannot own standalone task behavior");
+  }
+  if ((entry.workflow || entry.orchestration) && entry.trigger.type !== "dynamic") {
+    throw new Error("Malformed loop controller: workflow and orchestration controllers require a dynamic trigger");
+  }
+}
+
 function normalizeLoopEntry(entry: LoopEntry): LoopEntry {
   const pause = normalizePauseRecord(entry);
-  if (entry.workflow && (entry.autoTask || entry.taskBacklog || entry.orchestration)) {
-    throw new Error("Malformed loop controller: workflow cannot own standalone task or orchestration behavior");
-  }
+  validateControllerDomain(entry);
   return {
     ...entry,
     ...(pause ? { pause } : {}),
@@ -103,8 +122,20 @@ export interface ExpiredLoopRecord {
   reason: LoopExpiryReason;
 }
 
+export interface LoopFireExpectedIdentity {
+  createdAt: number;
+  updatedAt: number;
+  status: LoopEntry["status"];
+  fireCount: number;
+  workflowState?: string;
+  workflowTransitionSeq?: number;
+  workflowDefinitionRevision?: number;
+  workflowExecutionId?: string;
+  workflowMonitorId?: string;
+}
+
 export type LoopFireResult =
-  | { kind: "fired"; entry: LoopEntry }
+  | { kind: "fired"; entry: LoopEntry; settlement?: "deleted_by_fire_limit" }
   | { kind: "expired"; record: ExpiredLoopRecord }
   | { kind: "ignored" };
 
@@ -177,15 +208,12 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       if (this.entries.size >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
       }
+      validateControllerDomain({ trigger, ...opts });
       if (opts.workflow) {
-        if (trigger.type !== "dynamic") throw new Error("Workflow loops require a dynamic trigger.");
-        if (opts.autoTask || opts.taskBacklog) throw new Error("Workflow controllers cannot create or adopt standalone tasks.");
         const validationError = validateWorkflowDefinition(opts.workflow);
         if (validationError) throw new Error(`Invalid workflow: ${validationError}`);
       }
       if (opts.orchestration) {
-        if (trigger.type !== "dynamic") throw new Error("Orchestration loops require a dynamic trigger.");
-        if (opts.workflow) throw new Error("A loop cannot own both workflow and orchestration state.");
         const validationError = validateOrchestrationDefinition(opts.orchestration.definition);
         if (validationError) throw new Error(`Invalid orchestration: ${validationError}`);
       }
@@ -289,9 +317,24 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     });
   }
 
-  private fireUnlocked(id: string, origin: LoopFireOrigin, now: number, settleExpiry: boolean): LoopFireResult {
+  private fireUnlocked(
+    id: string,
+    origin: LoopFireOrigin,
+    now: number,
+    settleExpiry: boolean,
+    expected?: LoopFireExpectedIdentity,
+  ): LoopFireResult {
     const entry = this.entries.get(id);
     if (entry?.status !== "active" || isTerminalWorkflowRun(entry?.workflow)) return { kind: "ignored" };
+    if (expected && (entry.createdAt !== expected.createdAt
+      || entry.updatedAt !== expected.updatedAt
+      || entry.status !== expected.status
+      || (entry.fireCount ?? 0) !== expected.fireCount
+      || entry.workflow?.currentState !== expected.workflowState
+      || entry.workflow?.transitionSeq !== expected.workflowTransitionSeq
+      || entry.workflow?.definitionRevision !== expected.workflowDefinitionRevision
+      || entry.workflow?.activeExecution?.id !== expected.workflowExecutionId
+      || entry.workflow?.waitingMonitor?.monitorId !== expected.workflowMonitorId)) return { kind: "ignored" };
     if (now >= entry.expiresAt) {
       const record = settleExpiry ? this.expireEntryUnlocked(id, now) : undefined;
       return record ? { kind: "expired", record } : { kind: "ignored" };
@@ -314,7 +357,12 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       ? structuredClone(fired)
       : undefined;
     if (limitReached) this.settleFireLimitUnlocked(fired, now);
-    return { kind: "fired", entry: this.entries.get(id) ?? deletedDelivery ?? fired };
+    const settled = this.entries.get(id);
+    return {
+      kind: "fired",
+      entry: settled ?? deletedDelivery ?? fired,
+      ...(!settled ? { settlement: "deleted_by_fire_limit" as const } : {}),
+    };
   }
 
   private settleFireLimitUnlocked(entry: LoopEntry, at: number): void {
@@ -349,14 +397,26 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     return result.kind === "fired" ? result.entry : undefined;
   }
 
-  fireOrExpire(id: string, origin: LoopFireOrigin = "scheduler", now?: number): LoopFireResult {
-    return this.withLock(() => this.fireUnlocked(id, origin, now ?? Date.now(), true));
+  fireOrExpire(
+    id: string,
+    origin: LoopFireOrigin = "scheduler",
+    now?: number,
+    expected?: LoopFireExpectedIdentity,
+  ): LoopFireResult {
+    return this.withLock(() => this.fireUnlocked(id, origin, now ?? Date.now(), true, expected));
   }
 
   updateMetadata(id: string, fields: { trigger?: Trigger; prompt?: string; taskBacklog?: boolean }): { entry: LoopEntry | undefined; changedFields: string[] } {
     return this.withLock(() => {
       const current = this.entries.get(id);
       if (!current) return { entry: undefined, changedFields: [] };
+
+      const candidate = {
+        ...current,
+        ...(fields.trigger !== undefined ? { trigger: fields.trigger } : {}),
+        ...(fields.taskBacklog !== undefined ? { taskBacklog: fields.taskBacklog } : {}),
+      };
+      validateControllerDomain(candidate);
 
       const changedFields: string[] = [];
       const now = Date.now();
@@ -382,9 +442,28 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
   }
 
 
-  updateDynamic(id: string, fields: { prompt?: string; dynamic: Partial<DynamicLoopState> }): LoopEntry | undefined {
+  updateDynamic(
+    id: string,
+    fields: { prompt?: string; dynamic: Partial<DynamicLoopState> },
+    expectedWorkflow?: {
+      createdAt: number;
+      status: LoopEntry["status"];
+      currentState: string;
+      transitionSeq: number;
+      definitionRevision: number;
+      activeExecutionId?: string;
+    },
+  ): LoopEntry | undefined {
     return this.withLock(() => {
-      if (!this.entries.has(id)) return undefined;
+      const entry = this.entries.get(id);
+      if (!entry) return undefined;
+      if (expectedWorkflow && (entry.createdAt !== expectedWorkflow.createdAt
+        || entry.status !== expectedWorkflow.status
+        || !entry.workflow
+        || entry.workflow.currentState !== expectedWorkflow.currentState
+        || entry.workflow.transitionSeq !== expectedWorkflow.transitionSeq
+        || entry.workflow.definitionRevision !== expectedWorkflow.definitionRevision
+        || entry.workflow.activeExecution?.id !== expectedWorkflow.activeExecutionId)) return undefined;
       this.applyReducerEvent({
         type: "LOOP_DYNAMIC_UPDATED",
         at: Date.now(),

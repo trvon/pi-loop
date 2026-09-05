@@ -233,6 +233,48 @@ describe("embedded workflow execution integration", () => {
     }
   });
 
+  it("budgets immediate cadence activation for every bounded retry", async () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const h = await setup();
+    try {
+      await h.emitExtension("agent_start", null, h.ctx);
+      await h.toolMap.get("WorkflowCreate")!.execute!("create", {
+        goal: "Retry polling",
+        definition: JSON.stringify({
+          version: 1,
+          initialState: "poll",
+          states: {
+            poll: {
+              prompt: "Poll release.",
+              maxAttempts: 2,
+              loop: { schedule: "* * * * *", maxFires: 1, startImmediately: true },
+              on: { retry: "poll", done: "done" },
+            },
+            done: { prompt: "Report success.", terminal: "completed" },
+          },
+        }),
+      });
+      expect(new LoopStore(h.loopPath).get("1")).toMatchObject({ maxFires: 3, fireCount: 1 });
+      const retried = await h.toolMap.get("WorkflowTransition")!.execute!("retry", {
+        id: "1", outcome: "retry", evidence: "Another bounded poll is required.",
+      });
+      expect(retried.content[0].text).toContain("poll → poll");
+      expect(new LoopStore(h.loopPath).get("1")).toMatchObject({
+        status: "active",
+        fireCount: 2,
+        workflow: { currentState: "poll", attemptsByState: { poll: 2 } },
+      });
+      await h.emitExtension("agent_end", null, h.ctx);
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(new LoopStore(h.loopPath).get("1")).toMatchObject({
+        fireCount: 3,
+        workflow: { stateFireCounts: { poll: 1 } },
+      });
+    } finally {
+      await h.emitExtension("session_shutdown", null, h.ctx);
+    }
+  });
+
   it("creates task-bearing workflow work before task-provider detection and leaves TaskStore empty", async () => {
     const h = await setup();
     const created = await h.toolMap.get("WorkflowCreate")!.execute!("create", {

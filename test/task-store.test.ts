@@ -294,6 +294,16 @@ describe("TaskStore (file-backed)", () => {
     expect(store2.get("2")?.subject).toBe("second");
   });
 
+  it("refreshes pending counts after a peer store writes work", () => {
+    const reader = new TaskStore(filePath);
+    const writer = new TaskStore(filePath);
+    expect(reader.pendingCount()).toBe(0);
+
+    writer.create("peer work", "must be observed");
+
+    expect(reader.pendingCount()).toBe(1);
+  });
+
   it("preserves monotonic ids after prune", () => {
     const store1 = new TaskStore(filePath);
     store1.create("done", "desc");

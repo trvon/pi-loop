@@ -96,6 +96,19 @@ describe("LoopStore (in-memory)", () => {
     expect(store.get(entry.id)?.status).toBe("paused");
   });
 
+  it("treats a missing legacy fire count as zero in expected fire identity", () => {
+    const entry = store.create(cronTrigger, "legacy", { recurring: true });
+    const internal = store as unknown as { entries: Map<string, { fireCount?: number }> };
+    delete internal.entries.get(entry.id)?.fireCount;
+
+    expect(store.fireOrExpire(entry.id, "scheduler", entry.createdAt + 1, {
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      status: entry.status,
+      fireCount: 0,
+    }).kind).toBe("fired");
+  });
+
   it("gets a loop by ID", () => {
     store.create(cronTrigger, "test", { recurring: true });
     const entry = store.get("1");
@@ -180,6 +193,42 @@ describe("LoopStore (in-memory)", () => {
       },
     })).toThrow(/workflow.*standalone tasks/i);
     expect(store.list()).toEqual([]);
+  });
+
+  it("rejects metadata that would mix workflow and standalone task authority", () => {
+    store.create({ type: "dynamic" }, "Workflow", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Work.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+    const before = store.get("1");
+
+    expect(() => store.updateMetadata("1", { taskBacklog: true })).toThrow(/workflow.*standalone/i);
+    expect(store.get("1")).toEqual(before);
+  });
+
+  it("rejects metadata that would give a workflow a standalone event trigger", () => {
+    store.create({ type: "dynamic" }, "Workflow", {
+      recurring: true,
+      workflow: {
+        version: 1,
+        initialState: "work",
+        states: {
+          work: { prompt: "Work.", on: { done: "done" } },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      },
+    });
+
+    expect(() => store.updateMetadata("1", { trigger: { type: "event", source: "tasks:created" } }))
+      .toThrow(/dynamic trigger/i);
+    expect(store.get("1")?.trigger).toEqual({ type: "dynamic" });
   });
 
   it("rejects a paused terminal transition without trusted admission", () => {

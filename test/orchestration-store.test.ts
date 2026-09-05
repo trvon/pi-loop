@@ -20,6 +20,19 @@ afterEach(() => {
 });
 
 describe("LoopStore orchestration authority", () => {
+  it.each(["autoTask", "taskBacklog"] as const)("rejects orchestration projection through %s", (flag) => {
+    const { store } = makeStore();
+    expect(() => store.create({ type: "dynamic" }, "Parallel review", {
+      recurring: true,
+      [flag]: true,
+      orchestration: {
+        owner,
+        definition: { goal: "Parallel review", work: [{ prompt: "Inspect" }] },
+      },
+    })).toThrow(/orchestration.*standalone task/i);
+    expect(store.list()).toEqual([]);
+  });
+
   it("persists the finite batch and applies orchestration CAS under the store lock", () => {
     const { path, store } = makeStore();
     const entry = store.create({ type: "dynamic" }, "Parallel review", {

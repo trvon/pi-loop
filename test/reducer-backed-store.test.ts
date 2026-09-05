@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fstatSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -134,6 +134,57 @@ describe("ReducerBackedStore", () => {
         clock.mockRestore();
         closeSync(fd);
       }
+    });
+
+    it("a live uniquely named owner fences replacement lock publication", () => {
+      const path = join(dir, "items.json");
+      const a = new ItemStore(path);
+      a.set("x", 1);
+      const before = readFileSync(path, "utf8");
+      const lockPath = `${path}.lock`;
+      mkdirSync(lockPath);
+      const claimPath = join(lockPath, `owner-${process.pid}-deadbeef`);
+      writeFileSync(claimPath, `${process.pid}:deadbeef`);
+      let tick = 0;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => (tick += 100));
+      try {
+        expect(() => new ItemStore(path).set("x", 2)).toThrow(/lock/i);
+        expect(readFileSync(path, "utf8")).toBe(before);
+        expect(readFileSync(claimPath, "utf8")).toBe(`${process.pid}:deadbeef`);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it.each([
+      ["owner", "999999:deadbeef"],
+      [".cleanup-999999-deadbeef", "999998:deadbeef"],
+    ])("recovers the preceding directory lock format %s", (ownerName, contents) => {
+      const path = join(dir, "items.json");
+      const first = new ItemStore(path);
+      first.set("x", 1);
+      const lockPath = `${path}.lock`;
+      mkdirSync(lockPath);
+      writeFileSync(join(lockPath, ownerName), contents);
+
+      new ItemStore(path).set("x", 2);
+
+      expect(new ItemStore(path).get("x")).toEqual({ id: "x", value: 2 });
+      expect(existsSync(lockPath)).toBe(false);
+    });
+
+    it("recovers a stale directory owner and publishes a complete replacement", () => {
+      const path = join(dir, "items.json");
+      const first = new ItemStore(path);
+      first.set("x", 1);
+      const lockPath = `${path}.lock`;
+      mkdirSync(lockPath);
+      writeFileSync(join(lockPath, "owner-999999-stale-owner"), "999999:stale-owner");
+
+      new ItemStore(path).set("x", 2);
+
+      expect(new ItemStore(path).get("x")).toEqual({ id: "x", value: 2 });
+      expect(existsSync(lockPath)).toBe(false);
     });
 
     it("fails closed on malformed owner text with a live PID prefix", () => {
