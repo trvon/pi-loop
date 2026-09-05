@@ -305,11 +305,12 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
       payload: { id, origin },
     });
     const fired = this.entries.get(id)!;
-    const delivered = structuredClone(fired);
-    if (atMaxFires(fired) || (fired.workflow && atWorkflowStateFireLimit(fired.workflow))) {
-      this.settleFireLimitUnlocked(fired, now);
-    }
-    return { kind: "fired", entry: this.entries.get(id) ?? delivered };
+    const limitReached = atMaxFires(fired) || Boolean(fired.workflow && atWorkflowStateFireLimit(fired.workflow));
+    const deletedDelivery = limitReached && !fired.workflow && !fired.taskBacklog
+      ? structuredClone(fired)
+      : undefined;
+    if (limitReached) this.settleFireLimitUnlocked(fired, now);
+    return { kind: "fired", entry: this.entries.get(id) ?? deletedDelivery ?? fired };
   }
 
   private settleFireLimitUnlocked(entry: LoopEntry, at: number): void {
