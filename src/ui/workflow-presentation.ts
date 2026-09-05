@@ -1,6 +1,7 @@
 import { formatLastTransitionLines } from "../loop-format.js";
 import { displayRows, type ToolDisplayDetails, type ToolDisplayTone } from "../tools/tool-result.js";
 import type { LoopEntry } from "../types.js";
+import { formatWorkflowGraphWarnings } from "../workflow-graph.js";
 import { getWorkflowOutcomeAvailability, type WorkflowOutcomeAvailability } from "../workflow-reducer.js";
 
 export type WorkflowActivityStatus = "running" | "paused" | "idle" | "stopped";
@@ -142,6 +143,7 @@ export function workflowDisplayDetails({
     ...workflowTimingLines(entry, now),
     `State: ${workflow.currentState} · revision ${workflow.definitionRevision} · transition ${workflow.transitionSeq}`,
     `Attempt: ${workflowAttemptLabel(entry)}`,
+    ...formatWorkflowGraphWarnings(workflow),
     state?.prompt ? `Instruction: ${state.prompt}` : undefined,
     workflow.activeExecution ? `Work: ${workflow.activeExecution.subject} (${workflow.activeExecution.id})` : undefined,
     `Lease: ${workflowLeaseLabel(entry, now)}`,
@@ -166,6 +168,7 @@ export function formatWorkflowInspection(entry: LoopEntry): string {
     `State: ${workflow.currentState} · attempt ${workflowAttemptLabel(entry)}`,
     `Revision: ${workflow.definitionRevision} · transition: ${workflow.transitionSeq}`,
     `Lease: ${workflowLeaseLabel(entry, now)}`,
+    ...formatWorkflowGraphWarnings(workflow),
     availability.available.length > 0 ? `Outcomes: ${availability.available.join(", ")}` : "Outcomes: none",
     availability.unavailable.length > 0
       ? `Unavailable: ${availability.unavailable.map(unavailableOutcomeLabel).join(", ")}`
