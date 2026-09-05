@@ -83,6 +83,29 @@ describe("orchestration reducer properties", () => {
     );
   });
 
+  it("never reopens or consumes cancelled multi-dispatch work under late event permutations", () => {
+    fc.assert(fc.property(fc.integer({ min: 1, max: 4 }), fc.array(fc.constantFrom("completed", "failed", "consume", "dispatch"), { maxLength: 20 }), (count, events) => {
+      let state = createOrchestrationState({ goal: "cancel", work: Array.from({ length: count }, () => ({ prompt: "work" })), concurrency: count, maxAttempts: 3 }, owner, 0);
+      const expected = () => ({ revision: state.revision, ownerRuntimeId: owner.runtimeId, generation: owner.generation });
+      for (let i = 1; i <= count; i++) {
+        state = applyChecked(state, { type: "dispatch_requested", at: i, expected: expected(), workId: String(i), dispatchId: `d${i}` });
+        state = applyChecked(state, { type: "dispatch_bound", at: i, expected: expected(), workId: String(i), dispatchId: `d${i}`, agentId: `a${i}` });
+      }
+      expect(getOrchestrationCounts(state).active).toBe(count);
+      state = applyChecked(state, { type: "cancelled", at: 10, expected: expected() });
+      const cancelled = structuredClone(state);
+      for (const event of events) {
+        state = applyChecked(state, event === "consume"
+          ? { type: "consume_recorded", at: 11, expected: expected(), agentId: "a1", consumed: true }
+          : event === "dispatch"
+            ? { type: "dispatch_requested", at: 11, expected: expected(), workId: "1", dispatchId: "retry" }
+            : { type: "dispatch_settled", at: 11, expected: expected(), agentId: "a1", outcome: event as "completed" | "failed" });
+        expect(state).toEqual(cancelled);
+      }
+      expect(state.work.every((item) => item.attemptCount === 1 && item.dispatches[0]?.consumeStatus === "unavailable")).toBe(true);
+    }), propertyOptions());
+  });
+
   it("rejects arbitrary stale revisions without mutation", () => {
     fc.assert(
       fc.property(fc.integer({ min: 2, max: 10_000 }), (staleRevision) => {

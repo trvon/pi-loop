@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_LOOP_EXPIRY_MS, expiresAtFromDuration, parseLoopDurationMs } from "./loop-expiry.js";
 import { atMaxFires, type LoopReducerEffect, type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "./loop-reducer.js";
-import { applyOrchestrationEvent, type OrchestrationEvent, validateOrchestrationDefinition, validatePersistedOrchestration } from "./orchestration-reducer.js";
+import { applyOrchestrationEvent, hasUnconfirmedDispatches, normalizeOrchestrationStops, type OrchestrationEvent, validateOrchestrationDefinition, validatePersistedOrchestration } from "./orchestration-reducer.js";
 import { ReducerBackedStore } from "./reducer-backed-store.js";
 import type { DynamicLoopState, LoopDeletionTombstone, LoopDeletionTombstoneInput, LoopEntry, LoopExpiryDisposition, LoopExpiryReason, LoopFireOrigin, LoopPauseKind, LoopPauseRecord, LoopStoreData, OrchestrationActor, OrchestrationDefinitionInput, Trigger, WorkflowDefinition, WorkflowMonitorSettlement, WorkflowMonitorWait, WorkflowRevisionFailure, WorkflowRunState, WorkflowRuntimeActor, WorkflowTerminalStatus } from "./types.js";
 import { validateWorkflowDefinition } from "./workflow-definition.js";
@@ -112,7 +112,7 @@ function normalizeLoopEntry(entry: LoopEntry): LoopEntry {
     ...entry,
     ...(pause ? { pause } : {}),
     ...(entry.workflow ? { workflow: normalizeWorkflowRunState(entry.workflow) } : {}),
-    ...(entry.orchestration ? { orchestration: validatePersistedOrchestration(entry.orchestration) } : {}),
+    ...(entry.orchestration ? { orchestration: normalizeOrchestrationStops(validatePersistedOrchestration(entry.orchestration)) } : {}),
   };
 }
 
@@ -839,7 +839,8 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
 
   delete(id: string): boolean {
     return this.withLock(() => {
-      if (!this.entries.has(id)) return false;
+      const entry = this.entries.get(id);
+      if (!entry || (entry.orchestration && hasUnconfirmedDispatches(entry.orchestration))) return false;
       this.applyReducerEvent({
         type: "LOOP_DELETED",
         at: Date.now(),
