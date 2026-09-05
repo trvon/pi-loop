@@ -15,8 +15,8 @@ function setup() {
   const maybeBootstrapTaskLoop = vi.fn(async () => false);
   const isTaskSystemReady = vi.fn(() => true);
   const cancelOrchestration = vi.fn(async (id: string, action: "pause" | "delete") => {
-    if (action === "delete") return store.delete(id);
-    return store.pause(id) !== undefined;
+    if (action === "delete") return store.delete(id) ? "deleted" as const : "retained" as const;
+    return store.pause(id) !== undefined ? "paused" as const : "rejected" as const;
   });
   registerLoopTools({
     pi,
@@ -1245,7 +1245,8 @@ describe("LoopDelete", () => {
     expect(await h.text("LoopList", {})).toContain("[pause:administrative]");
   });
 
-  it("delegates orchestration cancellation before deletion", async () => {
+  it.each([false, true])("reports orchestration tool retention honestly (%s)", async (retained) => {
+    if (retained) h.cancelOrchestration.mockResolvedValueOnce("retained");
     h.store.delete("1");
     h.store.create({ type: "dynamic" }, "Parallel review", {
       recurring: true,
@@ -1255,7 +1256,11 @@ describe("LoopDelete", () => {
       },
     });
 
-    expect(await h.text("LoopDelete", { id: "2", action: "delete" })).toBe("Orchestration #2 cancelled and deleted");
+    const output = await h.text("LoopDelete", { id: "2", action: "delete" });
+    if (retained) {
+      expect(output).toContain("retained and paused");
+      expect(output).not.toContain("cancelled and deleted");
+    } else expect(output).toBe("Orchestration #2 cancelled and deleted");
     expect(h.cancelOrchestration).toHaveBeenCalledWith("2", "delete");
   });
 
