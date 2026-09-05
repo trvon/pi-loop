@@ -165,6 +165,60 @@ describe("workflow runtime wiring", () => {
     vi.useRealTimers();
   });
 
+  it("post-fire bookkeeping cannot mutate an advanced cadence destination", async () => {
+    const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
+    extension(pi as any);
+    const sessionId = "workflow-bookkeeping-race-session";
+    const ctx = createCtx({ sessionId });
+    for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
+    const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
+    const original = LoopStore.prototype.fireOrExpire;
+    let interposed = false;
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (...args) {
+      const result = original.apply(this, args);
+      if (!interposed && result.kind === "fired" && result.entry.workflow?.currentState === "prepare") {
+        interposed = true;
+        const workflow = new LoopStore(loopPath).get(result.entry.id)!.workflow!;
+        expect(new LoopStore(loopPath).transitionWorkflow(result.entry.id, {
+          outcome: "ready",
+          evidence: "Preparation completed concurrently.",
+        }, {
+          currentState: workflow.currentState,
+          transitionSeq: workflow.transitionSeq,
+          definitionRevision: workflow.definitionRevision,
+          activeExecutionId: workflow.activeExecution?.id,
+        }).applied).toBe(true);
+      }
+      return result;
+    });
+
+    await toolMap.get("WorkflowCreate")!.execute!("workflow-bookkeeping-race", {
+      goal: "Prepare then poll",
+      definition: JSON.stringify({
+        version: 1,
+        initialState: "prepare",
+        states: {
+          prepare: { prompt: "Prepare.", on: { ready: "poll" } },
+          poll: {
+            prompt: "Poll later.",
+            loop: { schedule: "* * * * *", maxFires: 1, startImmediately: false },
+            on: { done: "done" },
+          },
+          done: { prompt: "Done.", terminal: "completed" },
+        },
+      }),
+    });
+    await flushAsync();
+
+    expect(interposed).toBe(true);
+    expect(new LoopStore(loopPath).get("1")).toMatchObject({
+      status: "active",
+      dynamic: { state: "poll", awaitingUpdate: false },
+      workflow: { currentState: "poll", transitionSeq: 1 },
+    });
+    expect(sentMessages.some((item) => item.message.content.includes("Poll later."))).toBe(false);
+  });
+
   it("persists reissued work and delivers only the fresh workflow instruction", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
     extension(pi as any);

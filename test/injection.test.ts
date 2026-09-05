@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { replyChannel, TASKS_RPC } from "../src/rpc/channels.js";
 import { createCtx, createMockPi, flushAsync } from "./helpers/mock-pi.js";
 
 describe("loop:fire custom message delivery", () => {
@@ -516,6 +517,58 @@ describe("loop:fire custom message delivery", () => {
 
     expect(sentMessages).toHaveLength(1);
     expect(sentMessages[0].message.content).toContain("Deliver after current work finishes");
+  });
+
+  it("supersession: assigns same-key wake order before asynchronous task admission completes", async () => {
+    const { pi, sentMessages, emitExtension, eventHandlers } = createMockPi();
+    const pendingRequests: Array<{ requestId: string }> = [];
+    let thirdLookupStarted!: () => void;
+    const thirdLookup = new Promise<void>((resolve) => { thirdLookupStarted = resolve; });
+    pi.events.on(TASKS_RPC.ping, ({ requestId }: { requestId: string }) => {
+      pi.events.emit(replyChannel(TASKS_RPC.ping, requestId), {
+        success: true,
+        data: { version: 2, provider: "external-test-provider" },
+      });
+    });
+    pi.events.on(TASKS_RPC.pending, (request: { requestId: string }) => {
+      pendingRequests.push(request);
+      if (pendingRequests.length === 3) thirdLookupStarted();
+    });
+    const extension = await import("../src/index.js");
+    extension.default(pi);
+
+    const ctx = createCtx(false);
+    await emitExtension("agent_start", null, ctx);
+    const fire = eventHandlers.get("loop:fire")![0]! as (event: unknown) => Promise<void>;
+    const oldWake = fire({
+      loopId: "13", prompt: "Old prompt", trigger: { type: "cron", schedule: "*/1 * * * *" },
+      timestamp: 1, autoTask: true, recurring: true,
+    });
+    const newWake = fire({
+      loopId: "13", prompt: "Latest prompt", trigger: { type: "cron", schedule: "*/1 * * * *" },
+      timestamp: 2, autoTask: true, recurring: true,
+    });
+    expect(pendingRequests).toHaveLength(2);
+
+    pi.events.emit(replyChannel(TASKS_RPC.pending, pendingRequests[1]!.requestId), {
+      success: true, data: { pending: 1 },
+    });
+    await newWake;
+    pi.events.emit(replyChannel(TASKS_RPC.pending, pendingRequests[0]!.requestId), {
+      success: true, data: { pending: 1 },
+    });
+    await oldWake;
+
+    const ended = emitExtension("agent_end", null, ctx);
+    await thirdLookup;
+    pi.events.emit(replyChannel(TASKS_RPC.pending, pendingRequests[2]!.requestId), {
+      success: true, data: { pending: 1 },
+    });
+    await ended;
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]?.message.content).toContain("Latest prompt");
+    expect(sentMessages[0]?.message.content).not.toContain("Old prompt");
   });
 
   it("dedupes buffered recurring fires by loop id and keeps the latest prompt", async () => {

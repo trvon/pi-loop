@@ -156,6 +156,43 @@ describe("notification runtime session boundary", () => {
     expect.soft(sentMessages[0]?.message.content).toContain("Adopt pending work");
   });
 
+  it("supersession: an older in-flight same-key wake cannot deliver after a newer wake queues while idle", async () => {
+    const { pi, sentMessages } = createMockPi();
+    let entered!: () => void;
+    let release!: () => void;
+    let lookupCount = 0;
+    const lookupEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const delayedLookup = new Promise<number>((resolve) => { release = () => resolve(1); });
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: () => {
+        lookupCount += 1;
+        if (lookupCount !== 1) return Promise.resolve(1);
+        entered();
+        return delayedLookup;
+      },
+      cleanDoneTasks: async () => {},
+      getHasPendingMessages: () => false,
+    });
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+
+    const oldWake = runtime.queueOrDeliverNotification({
+      loopId: "1", prompt: "Old instructions", trigger: { type: "cron", schedule: "* * * * *" },
+      timestamp: 1, autoTask: true, recurring: true,
+    });
+    await lookupEntered;
+    const newWake = runtime.queueOrDeliverNotification({
+      loopId: "1", prompt: "New instructions", trigger: { type: "cron", schedule: "* * * * *" },
+      timestamp: 2, autoTask: true, recurring: true,
+    });
+    release();
+    await Promise.all([oldWake, newWake]);
+
+    expect(sentMessages).toHaveLength(1);
+    expect(sentMessages[0]?.message.content).toContain("New instructions");
+    expect(sentMessages[0]?.message.content).not.toContain("Old instructions");
+  });
+
   it("RA-04: busy retention preserves a newer same-key wake", async () => {
     const { pi, sentMessages } = createMockPi();
     let entered!: () => void;

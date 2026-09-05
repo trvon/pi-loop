@@ -136,21 +136,21 @@ describe("ReducerBackedStore", () => {
       }
     });
 
-    it("RA-01: a live stale-cleanup claim fences replacement lock publication", () => {
+    it("a live uniquely named owner fences replacement lock publication", () => {
       const path = join(dir, "items.json");
       const a = new ItemStore(path);
       a.set("x", 1);
       const before = readFileSync(path, "utf8");
       const lockPath = `${path}.lock`;
       mkdirSync(lockPath);
-      const claimPath = join(lockPath, `.cleanup-${process.pid}-held`);
-      writeFileSync(claimPath, "999999:stale-owner");
+      const claimPath = join(lockPath, `owner-${process.pid}-held`);
+      writeFileSync(claimPath, `${process.pid}:held`);
       let tick = 0;
       const clock = vi.spyOn(Date, "now").mockImplementation(() => (tick += 100));
       try {
         expect(() => new ItemStore(path).set("x", 2)).toThrow(/lock/i);
         expect(readFileSync(path, "utf8")).toBe(before);
-        expect(readFileSync(claimPath, "utf8")).toBe("999999:stale-owner");
+        expect(readFileSync(claimPath, "utf8")).toBe(`${process.pid}:held`);
       } finally {
         clock.mockRestore();
       }
@@ -162,7 +162,7 @@ describe("ReducerBackedStore", () => {
       first.set("x", 1);
       const lockPath = `${path}.lock`;
       mkdirSync(lockPath);
-      writeFileSync(join(lockPath, "owner"), "999999:stale-owner");
+      writeFileSync(join(lockPath, "owner-999999-stale-owner"), "999999:stale-owner");
 
       new ItemStore(path).set("x", 2);
 

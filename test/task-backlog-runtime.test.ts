@@ -155,6 +155,17 @@ describe("task-backlog-runtime predicates", () => {
     expect(runtime.isTaskBacklogLoop(makeLoop({ prompt: "x", taskBacklog: false }))).toBe(false);
   });
 
+  it("never classifies workflow or orchestration controllers as backlog workers", () => {
+    const { runtime } = setup();
+    const workflow = makeLoop({ workflow: {} as LoopEntry["workflow"] });
+    const orchestration = makeLoop({ taskBacklog: true, orchestration: {} as LoopEntry["orchestration"] });
+
+    expect(runtime.isAutoTaskWorkerLoop(workflow)).toBe(false);
+    expect(runtime.isTaskBacklogLoop(workflow)).toBe(false);
+    expect(runtime.isAutoTaskWorkerLoop(orchestration)).toBe(false);
+    expect(runtime.isTaskBacklogLoop(orchestration)).toBe(false);
+  });
+
   it("finds the auto-task worker loop among many", () => {
     const { runtime, loops } = setup();
     loops.push(makeLoop({ id: "7", prompt: "unrelated", trigger: { type: "cron", schedule: "*/5 * * * *" } }));
@@ -335,5 +346,24 @@ describe("evaluateTaskBacklog", () => {
     const result = await runtime.evaluateTaskBacklog(undefined, 0);
     expect(result.created).toBe(false);
     expect(result.cleaned).toBe(1);
+  });
+
+  it("does not let native evaluation delete a rebound controller", async () => {
+    let resolvePending: ((pending: number) => void) | undefined;
+    const pending = new Promise<number>((resolve) => { resolvePending = resolve; });
+    let current = true;
+    const { runtime, loops, opts } = setup({
+      hasPendingTasks: vi.fn(() => pending),
+      captureIsCurrent: () => () => current,
+    });
+    loops.push(makeLoop({ id: "1", createdAt: 10 }));
+
+    const evaluation = runtime.evaluateTaskBacklog();
+    current = false;
+    resolvePending?.(0);
+
+    expect(await evaluation).toEqual({ created: false, cleaned: 0 });
+    expect(loops).toHaveLength(1);
+    expect(opts.deleteLoop).not.toHaveBeenCalled();
   });
 });
