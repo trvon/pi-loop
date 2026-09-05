@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { LoopStore } from "../../src/store.js";
 import { TaskStore } from "../../src/task-store.js";
 import type { TaskStatus } from "../../src/task-types.js";
 import { propertyOptions } from "./config.js";
@@ -35,6 +36,54 @@ function normalizedTasks(store: TaskStore): ModelTask[] {
     status,
   }));
 }
+
+describe("workflow store properties", () => {
+  it("never persists more fires than the selected controller cap", () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom("workflow-wide", "state-local"),
+        fc.integer({ min: 1, max: 8 }),
+        fc.integer({ min: 1, max: 16 }),
+        (limitKind, limit, attempts) => {
+          const directory = mkdtempSync(join(tmpdir(), "pi-loop-workflow-property-"));
+          const path = join(directory, "loops.json");
+          try {
+            const store = new LoopStore(path);
+            const entry = store.create({ type: "dynamic" }, "Poll", {
+              recurring: true,
+              maxFires: limitKind === "workflow-wide" ? limit : limit + attempts + 1,
+              workflow: {
+                version: 1,
+                initialState: "poll",
+                states: {
+                  poll: {
+                    prompt: "Poll.",
+                    loop: {
+                      schedule: "* * * * *",
+                      ...(limitKind === "state-local" ? { maxFires: limit } : {}),
+                    },
+                    on: { done: "done" },
+                  },
+                  done: { prompt: "Done.", terminal: "completed" },
+                },
+              },
+            });
+
+            for (let index = 0; index < attempts; index++) new LoopStore(path).fire(entry.id);
+
+            const persisted = new LoopStore(path).get(entry.id);
+            expect(persisted?.fireCount).toBe(Math.min(attempts, limit));
+            expect(persisted?.workflow?.stateFireCounts.poll).toBe(Math.min(attempts, limit));
+            expect(persisted?.status).toBe(attempts >= limit ? "paused" : "active");
+          } finally {
+            rmSync(directory, { recursive: true, force: true });
+          }
+        },
+      ),
+      propertyOptions(30, 100),
+    );
+  });
+});
 
 describe("task store properties", () => {
   it("preserves randomized command sequences across every reopen", () => {

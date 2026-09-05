@@ -129,8 +129,22 @@ const WorkflowBlockerClaimSchema = Type.Object({
 });
 
 function workflowDefaultMaxFires(definition: WorkflowDefinition): number {
-  const loopBudget = Object.values(definition.states).reduce((total, state) => total + (state.loop?.maxFires ?? 0), 0);
-  return loopBudget > 0 ? loopBudget : 30;
+  let automaticFires = 0;
+  let hasCadence = false;
+  let hasUnboundedCadence = false;
+  for (const state of Object.values(definition.states)) {
+    if (state.terminal) continue;
+    if (state.loop) {
+      hasCadence = true;
+      if (state.loop.maxFires === undefined) hasUnboundedCadence = true;
+      else automaticFires += state.loop.maxFires;
+    } else {
+      automaticFires += state.maxAttempts ?? 1;
+    }
+  }
+  // Preserve the historical 30-wake allowance for ordinary-only workflows
+  // and unbounded cadence while reserving capacity for every activation.
+  return hasCadence ? Math.max(1, automaticFires + (hasUnboundedCadence ? 30 : 0)) : 30;
 }
 
 function stateLoopStartsImmediately(entry: LoopEntry): boolean {
