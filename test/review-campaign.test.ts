@@ -19,6 +19,18 @@ describe("bounded review campaign reference policy", () => {
     expect({ policy, evidence }).toEqual(before);
   });
 
+  it("rejects policies unable to fund every mandatory partition", () => {
+    expect(evaluateReviewCampaign({ ...policy, maxCalls: policy.partitions.length - 1 }, complete()))
+      .toEqual({ status: "incomplete", reasons: ["invalid policy"], blockers: [] });
+    expect(evaluateReviewCampaign({ ...policy, maxCalls: policy.partitions.length }, { ...complete(), calls: policy.partitions.length }))
+      .toEqual({ status: "clean", reasons: [], blockers: [] });
+  });
+
+  it("normalizes final gate and closure reasons consistently", () => {
+    expect(evaluateReviewCampaign(policy, { ...complete(), gatesPassed: false, closurePassed: false }))
+      .toEqual({ status: "incomplete", reasons: ["final closure missing", "final gates missing"], blockers: [] });
+  });
+
   it.each(["failed", "skipped"] as const)("does not convert all-%s discovery to a dry success", (outcome) => {
     const evidence = complete();
     evidence.partitions = evidence.partitions.map((p) => ({ ...p, outcome }));
