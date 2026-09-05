@@ -27,7 +27,7 @@ Notification buffers and monitor process handles are memory-only. Orchestration 
 - `src/rpc/`: vendored cross-extension RPC contract
 - `src/ui/`: status widget and tool rendering
 
-File-backed stores use PID locks, unique temporary snapshots, fsync, atomic rename, and previous-snapshot recovery. Corrupt state fails visibly when no valid snapshot exists.
+File-backed stores use PID locks, unique temporary snapshots, fsync, atomic snapshot rename, and previous-snapshot recovery. Lock publication never replaces a destination: an initialized PID/UUID owner file is hard-linked into directory scaffolding, and a writer enters only when its claim is the sole directory entry. Scaffolding alone grants no authority. Contenders withdraw only their own claims; recovery reclaims individually dead owner claims while live or unknown entries remain fences. Legacy file/directory owners stay supported. This protocol requires local-filesystem hard links and coherent directory enumeration; arbitrary network filesystems are not guaranteed. Corrupt state fails visibly when no valid snapshot exists.
 
 ## Scope
 

@@ -29,7 +29,7 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { LoopStore } from "../src/store.js";
 
 const dirs: string[] = [];
@@ -113,6 +113,19 @@ describe("non-replacing initialized lock claims", () => {
     f.store.create({ type: "dynamic" }, "owner", {});
     expect(publications).toBe(1);
     expect(f.store.list().map((entry) => entry.prompt)).toEqual(["original", "owner"]);
+    expect(existsSync(f.lockPath)).toBe(false);
+  });
+
+  it("retries APFS EINVAL when empty scaffolding disappears during publication", () => {
+    const f = fixture();
+    hooks.beforePublish = (lockPath) => {
+      hooks.beforePublish = undefined;
+      rmdirSync(lockPath);
+      throw Object.assign(new Error("scaffolding disappeared during link"), { code: "EINVAL", syscall: "link" });
+    };
+    f.store.create({ type: "dynamic" }, "retried", {});
+    expect(hooks.beforePublish).toBeUndefined();
+    expect(f.store.list()).toHaveLength(2);
     expect(existsSync(f.lockPath)).toBe(false);
   });
 

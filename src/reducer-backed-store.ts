@@ -85,7 +85,20 @@ function removeStaleDirectoryLock(lockPath: string, token: string): boolean {
     if (names.includes("owner") && abandonedUpgrade) {
       unlinkSync(join(lockPath, abandonedUpgrade));
     }
-    return false;
+    // Contenders may die together before either observes exclusive ownership.
+    // Reclaim only dead UUID claims; live and unknown entries remain fences.
+    let removed = false;
+    for (const name of names) {
+      if (!name.startsWith("owner-")) continue;
+      const ownerPath = join(lockPath, name);
+      if (!staleOwner(readFileSync(ownerPath, "utf-8"))) continue;
+      unlinkSync(ownerPath);
+      removed = true;
+    }
+    if (removed) {
+      try { rmdirSync(lockPath); } catch { /* remaining claims still fence the directory */ }
+    }
+    return removed;
   } catch {
     return false;
   }
@@ -117,6 +130,27 @@ function removeStaleLock(lockPath: string, token: string): boolean {
   }
 }
 
+function publishOwnerClaim(lockPath: string, candidatePath: string, owner: LockOwner): boolean {
+  const ownerPath = join(lockPath, owner.ownerName);
+  let exclusive = false;
+  try {
+    try { mkdirSync(lockPath); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    // Scaffolding grants no authority. The hard link exposes initialized bytes
+    // without replacing any existing path, including Windows legacy file locks.
+    linkSync(join(candidatePath, owner.ownerName), ownerPath);
+    const names = readdirSync(lockPath);
+    exclusive = names.length === 1 && names[0] === owner.ownerName;
+    return exclusive;
+  } finally {
+    // A live admitted owner always remains visible to subsequent contenders.
+    if (!exclusive) {
+      try { unlinkSync(ownerPath); } catch { /* this UUID claim was not published */ }
+    }
+  }
+}
+
 function acquireLock(lockPath: string): LockOwner {
   mkdirSync(dirname(lockPath), { recursive: true });
   const token = randomUUID();
@@ -130,24 +164,21 @@ function acquireLock(lockPath: string): LockOwner {
   try {
     for (let i = 0; i < LOCK_MAX_RETRIES; i++) {
       try {
-        // Renaming a complete non-empty directory publishes ownership atomically.
-        // Unique owner names make stale cleanup conditional on the inspected identity.
-        renameSync(candidatePath, lockPath);
-        return owner;
+        if (publishOwnerClaim(lockPath, candidatePath, owner)) return owner;
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        if (code === "EEXIST" || code === "ENOTDIR" || code === "ENOTEMPTY" || code === "EPERM" || code === "EACCES") {
-          if (removeStaleLock(lockPath, token)) continue;
-          const start = Date.now();
-          while (Date.now() - start < LOCK_RETRY_MS) { /* busy wait */ }
-          continue;
-        }
-        throw error;
+        // APFS can report EINVAL, rather than ENOENT, when another contender
+        // removes empty scaffolding while linkSync resolves its destination.
+        const vanishedScaffolding = code === "EINVAL" && (error as NodeJS.ErrnoException).syscall === "link";
+        if (!vanishedScaffolding && code !== "EEXIST" && code !== "ENOTDIR" && code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EPERM" && code !== "EACCES") throw error;
       }
+      if (removeStaleLock(lockPath, token)) continue;
+      const start = Date.now();
+      while (Date.now() - start < LOCK_RETRY_MS) { /* busy wait */ }
     }
     throw new Error(`Failed to acquire lock: ${lockPath}`);
   } finally {
-    try { rmSync(candidatePath, { recursive: true, force: true }); } catch { /* published candidate was renamed */ }
+    try { rmSync(candidatePath, { recursive: true, force: true }); } catch { /* private candidate cleanup is best effort */ }
   }
 }
 

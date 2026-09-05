@@ -76,7 +76,7 @@ See `docs/REFERENCE.md` for the public contract.
 
 Reducer-backed stores use:
 
-- `O_EXCL` PID locks with stale-owner detection;
+- initialized PID/UUID owner claims published by exclusive hard link, with sole-claim admission and stale-owner detection;
 - unique temporary snapshots;
 - file fsync, atomic rename, and directory fsync;
 - previous-snapshot recovery;
