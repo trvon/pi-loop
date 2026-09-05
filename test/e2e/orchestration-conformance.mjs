@@ -55,7 +55,7 @@ let cancellationId;
 let completionDeleted = false;
 let cancellationCreated = false;
 let cancellationDeleteSent = false;
-let cancellationDeleted = false;
+let cancellationRetained = false;
 let cancellationObservedActive = false;
 let completionCleanupSent = false;
 let cancellationCreateSent = false;
@@ -114,10 +114,13 @@ function validate() {
     if (!/Output:\s*provider-owned/.test(text)) throw new Error(`work ${workId} did not preserve provider-owned completion`);
   }
   if (!cancellationObservedActive) throw new Error("cancellation controller was not observed with one active worker");
-  if (!completionDeleted || !cancellationDeleted) throw new Error("both orchestration controllers must be deleted");
+  if (!completionDeleted || !cancellationRetained) throw new Error("completed batch must be deleted and cancellation uncertainty retained");
   if (extensionErrors.length > 0) throw new Error(`extension errors: ${extensionErrors.map((item) => item.error).join("; ")}`);
   const loops = readPersistedLoops();
-  if (loops.length !== 0) throw new Error(`expected an empty persisted LoopStore, found ${loops.length} loop(s)`);
+  const retained = loops.find((entry) => entry.id === cancellationId);
+  if (loops.length !== 1 || retained?.status !== "paused" || retained.orchestration?.status !== "cancelled") throw new Error("cancelled controller not durably retained and paused");
+  const dispatch = retained.orchestration.work[0]?.dispatches[0];
+  if (!dispatch?.agentId || dispatch.status !== "uncertain" || dispatch.consumeStatus !== "unavailable") throw new Error("missing non-consumable cancellation identity");
   return { loops };
 }
 
@@ -199,7 +202,7 @@ function maybeAdvance() {
     }, 500);
     return;
   }
-  if (cancellationDeleted) {
+  if (cancellationRetained) {
     try {
       resolveOutcome?.(validate());
     } catch (error) {
@@ -254,13 +257,14 @@ child.stdout.on("data", (chunk) => {
         const workId = text.match(/Work #(\d+)/)?.[1];
         if (workId) completedWork.set(workId, text);
       }
-      if (event.toolName === "LoopList" && cancellationId && text.includes(`#${cancellationId}`) && /\b1 running\b/.test(text)) {
-        cancellationObservedActive = true;
+      if (event.toolName === "LoopList" && cancellationId) {
+        const entry = readPersistedLoops().find((item) => item.id === cancellationId);
+        cancellationObservedActive = entry?.orchestration?.work.some((item) => item.status === "active") === true;
       }
       if (event.toolName === "LoopDelete") {
         const id = controllerId(text);
-        if (id === completionId) completionDeleted = true;
-        if (id === cancellationId) cancellationDeleted = true;
+        if (id === completionId) completionDeleted = text.includes("cancelled and deleted");
+        if (id === cancellationId) cancellationRetained = text.includes("retained and paused") && text.includes("termination is unconfirmed");
       }
     }
     if (event.type === "agent_settled") {
@@ -281,7 +285,7 @@ const outcome = new Promise((resolveResult, rejectResult) => {
     rejectResult(error);
   };
   child.once("exit", (code, signal) => {
-    if (cancellationDeleted) return;
+    if (cancellationRetained) return;
     rejectOutcome(new Error(`pi exited before orchestration completion (code=${code}, signal=${signal})`));
   });
 });

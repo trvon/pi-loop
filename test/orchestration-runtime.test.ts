@@ -129,10 +129,11 @@ describe("subagent orchestration runtime", () => {
 
   it.each(["ack", "error", "stopped-event"])("retains cancellation uncertainty after %s without consume or retry", async (mode) => {
     let h: ReturnType<typeof setup>;
+    let statusAtStop: string | undefined;
     const rpc = vi.fn(async (channel: string) => {
       if (channel === "subagents:rpc:spawn") return { id: "still-executing" };
       if (channel === "subagents:rpc:stop") {
-        expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.status).toBe("uncertain");
+        statusAtStop = h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.status;
         if (mode === "error") throw new Error("stop unavailable");
         if (mode === "stopped-event") h.pi.events.emit("subagents:failed", { id: "still-executing", status: "stopped" });
       }
@@ -141,6 +142,7 @@ describe("subagent orchestration runtime", () => {
     h = setup({ workCount: 1, maxAttempts: 3, rpc });
     await h.runtime.pump();
     await h.runtime.cancel(h.entry.id, "delete");
+    expect(statusAtStop).toBe("uncertain");
     expect(h.store.get(h.entry.id)).toMatchObject({
       status: "paused", orchestration: { status: "cancelled", work: [{
         status: "cancelled", dispatches: [{ agentId: "still-executing", status: "uncertain", consumeStatus: "unavailable" }],
