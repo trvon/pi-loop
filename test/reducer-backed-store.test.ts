@@ -136,6 +136,24 @@ describe("ReducerBackedStore", () => {
       }
     });
 
+    it("fails closed on malformed owner text with a live PID prefix", () => {
+      const path = join(dir, "items.json");
+      const a = new ItemStore(path);
+      a.set("x", 1);
+      const before = readFileSync(path, "utf8");
+      const lockPath = `${path}.lock`;
+      writeFileSync(lockPath, `${process.pid}:`);
+      let tick = 0;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => (tick += 100));
+      try {
+        expect(() => new ItemStore(path).set("x", 2)).toThrow(/lock/i);
+        expect(readFileSync(path, "utf8")).toBe(before);
+        expect(readFileSync(lockPath, "utf8")).toBe(`${process.pid}:`);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
     it("persists through withLock and reloads from disk", () => {
       const path = join(dir, "items.json");
       const a = new ItemStore(path);
