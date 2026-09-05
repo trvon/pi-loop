@@ -40,6 +40,22 @@ describe("workflow convergence diagnostics", () => {
     expect(diagnoseWorkflowGraph(workflow)).toEqual([]);
   });
 
+  it("keeps exhausted-route witnesses free of legacy unbounded self-loops", () => {
+    const workflow = run({
+      a: { prompt: "A", maxAttempts: 2, on: { retry: "a", next: "b" } },
+      b: { prompt: "B", maxAttempts: 1, on: { done: "done" } },
+      done: { prompt: "Done", terminal: "completed" },
+    });
+    // Older runs can retain self-loops that today's creation validator rejects.
+    delete workflow.definition.states.a!.maxAttempts;
+    workflow.attemptsByState.b = 1;
+    const before = structuredClone(workflow);
+    expect(diagnoseWorkflowGraph(workflow)).toEqual([
+      { code: "exhausted_route", states: ["a"], edges: [{ from: "a", outcome: "next", to: "b" }] },
+    ]);
+    expect(workflow).toEqual(before);
+  });
+
   it("does not call an exhausted optional branch a prerequisite trap", () => {
     const workflow = run({ a: { prompt: "A", on: { via: "b", done: "done" } }, b: { prompt: "B", maxAttempts: 1, on: { done: "done" } }, done: { prompt: "Done", terminal: "completed" } });
     workflow.attemptsByState.b = 1;

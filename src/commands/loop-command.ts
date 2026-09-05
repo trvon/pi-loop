@@ -215,7 +215,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
 
         if (entry.orchestration && (action === "x Delete" || action === "- Pause")) {
           const result = await cancelOrchestration?.(entry.id, action === "x Delete" ? "delete" : "pause") ?? "rejected";
-          ui.notify(orchestrationCancellationMessage(entry.id, result), result === "deleted" ? "info" : "warning");
+          ui.notify(orchestrationCancellationMessage(entry.id, result), result === "rejected" ? "error" : result === "deleted" ? "info" : "warning");
           return viewLoops(ui);
         }
         if (action === "x Delete") {
