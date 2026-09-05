@@ -75,4 +75,5 @@ export type {
   WorkflowTerminalStatus,
   WorkflowTransitionRecord,
 } from "./types.js";
+export { diagnoseWorkflowGraph, type WorkflowGraphWarning } from "./workflow-graph.js";
 export type { WorkflowRevisionInput, WorkflowRevisionResult, WorkflowRevisionSummary } from "./workflow-revision.js";

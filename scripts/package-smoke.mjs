@@ -42,6 +42,11 @@ try {
   const packedApi = await import(pathToFileURL(join(temporaryDirectory, "package", "dist", "api.js")).href);
   assert.equal(typeof packedRoot.default, "function", "packed root must load as the Pi extension");
   assert.equal(typeof packedApi.TaskStore, "function", "packed api must load TaskStore");
+  assert.equal(typeof packedApi.diagnoseWorkflowGraph, "function", "packed api must expose graph diagnostics");
+  assert.deepEqual(packedApi.diagnoseWorkflowGraph({
+    definition: { version: 1, initialState: "work", states: { work: { prompt: "Work" } } },
+    currentState: "work", attemptsByState: { work: 1 },
+  }), [{ code: "dead_end", states: ["work"] }]);
 
   console.log(`package smoke passed (${paths.length} files)`);
 } finally {
