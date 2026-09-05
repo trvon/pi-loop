@@ -941,6 +941,15 @@ describe("MonitorManager", () => {
   });
 
   it.skipIf(process.platform === "win32")("times out the shell's background child process", async () => {
+    const realSetTimeout = global.setTimeout;
+    let expire!: () => void;
+    vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms !== 25) return realSetTimeout(fn, ms, ...args);
+      // Gate the real timeout path on readiness, not host process-start latency.
+      // Output renews the deadline, so invoke only the latest captured callback.
+      expire = () => { if (typeof fn === "function") fn(...args); };
+      return { unref: vi.fn() } as any;
+    }) as typeof setTimeout);
     const child = startBackgroundChild(25);
     const stopped = new Promise<void>((resolve) => {
       pi.events.on("monitor:finished", (event: { monitorId?: string; status?: string }) => {
@@ -950,6 +959,7 @@ describe("MonitorManager", () => {
 
     try {
       await child.ready;
+      expire();
       await stopped;
       await new Promise<void>((resolve) => setTimeout(resolve, 250));
       expect(existsSync(child.marker)).toBe(false);
