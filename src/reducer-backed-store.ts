@@ -47,7 +47,7 @@ function acquireLock(lockPath: string): LockOwner {
           try {
             const contents = readFileSync(lockPath, "utf-8");
             const match = /^(\d+)(?::[0-9a-f-]+)?$/.exec(contents);
-            if (contents.length > 0 && (!match || !isProcessRunning(Number(match[1])))) {
+            if (match && !isProcessRunning(Number(match[1]))) {
               try { unlinkSync(lockPath); } catch { /* another acquirer won stale cleanup */ }
               continue;
             }
