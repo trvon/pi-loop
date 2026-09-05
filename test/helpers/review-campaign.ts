@@ -35,7 +35,7 @@ export function evaluateReviewCampaign(policy: ReviewPolicy, evidence: ReviewEvi
   if (!policy.snapshot || policy.partitions.length === 0
     || new Set(policy.partitions).size !== policy.partitions.length
     || policy.partitions.some((id) => !id)
-    || !Number.isSafeInteger(policy.maxCalls) || policy.maxCalls < 1
+    || !Number.isSafeInteger(policy.maxCalls) || policy.maxCalls < policy.partitions.length
     || !Number.isSafeInteger(policy.maxRepairBatches) || policy.maxRepairBatches < 0) {
     return { status: "incomplete", reasons: ["invalid policy"], blockers: [] };
   }
@@ -73,5 +73,5 @@ export function evaluateReviewCampaign(policy: ReviewPolicy, evidence: ReviewEvi
   }
   if (!evidence.gatesPassed) reasons.push("final gates missing");
   if (!evidence.closurePassed) reasons.push("final closure missing");
-  return { status: reasons.length ? "incomplete" : "clean", reasons, blockers: [] };
+  return { status: reasons.length ? "incomplete" : "clean", reasons: [...new Set(reasons)].sort(), blockers: [] };
 }
