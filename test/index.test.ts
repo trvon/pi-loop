@@ -604,6 +604,38 @@ describe("native task fallback", () => {
     expect(list.content[0].text).toContain("No loops configured");
   });
 
+  it("registers native task tools at session_start so the first request already carries them", async () => {
+    const { pi, toolMap, commandMap, emitExtension } = createMockPi();
+    const registerTool = vi.spyOn(pi, "registerTool");
+    extension(pi as any);
+    await Promise.resolve();
+    expect(toolMap.has("TaskCreate")).toBe(false);
+
+    await emitExtension("session_start", { type: "session_start", reason: "startup" }, createCtx({ sessionId: "prefix-stable-session" }));
+
+    expect(toolMap.has("TaskCreate")).toBe(true);
+    expect(toolMap.has("TaskList")).toBe(true);
+    expect(toolMap.has("TaskUpdate")).toBe(true);
+    expect(toolMap.has("TaskDelete")).toBe(true);
+    expect(commandMap.has("tasks")).toBe(true);
+
+    const registrations = registerTool.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(6100);
+    expect(registerTool.mock.calls.length).toBe(registrations);
+  });
+
+  it("does not register native task tools at session_start when pi-tasks responds", async () => {
+    const { pi, toolMap, commandMap, emitExtension } = createMockPi({ respondToTaskPing: true });
+    extension(pi as any);
+    await Promise.resolve();
+
+    await emitExtension("session_start", { type: "session_start", reason: "startup" }, createCtx({ sessionId: "external-provider-session" }));
+    await vi.advanceTimersByTimeAsync(6100);
+
+    expect(toolMap.has("TaskCreate")).toBe(false);
+    expect(commandMap.has("tasks")).toBe(false);
+  });
+
   it("registers native task tools when pi-tasks is unavailable", async () => {
     const { pi, toolMap, commandMap } = createMockPi();
 
