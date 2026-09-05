@@ -65,7 +65,7 @@ describe("non-replacing initialized lock claims", () => {
     writeFileSync(f.lockPath, contents);
     const inode = statSync(f.lockPath).ino;
     hooks.replaceLegacy = true;
-    expect(() => f.store.create({ type: "dynamic" }, "must not enter")).toThrow(/lock/i);
+    expect(() => f.store.create({ type: "dynamic" }, "must not enter", {})).toThrow(/lock/i);
     expect(readFileSync(f.lockPath, "utf8")).toBe(contents);
     expect(statSync(f.lockPath).ino).toBe(inode);
     expectUnchanged(f);
@@ -79,7 +79,7 @@ describe("non-replacing initialized lock claims", () => {
       if (existsSync(lockPath)) rmdirSync(lockPath);
       writeFileSync(lockPath, `${process.pid}:late-legacy`);
     };
-    expect(() => f.store.create({ type: "dynamic" }, "must not enter")).toThrow(/lock/i);
+    expect(() => f.store.create({ type: "dynamic" }, "must not enter", {})).toThrow(/lock/i);
     expect(hooks.beforePublish).toBeUndefined();
     expect(readFileSync(f.lockPath, "utf8")).toBe(`${process.pid}:late-legacy`);
     expectUnchanged(f);
@@ -93,7 +93,7 @@ describe("non-replacing initialized lock claims", () => {
       mkdirSync(lockPath);
       writeFileSync(join(lockPath, `owner-${process.pid}-replacement`), `${process.pid}:replacement`);
     };
-    expect(() => f.store.create({ type: "dynamic" }, "must not enter")).toThrow(/lock/i);
+    expect(() => f.store.create({ type: "dynamic" }, "must not enter", {})).toThrow(/lock/i);
     expect(readdirSync(f.lockPath)).toEqual([`owner-${process.pid}-replacement`]);
     expectUnchanged(f);
   });
@@ -106,11 +106,11 @@ describe("non-replacing initialized lock claims", () => {
       publications++;
       expect(readFileSync(ownerPath, "utf8")).toMatch(new RegExp(`^${process.pid}:[0-9a-f-]+$`));
       const contender = new LoopStore(f.path);
-      expect(() => contender.create({ type: "dynamic" }, "contender")).toThrow(/lock/i);
+      expect(() => contender.create({ type: "dynamic" }, "contender", {})).toThrow(/lock/i);
       expect(readFileSync(f.path, "utf8")).toBe(f.before);
       expect(existsSync(ownerPath)).toBe(true);
     };
-    f.store.create({ type: "dynamic" }, "owner");
+    f.store.create({ type: "dynamic" }, "owner", {});
     expect(publications).toBe(1);
     expect(f.store.list().map((entry) => entry.prompt)).toEqual(["original", "owner"]);
     expect(existsSync(f.lockPath)).toBe(false);
@@ -122,10 +122,10 @@ describe("non-replacing initialized lock claims", () => {
       hooks.afterPublish = undefined;
       throw Object.assign(new Error("publication inspection failed"), { code: "EIO" });
     };
-    expect(() => f.store.create({ type: "dynamic" }, "must not enter")).toThrow(/inspection/);
+    expect(() => f.store.create({ type: "dynamic" }, "must not enter", {})).toThrow(/inspection/);
     expectUnchanged(f);
     expect(!existsSync(f.lockPath) || readdirSync(f.lockPath).length === 0).toBe(true);
-    f.store.create({ type: "dynamic" }, "recovered");
+    f.store.create({ type: "dynamic" }, "recovered", {});
     expect(f.store.list()).toHaveLength(2);
   });
 
@@ -136,11 +136,11 @@ describe("non-replacing initialized lock claims", () => {
     writeFileSync(join(f.lockPath, "owner-999998-dead-b"), "999998:dead-b");
     if (live) writeFileSync(join(f.lockPath, `owner-${process.pid}-live`), `${process.pid}:live`);
     if (live) {
-      expect(() => f.store.create({ type: "dynamic" }, "must not enter")).toThrow(/lock/i);
+      expect(() => f.store.create({ type: "dynamic" }, "must not enter", {})).toThrow(/lock/i);
       expect(readdirSync(f.lockPath)).toEqual([`owner-${process.pid}-live`]);
       expectUnchanged(f);
     } else {
-      f.store.create({ type: "dynamic" }, "recovered");
+      f.store.create({ type: "dynamic" }, "recovered", {});
       expect(f.store.list()).toHaveLength(2);
       expect(existsSync(f.lockPath)).toBe(false);
     }
