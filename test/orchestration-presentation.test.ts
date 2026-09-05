@@ -36,11 +36,11 @@ describe("orchestration presentation", () => {
     const entry = createEntry();
     const state = entry.orchestration!;
 
-    expect(orchestrationStatusLabel(state.status)).toBe("running");
-    expect(orchestrationWorkStatusLabel(state.work[0]!.status)).toBe("queued");
-    expect(orchestrationProgressLabel(state)).toBe("0/2 complete · 0 running · 2 queued");
+    expect(orchestrationStatusLabel(state.status)).toBe("active");
+    expect(orchestrationWorkStatusLabel(state.work[0]!.status)).toBe("pending");
+    expect(orchestrationProgressLabel(state)).toBe("0/2 complete · 0 reserved · 2 pending");
     expect(orchestrationTone(state)).toBe("info");
-    expect(orchestrationWakeHeading("1", state)).toBe("[pi-loop] Orchestration #1 running.");
+    expect(orchestrationWakeHeading("1", state)).toBe("[pi-loop] Orchestration #1 active.");
   });
 
   it("makes failures and uncertainty prominent without leaking reducer vocabulary", () => {
@@ -55,6 +55,22 @@ describe("orchestration presentation", () => {
     expect(text).toContain("0/2 complete · 0 running · 1 failed · 1 uncertain");
     expect(text).not.toContain("needs_attention");
     expect(orchestrationTone(state)).toBe("warning");
+  });
+
+  it.each(["spawning", "queued", "running"] as const)("separates reservations from %s observations", (status) => {
+    const entry = createEntry();
+    const state = entry.orchestration!;
+    const item = state.work[0]!;
+    item.status = "active";
+    item.attemptCount = 1;
+    item.dispatches.push({ dispatchId: "d", attempt: 1, ownerRuntimeId: "runtime", ownerGeneration: 1, status, requestedAt: 1, consumeStatus: "none", consumeAttempts: 0 });
+    const before = structuredClone(entry);
+    const label = status === "spawning" ? "starting" : status === "running" ? "reported running" : "queued";
+    expect(orchestrationProgressLabel(state)).toBe(`0/2 complete · 1 reserved · 1 ${label} · 1 pending`);
+    expect(orchestrationWorkText(entry, item)).toContain("Work #1 · reserved");
+    expect(orchestrationWorkText(entry, item)).toContain(`Dispatch 1: ${label}`);
+    expect(orchestrationControllerText(entry)).toContain("last reported");
+    expect(entry).toEqual(before);
   });
 
   it("presents provider-owned output as ownership rather than consume state", () => {
