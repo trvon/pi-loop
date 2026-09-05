@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerLoopCommand } from "../src/commands/loop-command.js";
 import { LoopStore } from "../src/store.js";
 import { createCtx, createMockPi } from "./helpers/mock-pi.js";
+import { currentWorkflowIdentity } from "./helpers/workflow-identity.js";
 
 function setup() {
   const { pi, commandMap } = createMockPi();
@@ -494,7 +495,7 @@ describe("registerLoopCommand", () => {
         observations: ["test@1"],
         decidedAt: 1,
       },
-    });
+    }, currentWorkflowIdentity(h.store, "1"));
     h.store.pause("1");
 
     const actionChoices: string[][] = [];

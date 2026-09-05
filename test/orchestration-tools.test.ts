@@ -28,6 +28,42 @@ describe("subagent orchestration tools", () => {
     h = setup();
   });
 
+  it("AUD-02: creation rejects a provider probe completed after session rebinding", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      const { pi, toolMap } = createMockPi();
+      const a = new LoopStore();
+      const b = new LoopStore();
+      let store = a;
+      let actor = { sessionId: "session-a", runtimeId: "runtime-a", generation: 1 };
+      let entered!: () => void;
+      let release!: (reply: { version: number }) => void;
+      const probeEntered = new Promise<void>((resolve) => { entered = resolve; });
+      const probeReply = new Promise<{ version: number }>((resolve) => { release = resolve; });
+      registerSubagentOrchestrationTools({
+        pi,
+        getStore: () => store,
+        getScope: () => "session",
+        getPiLoopEnv: () => undefined,
+        getActor: () => actor,
+        probeSubagents: () => { entered(); return probeReply; },
+        updateWidget: vi.fn(),
+      });
+      const creating = toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "A review", work: [{ prompt: "Inspect A" }] });
+      await probeEntered;
+      store = b;
+      actor = { sessionId: "session-b", runtimeId: "runtime-b", generation: 2 };
+      release({ version: 2 });
+      const result = await creating;
+
+      expect.soft(a.list()).toEqual([]);
+      expect.soft(b.list()).toEqual([]);
+      expect.soft(result.details).toMatchObject({ tone: "error" });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("creates a finite session-scoped batch without arming a second scheduler", async () => {
     const created = await h.result("OrchestrationCreate", {
       goal: "Review release readiness",

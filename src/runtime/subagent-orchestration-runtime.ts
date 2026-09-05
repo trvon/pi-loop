@@ -39,6 +39,8 @@ interface EarlyLifecycleEvent {
   expiresAt: number;
 }
 
+class AmbiguousSpawnReplyError extends Error {}
+
 export interface SubagentOrchestrationRuntimeOptions {
   events: RpcEventBus;
   getStore: () => LoopStore;
@@ -389,7 +391,7 @@ export function createSubagentOrchestrationRuntime(
         },
       }, SPAWN_TIMEOUT_MS);
       const reply = asSpawnReply(rawReply);
-      if (!reply) throw new Error("Invalid subagent spawn reply");
+      if (!reply) throw new AmbiguousSpawnReplyError("Invalid subagent spawn reply; the worker start outcome is unknown");
       if (!isContextCurrent()) {
         await stopUnboundSpawn(reply.id);
         return;
@@ -435,7 +437,7 @@ export function createSubagentOrchestrationRuntime(
       const fresh = freshEntry.orchestration;
       if (!fresh || !actorOwns(fresh)) return;
       const message = error instanceof Error ? error.message : String(error);
-      const uncertain = error instanceof RpcError && error.timedOut;
+      const uncertain = error instanceof AmbiguousSpawnReplyError || (error instanceof RpcError && error.timedOut);
       getStore().mutateOrchestration(entry.id, {
         type: uncertain ? "dispatch_uncertain" : "dispatch_spawn_failed",
         at: now(),
@@ -468,26 +470,37 @@ export function createSubagentOrchestrationRuntime(
   }
 
   async function retireExpiredOrchestration(entry: LoopEntry, timestamp: number): Promise<boolean> {
-    const current = getStore().get(entry.id);
+    const operationStore = getStore();
+    const operationActor = getActor();
+    const operationGeneration = getGeneration();
+    const operationIsCurrent = () => {
+      const currentActor = getActor();
+      return active && isContextCurrent() && getStore() === operationStore
+        && getGeneration() === operationGeneration
+        && currentActor?.sessionId === operationActor?.sessionId
+        && currentActor?.runtimeId === operationActor?.runtimeId
+        && currentActor?.generation === operationActor?.generation;
+    };
+    const current = operationStore.get(entry.id);
     const state = current?.orchestration;
-    if (!current || !state || timestamp < current.expiresAt) return false;
+    if (!current || !state || timestamp < current.expiresAt || !operationIsCurrent()) return false;
     const agentIds = state.work.flatMap((item) => {
       const agentId = currentDispatch(item)?.agentId;
       return agentId ? [agentId] : [];
     });
     if (state.status !== "cancelled") {
-      getStore().mutateOrchestration(current.id, {
+      operationStore.mutateOrchestration(current.id, {
         type: "cancelled",
         at: timestamp,
         expected: expected(state),
       });
     }
-    const expired = getStore().expireEntry(current.id, timestamp);
+    const expired = operationStore.expireEntry(current.id, timestamp);
     if (expired) onExpired(expired.entry, expired.disposition);
     for (const key of wakeQueued) {
       if (key.startsWith(`${current.id}:`)) wakeQueued.delete(key);
     }
-    await Promise.all(agentIds.map((agentId) => stopCancelledAgent(current.id, agentId)));
+    await Promise.all(agentIds.map((agentId) => stopCancelledAgent(current.id, agentId, operationIsCurrent)));
     updateWidget();
     return true;
   }
@@ -628,34 +641,50 @@ export function createSubagentOrchestrationRuntime(
     updateWidget();
   }
 
-  async function stopCancelledAgent(loopId: string, agentId: string): Promise<void> {
+  async function stopCancelledAgent(
+    loopId: string,
+    agentId: string,
+    operationIsCurrent: () => boolean,
+  ): Promise<void> {
     try {
       await rpcCall(STOP_RPC, { agentId }, STOP_TIMEOUT_MS);
-      consumeSettled(loopId, agentId);
+      if (operationIsCurrent()) consumeSettled(loopId, agentId);
     } catch {
       // The controller is already fenced as cancelled; stop is best effort.
     }
   }
 
   async function cancel(id: string, action: "pause" | "delete"): Promise<boolean> {
-    const entry = getStore().get(id);
+    const operationStore = getStore();
+    const operationActor = getActor();
+    const operationGeneration = getGeneration();
+    const operationIsCurrent = () => {
+      const currentActor = getActor();
+      return active && isContextCurrent() && getStore() === operationStore
+        && getGeneration() === operationGeneration
+        && currentActor?.sessionId === operationActor?.sessionId
+        && currentActor?.runtimeId === operationActor?.runtimeId
+        && currentActor?.generation === operationActor?.generation;
+    };
+    const entry = operationStore.get(id);
     const state = entry?.orchestration;
-    if (!entry || !state) return false;
+    if (!entry || !state || !operationIsCurrent()) return false;
     const agentIds: string[] = [];
     for (const item of state.work) {
       const agentId = currentDispatch(item)?.agentId;
       if (agentId) agentIds.push(agentId);
     }
-    const result = getStore().mutateOrchestration(id, {
+    const result = operationStore.mutateOrchestration(id, {
       type: "cancelled",
       at: now(),
       expected: expected(state),
     });
     if (!result.applied) return false;
-    await Promise.all(agentIds.map((agentId) => stopCancelledAgent(id, agentId)));
+    await Promise.all(agentIds.map((agentId) => stopCancelledAgent(id, agentId, operationIsCurrent)));
     await drainDispatches(id);
-    if (action === "delete") getStore().delete(id);
-    else getStore().pause(id, "administrative", "orchestration cancelled by operator");
+    if (!operationIsCurrent()) return true;
+    if (action === "delete") operationStore.delete(id);
+    else operationStore.pause(id, "administrative", "orchestration cancelled by operator");
     for (const key of wakeQueued) {
       if (key.startsWith(`${id}:`)) wakeQueued.delete(key);
     }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
 import type { Trigger } from "../src/types.js";
+import { currentMonitorAttachmentIdentity, currentWorkflowIdentity } from "./helpers/workflow-identity.js";
 
 const cronTrigger: Trigger = { type: "cron", schedule: "*/5 * * * *" };
 
@@ -158,7 +159,7 @@ describe("CronScheduler", () => {
     scheduler.pump(Date.now());
     expect(fired).toHaveLength(0);
 
-    const transitioned = store.transitionWorkflow(entry.id, { outcome: "ready" });
+    const transitioned = store.transitionWorkflow(entry.id, { outcome: "ready" }, currentWorkflowIdentity(store, entry.id));
     if (!transitioned.entry) throw new Error("expected workflow transition");
     scheduler.remove(entry.id);
     scheduler.add(transitioned.entry);
@@ -230,10 +231,7 @@ describe("CronScheduler", () => {
         },
       },
     });
-    const attached = store.attachWorkflowMonitor(entry.id, "18", {
-      stateId: "validate",
-      transitionSeq: 0,
-    });
+    const attached = store.attachWorkflowMonitor(entry.id, "18", currentMonitorAttachmentIdentity(store, entry.id));
     if (!attached) throw new Error("expected workflow monitor attachment");
 
     scheduler.add(attached);

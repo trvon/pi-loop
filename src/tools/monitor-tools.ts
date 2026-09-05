@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { LoopEntry, MonitorEntry, MonitorProgress, Trigger, WorkflowMonitorWait } from "../types.js";
+import type { LoopEntry, MonitorEntry, MonitorProgress, Trigger, WorkflowMonitorWait, WorkflowRuntimeActor } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { displayRows, textResult } from "./tool-result.js";
 
@@ -24,7 +24,11 @@ interface LoopStoreLike {
   attachWorkflowMonitor(
     id: string,
     monitorId: string,
-    expected: Pick<WorkflowMonitorWait, "stateId" | "transitionSeq">,
+    expected: Pick<WorkflowMonitorWait, "stateId" | "transitionSeq"> & {
+      definitionRevision: number;
+      activeExecutionId?: string;
+    },
+    actor?: WorkflowRuntimeActor,
   ): LoopEntry | undefined;
 }
 
@@ -37,6 +41,7 @@ export interface MonitorToolsOptions {
   getStore: () => LoopStoreLike;
   getMonitorManager: () => MonitorManagerLike;
   getTriggerSystem: () => TriggerSystemLike;
+  getActor: () => WorkflowRuntimeActor | undefined;
   updateWidget: () => void;
   handleMonitorDoneLoop: (doneLoop: LoopEntry, monitorId: string) => void;
   handleWorkflowMonitorWait: (entry: LoopEntry) => void;
@@ -70,6 +75,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     getStore,
     getMonitorManager,
     getTriggerSystem,
+    getActor,
     updateWidget,
     handleMonitorDoneLoop,
     handleWorkflowMonitorWait,
@@ -122,7 +128,9 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
       const attached = store.attachWorkflowMonitor(workflow.id, entry.id, {
         stateId: workflow.workflow.currentState,
         transitionSeq: workflow.workflow.transitionSeq,
-      });
+        definitionRevision: workflow.workflow.definitionRevision,
+        activeExecutionId: workflow.workflow.activeExecution?.id,
+      }, getActor());
       if (!attached) {
         void getMonitorManager().stop(entry.id);
         return Promise.resolve(textResult(`Monitor #${entry.id} stopped because workflow #${workflow.id} changed before ownership could be attached.`, {

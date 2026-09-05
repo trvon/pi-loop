@@ -542,6 +542,7 @@ export default function (pi: ExtensionAPI) {
     getStore: () => store,
     getMonitorManager: () => monitorManager,
     getTriggerSystem: () => triggerSystem,
+    getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId } : undefined,
     updateWidget: () => {
       widget.update();
     },

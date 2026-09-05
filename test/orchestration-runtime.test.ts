@@ -11,7 +11,7 @@ type RpcMock = Mock<RpcFn>;
 
 function setup(options: { workCount?: number; concurrency?: number; maxAttempts?: number; rpc?: RpcMock; env?: string } = {}) {
   const { pi } = createMockPi();
-  const store = new LoopStore();
+  let store = new LoopStore();
   let actor = { ...owner };
   let now = 1_000;
   let contextCurrent = true;
@@ -72,6 +72,7 @@ function setup(options: { workCount?: number; concurrency?: number; maxAttempts?
     drain,
     setNow(value: number) { now = value; },
     setActor(value: OrchestrationActor) { actor = value; },
+    setStore(value: LoopStore) { store = value; },
     setContextCurrent(value: boolean) { contextCurrent = value; },
   };
 }
@@ -82,6 +83,73 @@ function spawnCalls(rpc: RpcMock) {
 
 describe("subagent orchestration runtime", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it.each(["delete", "pause"] as const)("AUD-01: delayed %s cancellation cannot mutate a rebound session controller", async (action) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      let entered!: () => void;
+      let release!: () => void;
+      const stopEntered = new Promise<void>((resolve) => { entered = resolve; });
+      const stopReply = new Promise<void>((resolve) => { release = resolve; });
+      const rpc = vi.fn(async (channel: string) => {
+        if (channel === "subagents:rpc:spawn") return { id: "agent-a" };
+        if (channel === "subagents:rpc:stop") {
+          entered();
+          await stopReply;
+        }
+        return undefined;
+      });
+      const h = setup({ workCount: 1, rpc });
+      await h.runtime.pump();
+      expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.agentId).toBe("agent-a");
+      const cancelling = h.runtime.cancel(h.entry.id, action);
+      await stopEntered;
+      h.setActor({ ...owner, generation: owner.generation + 1 });
+      await h.runtime.shutdown();
+
+      const b = new LoopStore();
+      const actorB = { sessionId: "session-b", runtimeId: "runtime-b", generation: owner.generation + 1 };
+      const replacement = b.create({ type: "dynamic" }, "Session B review", {
+        recurring: true,
+        orchestration: { owner: actorB, definition: { goal: "Session B review", work: [{ prompt: "Inspect B" }] } },
+      });
+      expect(replacement.id).toBe(h.entry.id);
+      const before = structuredClone(b.get(replacement.id));
+      h.setStore(b);
+      h.setActor(actorB);
+      release();
+      await cancelling;
+
+      expect(b.get(replacement.id)).toEqual(before);
+      h.runtime.dispose();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("AUD-09: malformed spawn success stays uncertain without starting a second worker", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      const started: string[] = [];
+      const rpc = vi.fn(async (channel: string) => {
+        if (channel === "subagents:rpc:spawn") {
+          started.push(`worker-${started.length + 1}`);
+          return {};
+        }
+        return undefined;
+      });
+      const h = setup({ workCount: 1, concurrency: 1, maxAttempts: 2, rpc });
+      await h.runtime.pump();
+      expect.soft(started).toEqual(["worker-1"]);
+      expect.soft(h.store.get(h.entry.id)?.orchestration?.work[0]).toMatchObject({ status: "uncertain", attemptCount: 1 });
+      await h.runtime.pump();
+      expect.soft(started).toEqual(["worker-1"]);
+      expect.soft(h.store.get(h.entry.id)?.orchestration?.work[0]).toMatchObject({ status: "uncertain", attemptCount: 1 });
+      h.runtime.dispose();
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
   it("retires an expired batch before dispatching workers", async () => {
     const h = setup();

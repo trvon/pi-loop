@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { LoopStore } from "../src/store.js";
 import { registerMonitorTools } from "../src/tools/monitor-tools.js";
 import type { MonitorEntry } from "../src/types.js";
-import { createMockPi } from "./helpers/mock-pi.js";
+import { createCtx, createMockPi } from "./helpers/mock-pi.js";
 
 function makeMonitor(overrides: Partial<MonitorEntry> = {}): MonitorEntry {
   return {
@@ -23,7 +23,7 @@ function setup(managerOverrides: Partial<{
   list: () => MonitorEntry[];
   stop: (id: string) => Promise<boolean>;
   updateProgress: (id: string, progress: any) => MonitorEntry | undefined;
-}> = {}, defaultExpiryMs?: number) {
+}> = {}, defaultExpiryMs?: number, actor = { sessionId: "test-session", runtimeId: "test-runtime" }) {
   const { pi, toolMap } = createMockPi();
   const store = new LoopStore(undefined, defaultExpiryMs);
   let nextId = 1;
@@ -47,6 +47,7 @@ function setup(managerOverrides: Partial<{
     getStore: () => store as any,
     getMonitorManager: () => manager as any,
     getTriggerSystem: () => triggerSystem,
+    getActor: () => actor,
     updateWidget: vi.fn(),
     handleMonitorDoneLoop,
     handleWorkflowMonitorWait,
@@ -189,6 +190,42 @@ describe("MonitorCreate", () => {
     expect(monitorId).toBe("1");
     expect(doneLoop.recurring).toBe(false);
     expect(doneLoop.trigger).toMatchObject({ type: "event", source: "monitor:done" });
+  });
+
+  it("AUD-08: a foreign runtime cannot attach a monitor to work under another live lease", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
+      const h = setup({}, undefined, foreign);
+      const owner = { sessionId: "session-a", runtimeId: "runtime-a" };
+      const workflow = h.store.create({ type: "dynamic" }, "Validate release", {
+        recurring: true,
+        actor: owner,
+        workflow: {
+          version: 1,
+          initialState: "validate",
+          states: {
+            validate: {
+              prompt: "Run validation.",
+              task: { subject: "Validate", description: "Validate the release." },
+              on: { passed: "done" },
+            },
+            done: { prompt: "Report success.", terminal: "completed" },
+          },
+        },
+      });
+      expect(h.store.claimWorkflowExecution(workflow.id, foreign).claimed).toBe(false);
+      const before = structuredClone(h.store.get(workflow.id)?.workflow);
+      await h.toolMap.get("MonitorCreate")!.execute!("foreign-monitor", {
+        command: "npm test",
+        workflowId: workflow.id,
+      }, undefined, undefined, createCtx({ sessionId: foreign.sessionId }));
+
+      expect.soft(h.store.get(workflow.id)?.workflow?.waitingMonitor).toBeUndefined();
+      expect.soft(h.store.get(workflow.id)?.workflow).toEqual(before);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("binds a monitor to an active workflow and suppresses its cadence", async () => {

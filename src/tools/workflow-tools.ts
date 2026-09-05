@@ -73,7 +73,7 @@ interface WorkflowStoreLike {
   transitionWorkflow(
     id: string,
     input: { outcome: string; evidence?: string; admission?: WorkflowAdmissionRecord; actor?: WorkflowRuntimeActor },
-    expected?: { currentState: string; transitionSeq: number; definitionRevision: number; activeExecutionId?: string },
+    expected: { currentState: string; transitionSeq: number; definitionRevision: number; activeExecutionId?: string },
   ): {
     entry?: LoopEntry;
     applied: boolean;
