@@ -52,6 +52,38 @@ describe("notification runtime session boundary", () => {
     }
   });
 
+  it("drops a buffered wake after the controller fires again", async () => {
+    const { pi, sentMessages } = createMockPi();
+    const store = new LoopStore();
+    const entry = store.create({ type: "cron", schedule: "* * * * *" }, "Old work", {
+      recurring: true,
+      maxFires: 3,
+    });
+    const first = store.fire(entry.id)!;
+    const runtime = createNotificationRuntime({
+      pi,
+      hasPendingTasks: async () => 0,
+      cleanDoneTasks: async () => {},
+      getHasPendingMessages: () => false,
+      getLoop: (id) => store.get(id),
+    });
+    runtime.syncRuntimeState({ agentRunning: true });
+    await runtime.queueOrDeliverNotification({
+      loopId: first.id,
+      prompt: first.prompt,
+      trigger: first.trigger,
+      timestamp: first.updatedAt,
+      recurring: true,
+      controllerStatus: first.status,
+      fireCount: first.fireCount,
+    });
+    store.fire(entry.id);
+    runtime.syncRuntimeState({ agentRunning: false, hasPendingMessages: false });
+    await runtime.flushPendingNotifications({ ignorePendingMessages: true });
+
+    expect(sentMessages).toEqual([]);
+  });
+
   it.each(["one-shot", "fire-cap"] as const)("delivers a legitimate %s final fire after controller cleanup", async (kind) => {
     const { pi, sentMessages } = createMockPi();
     const store = new LoopStore();
