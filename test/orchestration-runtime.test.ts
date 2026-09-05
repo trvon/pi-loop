@@ -169,6 +169,27 @@ describe("subagent orchestration runtime", () => {
     expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume")).toEqual([]);
   });
 
+  it.each([
+    ["stopped", "failed"], ["stopped", "completed"], ["stopped", "started"],
+    ["aborted", "failed"], ["aborted", "completed"], ["aborted", "started"],
+  ] as const)("preserves early %s uncertainty when %s arrives before binding", async (status, later) => {
+    let h: ReturnType<typeof setup>;
+    const rpc = vi.fn(async (channel: string) => {
+      if (channel !== "subagents:rpc:spawn") return undefined;
+      h.pi.events.emit("subagents:failed", { id: "early-stop", status });
+      h.pi.events.emit(`subagents:${later}`, { id: "early-stop", status: later, result: "late" });
+      return { id: "early-stop" };
+    });
+    h = setup({ workCount: 1, maxAttempts: 3, rpc });
+    await h.runtime.pump();
+    await h.runtime.pump();
+    expect(h.store.get(h.entry.id)?.orchestration?.work[0]).toMatchObject({
+      status: "uncertain", attemptCount: 1, dispatches: [{ status: "uncertain", consumeStatus: "unavailable" }],
+    });
+    expect(spawnCalls(rpc)).toHaveLength(1);
+    expect(rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume")).toEqual([]);
+  });
+
   it("AUD-09: malformed spawn success stays uncertain without starting a second worker", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
     try {
