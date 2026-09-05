@@ -127,6 +127,46 @@ describe("subagent orchestration runtime", () => {
     }
   });
 
+  it.each(["ack", "error", "stopped-event"])("retains cancellation uncertainty after %s without consume or retry", async (mode) => {
+    let h: ReturnType<typeof setup>;
+    const rpc = vi.fn(async (channel: string) => {
+      if (channel === "subagents:rpc:spawn") return { id: "still-executing" };
+      if (channel === "subagents:rpc:stop") {
+        expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]?.status).toBe("uncertain");
+        if (mode === "error") throw new Error("stop unavailable");
+        if (mode === "stopped-event") h.pi.events.emit("subagents:failed", { id: "still-executing", status: "stopped" });
+      }
+      return undefined;
+    });
+    h = setup({ workCount: 1, maxAttempts: 3, rpc });
+    await h.runtime.pump();
+    await h.runtime.cancel(h.entry.id, "delete");
+    expect(h.store.get(h.entry.id)).toMatchObject({
+      status: "paused", orchestration: { status: "cancelled", work: [{
+        status: "cancelled", dispatches: [{ agentId: "still-executing", status: "uncertain", consumeStatus: "unavailable" }],
+      }] },
+    });
+    const before = structuredClone(h.store.get(h.entry.id));
+    for (const kind of ["completed", "failed"] as const) {
+      h.pi.events.emit(`subagents:${kind}`, { id: "still-executing", status: kind, result: "late" });
+    }
+    await h.runtime.recover();
+    expect(h.store.get(h.entry.id)).toEqual(before);
+    expect(h.store.delete(h.entry.id)).toBe(false);
+    expect(spawnCalls(rpc)).toHaveLength(1);
+    expect(rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume")).toEqual([]);
+  });
+
+  it.each(["stopped", "aborted"])("does not retry provider %s lifecycle evidence", async (status) => {
+    const h = setup({ workCount: 1, maxAttempts: 3 });
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:failed", { id: "agent-1", status });
+    await h.runtime.pump();
+    expect(h.store.get(h.entry.id)?.orchestration?.work[0]).toMatchObject({ status: "uncertain", attemptCount: 1 });
+    expect(spawnCalls(h.rpc)).toHaveLength(1);
+    expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume")).toEqual([]);
+  });
+
   it("AUD-09: malformed spawn success stays uncertain without starting a second worker", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
     try {
@@ -475,25 +515,27 @@ describe("subagent orchestration runtime", () => {
     await Promise.all([pumping, cancelling]);
 
     expect(h.rpc.mock.calls).toContainEqual(["subagents:rpc:stop", { agentId: "agent-after-cancel" }, 1_000]);
-    expect(h.rpc.mock.calls).toContainEqual(["subagents:rpc:consume", { agentId: "agent-after-cancel" }, 1_000]);
-    expect(h.store.get(h.entry.id)).toBeUndefined();
+    expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:consume")).toEqual([]);
+    expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]).toMatchObject({
+      agentId: "agent-after-cancel", status: "uncertain", consumeStatus: "unavailable",
+    });
   });
 
-  it("fences cancellation before stopping and deleting owned workers", async () => {
+  it("fences cancellation and retains unconfirmed owned workers", async () => {
     const h = setup({ workCount: 2, concurrency: 2 });
     await h.runtime.pump();
 
-    expect(await h.runtime.cancel(h.entry.id, "delete")).toBe(true);
+    expect(await h.runtime.cancel(h.entry.id, "delete")).toBe("retained");
 
     expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:stop")).toHaveLength(2);
-    expect(h.store.get(h.entry.id)).toBeUndefined();
+    expect(h.store.get(h.entry.id)?.status).toBe("paused");
   });
 
   it("pauses a cancelled controller after best-effort stop", async () => {
     const h = setup({ workCount: 1 });
     await h.runtime.pump();
 
-    expect(await h.runtime.cancel(h.entry.id, "pause")).toBe(true);
+    expect(await h.runtime.cancel(h.entry.id, "pause")).toBe("retained");
 
     expect(h.store.get(h.entry.id)).toMatchObject({ status: "paused", orchestration: { status: "cancelled" } });
   });
@@ -520,7 +562,7 @@ describe("subagent orchestration runtime", () => {
     });
   });
 
-  it("persists teardown settlement before consuming upstream evidence", async () => {
+  it("persists teardown uncertainty without consuming upstream evidence", async () => {
     let h: ReturnType<typeof setup>;
     let statusAtConsume: string | undefined;
     const rpc = vi.fn(async (channel: string) => {
@@ -534,16 +576,19 @@ describe("subagent orchestration runtime", () => {
     await h.runtime.shutdown();
     await Promise.resolve();
 
-    expect(statusAtConsume).toBe("interrupted");
+    expect(statusAtConsume).toBeUndefined();
+    expect(h.store.get(h.entry.id)?.orchestration?.work[0]?.dispatches[0]).toMatchObject({
+      status: "uncertain", consumeStatus: "unavailable",
+    });
   });
 
-  it("stops owned workers on shutdown and leaves proved stops retryable", async () => {
+  it("requests stop on shutdown without treating acknowledgement as quiescence", async () => {
     const h = setup({ workCount: 2, concurrency: 2 });
     await h.runtime.pump();
 
     await h.runtime.shutdown();
 
     expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:stop")).toHaveLength(2);
-    expect(h.store.get(h.entry.id)?.orchestration?.work.map((item) => item.status)).toEqual(["pending", "pending"]);
+    expect(h.store.get(h.entry.id)?.orchestration?.work.map((item) => item.status)).toEqual(["uncertain", "uncertain"]);
   });
 });
