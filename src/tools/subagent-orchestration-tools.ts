@@ -155,8 +155,8 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         kind: "orchestration",
         action: "create",
         tone: "success",
-        summary: `Orchestration #${entry.id} running · ${orchestrationProgressLabel(entry.orchestration!)}`,
-        expanded: [`Goal: ${definition.goal}`, `Status: running`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
+        summary: `Orchestration #${entry.id} active · ${orchestrationProgressLabel(entry.orchestration!)}`,
+        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
       });
     },
   });

@@ -251,10 +251,10 @@ describe("LoopWidget status rendering", () => {
       expect(store.claimWorkflowExecution(entry.id, { sessionId: "session", runtimeId: "runtime" }, 60).claimed).toBe(true);
 
       widget.update();
-      expect(latestStatusCall()?.[1]).toContain("#1 running 0s");
+      expect(latestStatusCall()?.[1]).toContain("#1 claimed 0s");
 
       vi.advanceTimersByTime(59_999);
-      expect(latestStatusCall()?.[1]).toContain("#1 running 0s");
+      expect(latestStatusCall()?.[1]).toContain("#1 claimed 0s");
 
       vi.advanceTimersByTime(1);
       expect(latestStatusCall()).toEqual([
@@ -282,7 +282,7 @@ describe("LoopWidget status rendering", () => {
     widget.update();
     expect(latestStatusCall()).toEqual([
       "loops",
-      "◇ 1 orchestration | #1 running · 0/2 complete · 0 running · 2 queued",
+      "◇ 1 orchestration | #1 active · 0/2 complete · 0 reserved · 2 pending",
     ]);
   });
 
@@ -302,7 +302,7 @@ describe("LoopWidget status rendering", () => {
 
     expect(latestStatusCall()).toEqual([
       "loops",
-      "◇ 1 orchestration | #1 complete · 1/1 complete · 0 running",
+      "◇ 1 orchestration | #1 complete · 1/1 complete · 0 reserved",
     ]);
   });
 

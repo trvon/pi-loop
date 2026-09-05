@@ -455,7 +455,7 @@ describe("notification runtime session boundary", () => {
 
     expect(sentMessages[0].message.content).toContain("Orchestration #7 complete");
     expect(sentMessages[0].message.content).toContain("Status: complete");
-    expect(sentMessages[0].message.content).toContain("Progress: 1/1 complete · 0 running");
+    expect(sentMessages[0].message.content).toContain("Progress: 1/1 complete · 0 reserved");
     expect(sentMessages[0].message.content).not.toContain("requires parent attention");
     expect(delivered).toHaveBeenCalledWith({ loopId: "7", orchestrationWakeSequence: 3 });
   });
