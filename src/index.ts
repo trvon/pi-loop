@@ -478,6 +478,15 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // Registered after the session runtime hooks so the session store is bound
+  // when provider readiness adopts persisted backlog loops — the same order the
+  // fallback timer sees, only before the first request instead of six seconds
+  // in. See registerNativeTools in task-provider-runtime.ts for why the tools
+  // must exist before the first request is built.
+  pi.on("session_start", () => {
+    taskProvider?.registerNativeTools("session_start");
+  });
+
   // ── Loop fire handler — queues an in-memory notification, then injects a custom message when delivery is safe ──
 
   pi.events.on("loop:fire", async (event: unknown) => {

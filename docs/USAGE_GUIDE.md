@@ -220,7 +220,7 @@ When [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) is available, 
 
 ### Native fallback
 
-If `pi-tasks` does not answer during startup detection, `pi-loop` registers:
+If no `pi-tasks` has answered the startup ping by `session_start` (which runs after every extension has loaded), `pi-loop` registers the native tools right there, before the first request is built, so the tool set — and with it the provider's cached prompt prefix — is the same for every request of the session. A six-second timer remains as a backstop for hosts that never emit `session_start`. The native tools are:
 
 ```text
 TaskCreate subject="Fix deploy polling" description="Replace polling with an event-driven loop"

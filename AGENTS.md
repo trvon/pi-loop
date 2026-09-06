@@ -96,7 +96,7 @@ Monitor output is untrusted and exposed through bounded/rate-limited events. `on
 
 ## Standalone tasks and providers
 
-pi-loop probes protocol-v2 `pi-tasks` and otherwise enables its native provider. Native task RPC registers at extension initialization so early peers cannot race fallback setup.
+pi-loop probes protocol-v2 `pi-tasks` and otherwise enables its native provider. Native task RPC registers at extension initialization so early peers cannot race fallback setup. Native task tools and `/tasks` register at `session_start` (after every extension factory has run) so the first request already carries the final tool set: pi bakes tool schemas and prompt guidelines into the request prefix, and a tool set that changes between requests defeats provider prompt caching. The six-second timer is only a backstop.
 
 Task claims use bearer IDs because they cross extension boundaries. Workflow leases do not expose tokens. Task prerequisites are description conventions, not TaskStore graph fields.
 
