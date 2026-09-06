@@ -25,6 +25,8 @@ export interface TaskProviderRuntimeOptions {
   fallbackDelayMs?: number;
 }
 
+export type NativeToolsTrigger = "session_start" | "fallback_timer";
+
 export interface TaskProviderRuntime {
   autoCreateTask: ReturnType<typeof createTaskRuntimeBridge>["autoCreateTask"];
   hasPendingTasks: ReturnType<typeof createTaskRuntimeBridge>["hasPendingTasks"];
@@ -32,6 +34,11 @@ export interface TaskProviderRuntime {
   isReady(): boolean;
   summary(): TaskProviderSummary;
   getNativeTaskStore(): TaskStore | undefined;
+  /**
+   * Register the native task tools and `/tasks` now unless an external provider
+   * owns the task channels. Idempotent; returns whether the native tools exist.
+   */
+  registerNativeTools(trigger: NativeToolsTrigger): boolean;
 }
 
 export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): TaskProviderRuntime {
@@ -118,10 +125,19 @@ export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): 
     if (!nativeToolsRegistered) bridge.checkTasksVersion();
   });
 
-  const fallbackTimer = setTimeout(() => {
-    if (tasksAvailable || nativeToolsRegistered) return;
+  // Tool registration is part of the request prefix: pi bakes tool schemas and
+  // TaskCreate's prompt guidelines into the system block, so registering after
+  // the first request invalidates the provider's prompt cache once per session
+  // (a full ~22k-token re-prefill on llama-server). The extension entry calls
+  // this from session_start, which runs after every extension factory has
+  // finished — an in-process pi-tasks has answered the ping by then — so the
+  // first request already carries the final tool set. The timer is the backstop
+  // for hosts that never emit session_start.
+  function registerNativeTools(trigger: NativeToolsTrigger): boolean {
+    if (nativeToolsRegistered) return true;
+    if (tasksAvailable) return false;
     const taskStore = getOrCreateNativeTaskStore();
-    if (!taskStore) return;
+    if (!taskStore) return false;
 
     try {
       registerTasksCommand({
@@ -142,15 +158,20 @@ export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): 
       });
     } catch (error) {
       if (isStaleExtensionContextError(error)) {
-        debug?.("native task fallback skipped: extension context went stale");
-        return;
+        debug?.(`native task fallback skipped on ${trigger}: extension context went stale`);
+        return false;
       }
       throw error;
     }
 
     nativeToolsRegistered = true;
     notifyReady();
-    debug?.("native task tools registered (pi-tasks not detected)");
+    debug?.(`native task tools registered on ${trigger} (pi-tasks not detected)`);
+    return true;
+  }
+
+  const fallbackTimer = setTimeout(() => {
+    registerNativeTools("fallback_timer");
   }, fallbackDelayMs);
 
   pi.on("session_shutdown", () => {
@@ -188,5 +209,6 @@ export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): 
     isReady: () => tasksAvailable || nativeToolsRegistered,
     summary,
     getNativeTaskStore: () => getOrCreateNativeTaskStore(),
+    registerNativeTools,
   };
 }

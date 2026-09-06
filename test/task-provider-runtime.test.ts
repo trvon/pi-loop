@@ -10,7 +10,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function setup(respondToTaskPing = false) {
+function setup(respondToTaskPing = false, isStaleExtensionContextError: (error: unknown) => boolean = () => false) {
   let sessionId = "session-a";
   let sessionGeneration = 0;
   const mock = createMockPi({ respondToTaskPing });
@@ -25,7 +25,7 @@ function setup(respondToTaskPing = false) {
     onReady,
     getSessionGeneration: () => sessionGeneration,
     updateWidget: vi.fn(),
-    isStaleExtensionContextError: () => false,
+    isStaleExtensionContextError,
   });
   return {
     ...mock,
@@ -124,5 +124,56 @@ describe("task-provider-runtime", () => {
     await vi.advanceTimersByTimeAsync(6_100);
 
     expect(toolMap.has("TaskCreate")).toBe(false);
+  });
+
+  it("registers native tools on demand before the fallback timer fires", async () => {
+    const { pi, toolMap, commandMap, runtime, onReady } = setup();
+    const registerTool = vi.spyOn(pi, "registerTool");
+    expect(toolMap.has("TaskCreate")).toBe(false);
+
+    expect(runtime.registerNativeTools("session_start")).toBe(true);
+
+    expect(toolMap.has("TaskCreate")).toBe(true);
+    expect(toolMap.has("TaskList")).toBe(true);
+    expect(toolMap.has("TaskUpdate")).toBe(true);
+    expect(toolMap.has("TaskDelete")).toBe(true);
+    expect(commandMap.has("tasks")).toBe(true);
+    expect(runtime.isReady()).toBe(true);
+    await Promise.resolve();
+    expect(onReady).toHaveBeenCalledTimes(1);
+
+    const registrations = registerTool.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(6_100);
+    expect(runtime.registerNativeTools("session_start")).toBe(true);
+    expect(registerTool.mock.calls.length).toBe(registrations);
+    expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not register native tools on demand once an external provider answered", async () => {
+    const { toolMap, commandMap, runtime } = setup(true);
+    await Promise.resolve();
+
+    expect(runtime.registerNativeTools("session_start")).toBe(false);
+
+    expect(toolMap.has("TaskCreate")).toBe(false);
+    expect(commandMap.has("tasks")).toBe(false);
+    await vi.advanceTimersByTimeAsync(6_100);
+    expect(toolMap.has("TaskCreate")).toBe(false);
+    expect(runtime.isReady()).toBe(true);
+  });
+
+  it("swallows a stale extension context during on-demand registration", async () => {
+    const staleError = new Error("This extension ctx is stale after session replacement or reload.");
+    const { pi, toolMap, runtime, onReady } = setup(false, (error) => error === staleError);
+    pi.registerCommand = vi.fn(() => {
+      throw staleError;
+    });
+
+    expect(runtime.registerNativeTools("session_start")).toBe(false);
+
+    expect(toolMap.has("TaskCreate")).toBe(false);
+    expect(runtime.isReady()).toBe(false);
+    await Promise.resolve();
+    expect(onReady).not.toHaveBeenCalled();
   });
 });
