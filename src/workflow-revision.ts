@@ -12,7 +12,6 @@ import type {
 import { validateWorkflowDefinition } from "./workflow-definition.js";
 import { WorkflowDefinitionRevisionSchema, WorkflowRevisionChangeSchema } from "./workflow-schema.js";
 
-export const MAX_WORKFLOW_REVISIONS = 32;
 const MAX_WORKFLOW_REVISION_CHANGES = 64;
 
 export interface WorkflowRevisionInput {
@@ -114,9 +113,6 @@ function validatePreconditions(run: WorkflowRunState, input: AuthorizedWorkflowR
   }
   if (run.waitingMonitor) {
     return rejected("monitor_wait_active", `Workflow is waiting on monitor #${run.waitingMonitor.monitorId}; revise after the wait clears.`);
-  }
-  if (currentRevision >= MAX_WORKFLOW_REVISIONS) {
-    return rejected("revision_limit_reached", `Workflow has reached the ${MAX_WORKFLOW_REVISIONS}-revision limit.`);
   }
   if (revisionHistory.length + 1 !== currentRevision) {
     return rejected("graph_invalid", "Workflow revision history is inconsistent with its current revision.");

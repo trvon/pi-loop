@@ -234,7 +234,6 @@ export type WorkflowRevisionFailureCode =
   | "terminal_workflow"
   | "workflow_paused"
   | "monitor_wait_active"
-  | "revision_limit_reached"
   | "actor_required"
   | "execution_missing"
   | "execution_unowned"
