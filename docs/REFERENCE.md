@@ -101,6 +101,8 @@ Acceptance appends the prior definition, reason, actor, timestamp, and patch to 
 
 Every accepted revision retains its full prior definition and patch; history is never silently pruned. This is application-managed local history, not tamper-evident storage or a complete transition ledger. Completion and explicit deletion remove the controller and its authoritative history; expiry pauses workflows and retains it. Snapshot size and mutation/reload costs grow with retained history. Removing the count cap does not remove definition-size, change-list, CAS, lease, expiry, or execution-budget checks.
 
+The public `revision_limit_reached` failure-code literal is retained for TypeScript source compatibility but is deprecated and no longer emitted.
+
 Revision and transition race through the same LoopStore lock. Revision-first makes a stale transition fail its definition CAS; transition-first makes a stale revision fail state/sequence CAS.
 
 ## Standalone tasks
