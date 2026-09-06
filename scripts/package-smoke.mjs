@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -48,7 +48,24 @@ try {
     currentState: "work", attemptsByState: { work: 1 },
   }), [{ code: "dead_end", states: ["work"] }]);
 
-  console.log(`package smoke passed (${paths.length} files)`);
+  const consumer = join(temporaryDirectory, "package", "legacy-consumer.mts");
+  writeFileSync(consumer, `
+import type { WorkflowRevisionFailure, WorkflowRevisionFailureCode } from "@trevonistrevon/pi-loop/api";
+export const legacy: WorkflowRevisionFailureCode = "revision_limit_reached";
+export function handlesLegacy(failure: WorkflowRevisionFailure): boolean {
+  switch (failure.code) {
+    case "revision_limit_reached": return true;
+    default: return false;
+  }
+}
+`);
+  execFileSync(process.execPath, [
+    join(rootDirectory, "node_modules", "typescript", "bin", "tsc"),
+    "--ignoreConfig", "--noEmit", "--strict", "--skipLibCheck", "--target", "ES2022",
+    "--module", "NodeNext", "--types", "node", consumer,
+  ], { cwd: join(temporaryDirectory, "package"), encoding: "utf8", stdio: "pipe" });
+
+  console.log(`package smoke passed (${paths.length} files; public types compiled)`);
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true });
 }

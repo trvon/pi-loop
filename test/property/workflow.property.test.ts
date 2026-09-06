@@ -148,12 +148,12 @@ describe("workflow properties", () => {
     );
   });
 
-  it("reissues active work without changing transition or lease authority", () => {
+  it("reissues beyond 32 versions without changing transition or lease authority", () => {
     fc.assert(
       fc.property(
         fc.array(
           fc.stringMatching(/^[A-Za-z][A-Za-z0-9 ._-]{0,40}$/).filter((prompt) => prompt.trim() !== ""),
-          { minLength: 1, maxLength: 10 },
+          { minLength: 33, maxLength: 40 },
         ),
         (prompts) => {
           const actor = { sessionId: "property-session", runtimeId: "property-runtime" };
@@ -198,6 +198,9 @@ describe("workflow properties", () => {
                 lease: before.activeExecution?.lease,
               },
             });
+            expect(result.run.revisionHistory.map((record) => record.revision)).toEqual(
+              Array.from({ length: index + 1 }, (_, i) => i + 1),
+            );
             expect(result.run.executionHistory).toHaveLength(index + 1);
             expect(result.run.executionHistory?.at(-1)).toMatchObject({
               id: before.activeExecution?.id,

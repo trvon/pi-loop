@@ -28,7 +28,6 @@ function revisionRecovery(code: WorkflowRevisionFailure["code"] | undefined): st
       return "This pause cannot be bypassed by reissue; inspect its provenance and choose an explicit bounded recovery.";
     case "current_state_immutable":
       return "Use reissue_state to atomically replace active instructions, or revise only future states and outgoing transitions.";
-    case "revision_limit_reached":
     case "terminal_workflow":
       return "This workflow no longer accepts revisions; inspect LoopList before choosing a new controller.";
     case "actor_required":

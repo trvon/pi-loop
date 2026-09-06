@@ -153,5 +153,5 @@ Lint has four established optional-chain warnings; do not add new warnings. Work
 - 3 orchestration attempts per item
 - seven-day default loop lifetime; explicit `PI_LOOP_EXPIRES_IN` or per-loop `expiresIn` may be longer
 - five-minute self-paced default interval
-- 32 workflow definition revisions
+- no lifetime workflow revision-count cap; complete revision history is retained while the controller exists
 - 65,536 bytes per workflow definition

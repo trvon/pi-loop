@@ -234,6 +234,7 @@ export type WorkflowRevisionFailureCode =
   | "terminal_workflow"
   | "workflow_paused"
   | "monitor_wait_active"
+  /** @deprecated Retained for source compatibility; the lifetime cap was removed and this code is never emitted. */
   | "revision_limit_reached"
   | "actor_required"
   | "execution_missing"

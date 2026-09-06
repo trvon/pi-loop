@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { WorkflowDefinition, WorkflowRevisionChange } from "../src/types.js";
 import { validateWorkflowDefinition } from "../src/workflow-definition.js";
 import { createWorkflowRun, getWorkflowOutcomeAvailability, transitionWorkflowRun } from "../src/workflow-reducer.js";
-import { MAX_WORKFLOW_REVISIONS, reviseWorkflowRun, validatePersistedWorkflowRevision } from "../src/workflow-revision.js";
+import { reviseWorkflowRun, validatePersistedWorkflowRevision } from "../src/workflow-revision.js";
 
 const definition: WorkflowDefinition = {
   version: 1,
@@ -682,7 +682,7 @@ describe("workflow reducer", () => {
     expect(run).toEqual(before);
   });
 
-  it("rejects exhausted future limits, duplicate changes, and revision overflow", () => {
+  it("rejects exhausted future limits and duplicate changes", () => {
     const run = createWorkflowRun(definition, 100);
     run.attemptsByState.fix = 2;
     const base = {
@@ -704,20 +704,6 @@ describe("workflow reducer", () => {
       ],
     }, 200)).toMatchObject({ applied: false, failure: { code: "invalid_patch" } });
 
-    run.definitionRevision = MAX_WORKFLOW_REVISIONS;
-    run.revisionHistory = Array.from({ length: MAX_WORKFLOW_REVISIONS - 1 }, (_, index) => ({
-      revision: index + 1,
-      definition,
-      reason: `revision ${index + 1}`,
-      supersededAt: index + 1,
-      supersededBy: base.actor,
-      changes: [],
-    }));
-    expect(reviseWorkflowRun(run, {
-      ...base,
-      expectedRevision: MAX_WORKFLOW_REVISIONS,
-      changes: [{ op: "revise_state", stateId: "fix", prompt: "Too late." }],
-    }, 200)).toMatchObject({ applied: false, failure: { code: "revision_limit_reached" } });
   });
 
   it("rejects unsafe keys, malformed task work, and oversized definitions", () => {
