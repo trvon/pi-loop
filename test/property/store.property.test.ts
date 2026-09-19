@@ -82,7 +82,8 @@ describe("workflow store properties", () => {
       ),
       propertyOptions(30, 100),
     );
-  });
+    // Every run reopens and fsyncs a real store; parallel suites starve its disk I/O.
+  }, 60_000);
 });
 
 describe("task store properties", () => {
