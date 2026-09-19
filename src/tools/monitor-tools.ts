@@ -150,15 +150,17 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
         const doneLoop = store.create(doneTrigger, params.onDone, { recurring: false, expiresIn: params.expiresIn });
         handleMonitorDoneLoop(doneLoop, entry.id);
         onDoneMsg = `\nCompletion wake loop #${doneLoop.id}: fires when the monitor completes — no polling needed`;
-      } else if (!workflow && entry.timeout > 0) {
+      } else if (!workflow) {
         const timeoutTrigger: Trigger = { type: "event", source: "monitor:timeout", filter: JSON.stringify({ monitorId: entry.id }) };
         const timeoutLoop = store.create(
           timeoutTrigger,
-          `Monitor #${entry.id} became stale after ${entry.timeout}ms without output or progress. Inspect MonitorList, report the failure, and decide whether to retry or recover the command.`,
+          `${entry.timeout > 0
+            ? `Monitor #${entry.id} became stale after ${entry.timeout}ms without output or progress, or exited with a failure.`
+            : `Monitor #${entry.id} exited with a failure.`} Inspect MonitorList, report the failure, and decide whether to retry or recover the command.`,
           { recurring: false, expiresIn: params.expiresIn },
         );
         handleMonitorDoneLoop(timeoutLoop, entry.id);
-        onDoneMsg = `\nTimeout alert loop #${timeoutLoop.id}: wakes the agent only if the monitor times out`;
+        onDoneMsg = `\nFailure alert loop #${timeoutLoop.id}: wakes the agent only if the monitor fails or times out`;
       }
     } catch (error) {
       let cleanupConfirmed = false;
@@ -195,7 +197,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
         expanded: [
           `Command: ${entry.command}`,
           `Inactivity timeout: ${entry.timeout > 0 ? `${entry.timeout / 1000}s` : "none"}`,
-          workflow ? `Workflow #${workflow.id}: waiting for terminal monitor outcome` : params.onDone ? "Completion wake: enabled" : entry.timeout > 0 ? "Timeout alert: enabled" : "Completion wake: off",
+          workflow ? `Workflow #${workflow.id}: waiting for terminal monitor outcome` : params.onDone ? "Completion wake: enabled" : "Failure alert: enabled",
         ],
       },
     ));
@@ -223,6 +225,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
         const ageStr = formatRemaining(age);
         let line = `${icon} #${m.id} [${m.status}] ${m.command.slice(0, 60)} — ${m.outputLines} lines (${ageStr})`;
         if (m.exitCode !== undefined) line += ` exit=${m.exitCode}`;
+        if (m.signal) line += ` signal=${m.signal}`;
         if (m.stopReason) line += ` reason=${m.stopReason}`;
         if (m.progress) line += ` · ${formatProgress(m.progress)}`;
         const activity = m.status === "running" ? formatActivity(m) : undefined;

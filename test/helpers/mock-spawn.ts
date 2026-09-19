@@ -27,7 +27,9 @@ export function createMockChildProcess(
   let killed = false;
 
   const proc = Object.assign(emitter, {
-    pid: Math.floor(Math.random() * 10000) + 1000,
+    // No pid: group signalling must fall back to kill() rather than signal a
+    // real process group that happens to own a random id.
+    pid: undefined,
     stdout,
     stderr,
     killed: false,
