@@ -47,6 +47,19 @@ describe("monitor silent death — MonitorManager", () => {
     expect(retention).toHaveBeenCalled();
   });
 
+  it("isolates a throwing callback registered after the monitor settled", () => {
+    const child = createMockChildProcess({ exitCode: null });
+    manager = new MonitorManager(pi, createSequentialSpawn(child));
+    const entry = manager.create("sleep 30", "late registration", 0);
+    child.emit("close", 1);
+    const thrower = () => {
+      throw new Error("store lock unavailable");
+    };
+
+    expect(manager.onComplete(entry.id, thrower)).toBe(true);
+    expect(manager.onTerminal(entry.id, thrower)).toBe(true);
+  });
+
   it("records the signal when the child is killed from outside", () => {
     const child = createMockChildProcess({ exitCode: null });
     manager = new MonitorManager(pi, createSequentialSpawn(child));

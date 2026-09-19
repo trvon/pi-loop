@@ -2613,6 +2613,62 @@ describe("monitor tool wrappers", () => {
     );
   }, 10000);
 
+  it.skipIf(process.platform === "win32")("resumes a workflow with the signal that killed its monitor", async () => {
+    const { pi, toolMap, emittedEvents, extensionHandlers, sentMessages: sentCustomMessages } = createMockPi();
+
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    vi.useRealTimers();
+
+    const definition = JSON.stringify({
+      version: 1,
+      initialState: "validate",
+      states: {
+        validate: {
+          prompt: "Run the validation monitor.",
+          on: { passed: "done", failed: "blocked" },
+        },
+        done: { prompt: "Report success.", terminal: "completed" },
+        blocked: { prompt: "Report failure.", terminal: "paused" },
+      },
+    });
+    const created = await toolMap.get("WorkflowCreate")!.execute!("workflow-signal-create", {
+      goal: "Validate release",
+      definition,
+    });
+    const workflowId = created.content[0].text.match(/Workflow #(\d+) created/)?.[1];
+    if (!workflowId) throw new Error("expected workflow id");
+    await flushAsync();
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, createCtx());
+    }
+    sentCustomMessages.splice(0);
+
+    await toolMap.get("MonitorCreate")!.execute!("workflow-signal-monitor", {
+      command: "kill -KILL $$",
+      timeout: 0,
+      workflowId,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    for (const handler of extensionHandlers.get("agent_end") ?? []) {
+      await handler(null, createCtx());
+    }
+    await flushAsync();
+
+    expect(emittedEvents).toContainEqual(expect.objectContaining({
+      name: "loop:fire",
+      payload: expect.objectContaining({
+        loopId: workflowId,
+        monitorOutcome: expect.objectContaining({ monitorId: "1", status: "error", signal: "SIGKILL" }),
+      }),
+    }));
+    expect(sentCustomMessages).toHaveLength(1);
+    expect((sentCustomMessages[0].message as { content: string }).content).toContain(
+      "Monitor #1 outcome: status=error; exitCode=unavailable; signal=SIGKILL; stopReason=unavailable; outputLines=0.",
+    );
+  }, 10000);
+
   it("drops an onDone wake when monitor completion reaches a stale extension context", async () => {
     const { pi, toolMap, sentMessages: sentCustomMessages } = createMockPi();
 

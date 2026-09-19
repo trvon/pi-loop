@@ -372,6 +372,7 @@ export interface MonitorOutcome {
   monitorId: string;
   status: MonitorEntry["status"];
   exitCode?: number;
+  signal?: string;
   stopReason?: MonitorEntry["stopReason"];
   outputLines: number;
 }

@@ -482,7 +482,7 @@ export class MonitorManager {
     const bp = this.processes.get(id);
     if (!bp) return false;
     if (bp.entry.status === "completed" || bp.entry.status === "error") {
-      callback(bp.entry);
+      this.runCallbacks([callback], bp.entry);
       return true;
     }
     if (bp.entry.status !== "running") return false;
@@ -503,7 +503,7 @@ export class MonitorManager {
     const bp = this.processes.get(id);
     if (!bp) return false;
     if (bp.entry.status !== "running") {
-      if (bp.terminalReady) callback(bp.entry);
+      if (bp.terminalReady) this.runCallbacks([callback], bp.entry);
       else bp.terminalCallbacks.push(callback);
       return true;
     }
