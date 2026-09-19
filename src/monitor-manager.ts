@@ -22,6 +22,9 @@ const MAX_OUTPUT_LINE_LENGTH = 4096;
 const OUTPUT_RATE_WINDOW_MS = 60000;
 export const MONITOR_RETENTION_MS = 15 * 60 * 1000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+// How long a dead shell may keep its monitor "running" while a grandchild
+// still holds the inherited stdio pipes open.
+export const EXIT_CLOSE_GRACE_MS = 2000;
 
 export class MonitorManager {
   private processes = new Map<string, MonitorProcess>();
@@ -103,11 +106,29 @@ export class MonitorManager {
     }
   }
 
+  // One failing callback must not strand the remaining callbacks, waiters, or prune.
+  private runCallbacks(callbacks: Array<(monitor: MonitorEntry) => void>, monitor: MonitorEntry): void {
+    for (const callback of callbacks) {
+      try {
+        callback(monitor);
+      } catch (error) {
+        if (!isStaleExtensionContextError(error)) console.error(`Monitor #${monitor.id} callback error:`, error);
+      }
+    }
+  }
+
   private notifyTerminal(bp: MonitorProcess, monitor: MonitorEntry): void {
     bp.terminalReady = true;
     if (this.shuttingDown) return;
-    for (const callback of bp.terminalCallbacks) callback(monitor);
+    const callbacks = bp.terminalCallbacks;
     bp.terminalCallbacks = [];
+    this.runCallbacks(callbacks, monitor);
+  }
+
+  private clearExitGrace(bp: MonitorProcess): void {
+    if (!bp.exitGraceTimer) return;
+    clearTimeout(bp.exitGraceTimer);
+    bp.exitGraceTimer = undefined;
   }
 
   private clearDeadline(bp: MonitorProcess): void {
@@ -135,7 +156,9 @@ export class MonitorManager {
         this.scheduleInactivityCheck(id, bp, remaining);
         return;
       }
-      void this.stop(id, "timeout");
+      this.stop(id, "timeout").catch((error: unknown) => {
+        if (!isStaleExtensionContextError(error)) console.error(`Monitor #${id} timeout stop error:`, error);
+      });
     }, Math.min(Math.max(1, delay), MAX_TIMER_DELAY_MS));
     deadlineTimer.unref?.();
     bp.deadlineTimer = deadlineTimer;
@@ -244,10 +267,11 @@ export class MonitorManager {
     child.stdout?.on("data", (data: Buffer) => this.handleOutput(id, bp, "stdout", data));
     child.stderr?.on("data", (data: Buffer) => this.handleOutput(id, bp, "stderr", data));
 
-    const finish = (code: number | null, status: "completed" | "error") => {
+    const finish = (code: number | null, status: "completed" | "error", signal?: NodeJS.Signals | null) => {
       if (this.shuttingDown) return;
       this.flushOutput(id, bp);
       this.clearDeadline(bp);
+      this.clearExitGrace(bp);
       this.emitOutputProgress(id, bp);
       this.applyReducerEvent({
         type: status === "completed" ? "MONITOR_COMPLETED" : "MONITOR_ERRORED",
@@ -258,6 +282,7 @@ export class MonitorManager {
         payload: {
           id,
           exitCode: code ?? undefined,
+          signal: signal ?? undefined,
         },
       });
       const current = this.get(id)!;
@@ -265,33 +290,51 @@ export class MonitorManager {
         monitorId: id,
         status: current.status,
         exitCode: current.exitCode,
+        signal: current.signal,
         outputLines: current.outputLines,
       });
       this.emit(status === "completed" ? "monitor:done" : "monitor:error", {
         monitorId: id,
         exitCode: code,
+        signal: current.signal,
         outputLines: current.outputLines,
       });
-      for (const callback of bp.completionCallbacks) callback(current);
+      const completionCallbacks = bp.completionCallbacks;
       bp.completionCallbacks = [];
+      this.runCallbacks(completionCallbacks, current);
       this.notifyTerminal(bp, current);
       for (const resolve of bp.waiters) resolve();
       bp.waiters = [];
       this.schedulePrune(id);
     };
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (this.shuttingDown) return;
       this.flushOutput(id, bp);
       if (bp.entry.status === "running") {
-        finish(code, code === 0 ? "completed" : "error");
+        finish(code, code === 0 ? "completed" : "error", signal);
       }
+    });
+
+    // 'close' waits for every inherited stdio handle; a backgrounded grandchild
+    // can withhold it indefinitely after the shell itself has exited.
+    child.on("exit", (code, signal) => {
+      if (this.shuttingDown || bp.entry.status !== "running" || bp.exitGraceTimer) return;
+      const exitGraceTimer = setTimeout(() => {
+        if (bp.exitGraceTimer !== exitGraceTimer) return;
+        bp.exitGraceTimer = undefined;
+        if (this.shuttingDown || bp.entry.status !== "running") return;
+        finish(code, code === 0 ? "completed" : "error", signal);
+      }, EXIT_CLOSE_GRACE_MS);
+      exitGraceTimer.unref?.();
+      bp.exitGraceTimer = exitGraceTimer;
     });
 
     child.on("error", (err) => {
       if (!this.shuttingDown && bp.entry.status === "running") {
         this.flushOutput(id, bp);
         this.clearDeadline(bp);
+        this.clearExitGrace(bp);
         this.emitOutputProgress(id, bp);
         this.applyReducerEvent({
           type: "MONITOR_ERRORED",
@@ -315,8 +358,9 @@ export class MonitorManager {
           monitorId: id,
           error: err.message,
         });
-        for (const callback of bp.completionCallbacks) callback(current);
+        const completionCallbacks = bp.completionCallbacks;
         bp.completionCallbacks = [];
+        this.runCallbacks(completionCallbacks, current);
         this.notifyTerminal(bp, current);
         for (const resolve of bp.waiters) resolve();
         bp.waiters = [];
@@ -353,7 +397,10 @@ export class MonitorManager {
 
     this.shuttingDown = true;
     const processes = Array.from(this.processes.values());
-    for (const bp of processes) this.clearDeadline(bp);
+    for (const bp of processes) {
+      this.clearDeadline(bp);
+      this.clearExitGrace(bp);
+    }
     const running = processes.filter((bp) => bp.entry.status === "running");
     const shutdown = Promise.allSettled(running.map((bp) => this.stop(bp.entry.id)))
       .then(() => {
@@ -377,6 +424,9 @@ export class MonitorManager {
     if (!bp || bp.entry.status !== "running") return false;
 
     this.clearDeadline(bp);
+    this.clearExitGrace(bp);
+    // Signal first so a failing listener can never leave the process running.
+    this.signalProcessTree(bp, "SIGTERM");
     this.emitOutputProgress(id, bp);
     this.applyReducerEvent({
       type: "MONITOR_STOPPED",
@@ -396,7 +446,6 @@ export class MonitorManager {
       outputLines: bp.entry.outputLines,
     });
     if (!this.shuttingDown) this.schedulePrune(id);
-    this.signalProcessTree(bp, "SIGTERM");
 
     if (reason === "timeout") {
       this.emit("monitor:error", {
@@ -404,8 +453,9 @@ export class MonitorManager {
         error: `No monitor activity for ${bp.entry.timeout}ms`,
         outputLines: bp.entry.outputLines,
       });
-      for (const callback of bp.completionCallbacks) callback(bp.entry);
+      const completionCallbacks = bp.completionCallbacks;
       bp.completionCallbacks = [];
+      this.runCallbacks(completionCallbacks, bp.entry);
     }
 
     await new Promise<void>((resolve) => {
@@ -432,7 +482,7 @@ export class MonitorManager {
     const bp = this.processes.get(id);
     if (!bp) return false;
     if (bp.entry.status === "completed" || bp.entry.status === "error") {
-      callback(bp.entry);
+      this.runCallbacks([callback], bp.entry);
       return true;
     }
     if (bp.entry.status !== "running") return false;
@@ -453,7 +503,7 @@ export class MonitorManager {
     const bp = this.processes.get(id);
     if (!bp) return false;
     if (bp.entry.status !== "running") {
-      if (bp.terminalReady) callback(bp.entry);
+      if (bp.terminalReady) this.runCallbacks([callback], bp.entry);
       else bp.terminalCallbacks.push(callback);
       return true;
     }

@@ -358,6 +358,7 @@ export interface MonitorEntry {
   startedAt: number;
   completedAt?: number;
   exitCode?: number;
+  signal?: string;
   stopReason?: "manual" | "timeout";
   outputLines: number;
   outputBuffer: string[];
@@ -371,6 +372,7 @@ export interface MonitorOutcome {
   monitorId: string;
   status: MonitorEntry["status"];
   exitCode?: number;
+  signal?: string;
   stopReason?: MonitorEntry["stopReason"];
   outputLines: number;
 }
@@ -389,6 +391,7 @@ export interface MonitorProcess {
   proc: import("node:child_process").ChildProcess;
   abortController: AbortController;
   deadlineTimer?: ReturnType<typeof setTimeout>;
+  exitGraceTimer?: ReturnType<typeof setTimeout>;
   waiters: Array<() => void>;
   completionCallbacks: Array<(monitor: MonitorEntry) => void>;
   terminalCallbacks: Array<(monitor: MonitorEntry) => void>;

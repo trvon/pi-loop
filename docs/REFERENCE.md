@@ -121,7 +121,7 @@ These are warning-only structural and point-in-time checks, not a liveness proof
 
 ## Monitors
 
-`MonitorCreate` spawns a detached process group, buffers bounded output, emits rate-limited progress, and records terminal status in memory. Its `timeout` is a renewable inactivity threshold: stdout/stderr bytes, JSONL progress, and `MonitorUpdate` renew the deadline; total runtime alone never stops an active monitor. `MonitorStop` sends TERM then KILL fallback. `onDone` creates a one-shot completion wake; `workflowId` pauses a workflow state's cadence until terminal monitor outcome.
+`MonitorCreate` spawns a detached process group, buffers bounded output, emits rate-limited progress, and records terminal status in memory. Its `timeout` is a renewable inactivity threshold: stdout/stderr bytes, JSONL progress, and `MonitorUpdate` renew the deadline; total runtime alone never stops an active monitor. `MonitorStop` sends TERM then KILL fallback. `onDone` creates a one-shot completion wake; without `onDone` or `workflowId`, a one-shot failure alert wakes the agent if the monitor exits nonzero, is killed by a signal, fails to spawn, or times out (a clean exit or manual stop retires it quietly). A terminating signal is recorded as `signal`. If the shell exits but a background grandchild keeps its stdio open, the monitor settles after a 2s grace instead of waiting for `close`. `workflowId` pauses a workflow state's cadence until terminal monitor outcome.
 
 Monitor events:
 

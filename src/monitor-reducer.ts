@@ -45,6 +45,7 @@ export type MonitorReducerEvent =
     payload: {
       id: string;
       exitCode?: number;
+      signal?: string;
       error?: string;
     };
   }
@@ -141,6 +142,14 @@ export function reduceMonitorState(state: MonitorReducerState, event: MonitorRed
     };
   }
 
+  // The first terminal outcome is authoritative; late settlements are no-ops.
+  if (
+    current.status !== "running"
+    && (event.type === "MONITOR_COMPLETED" || event.type === "MONITOR_ERRORED" || event.type === "MONITOR_STOPPED")
+  ) {
+    return { state, effects: [] };
+  }
+
   const next = cloneState(state);
   const monitor: MonitorReducerEntry = { ...current };
 
@@ -175,6 +184,7 @@ export function reduceMonitorState(state: MonitorReducerState, event: MonitorRed
   if (event.type === "MONITOR_ERRORED") {
     monitor.status = "error";
     if (event.payload.exitCode !== undefined) monitor.exitCode = event.payload.exitCode;
+    if (event.payload.signal !== undefined) monitor.signal = event.payload.signal;
     monitor.completedAt = event.at;
   }
 

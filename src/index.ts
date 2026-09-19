@@ -282,6 +282,7 @@ export default function (pi: ExtensionAPI) {
             monitorId: monitor.id,
             status: monitor.status,
             exitCode: monitor.exitCode,
+            signal: monitor.signal,
             stopReason: monitor.stopReason,
             outputLines: monitor.outputLines,
           }
