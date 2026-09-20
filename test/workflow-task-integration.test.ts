@@ -8,6 +8,11 @@ import { LoopStore } from "../src/store.js";
 import { TaskStore } from "../src/task-store.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
+// Every case drives the extension end to end and reopens fsync-backed stores on
+// each cadence fire; the slower Windows CI runner intermittently pushed the
+// cadence-budget cases past the 15s default, so raise the ceiling file-wide.
+vi.setConfig({ testTimeout: 60_000 });
+
 const RETRY_WORKFLOW = JSON.stringify({
   version: 1,
   initialState: "work",
