@@ -174,12 +174,13 @@ Keep the generalized property and add the minimized example to the nearest ordin
 ## Benchmarks and profiles
 
 ```bash
+npm run bench
 npm run bench:baseline
 npm run bench:compare
 npm run profile:core
 ```
 
-Compare benchmarks only on the same machine, Node version, architecture, timezone, and power state. Profiles are written to `.artifacts/profiles/`; load the `.cpuprofile` in a V8-compatible viewer. Shared benchmark workloads live in `benchmarks/workloads.ts`.
+`npm run bench` prints a table of throughput, mean latency, and margin of error. `bench:baseline` writes those results to `.artifacts/benchmarks/baseline.json`, and `bench:compare` reports the throughput change of a fresh run against that baseline. Compare benchmarks only on the same machine, Node version, architecture, timezone, and power state. Profiles are written to `.artifacts/profiles/`; load the `.cpuprofile` in a V8-compatible viewer. Shared benchmark workloads live in `benchmarks/workloads.ts`.
 
 ## Change-specific minimums
 
