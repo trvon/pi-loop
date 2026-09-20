@@ -6,6 +6,15 @@
 
 * **tasks:** register the native task tools at `session_start` instead of six seconds after startup. A prompt sent inside that window used to go out with the pre-registration tool set, and the next request carried four more tools plus their prompt guidelines, so the request prefix changed once per session and every provider-side prompt cache missed (a full ~22k-token re-prefill on llama-server). The timer stays as a backstop and an external `pi-tasks` that answered the startup ping still wins.
 
+## [0.7.15](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.14...pi-loop-v0.7.15) (2026-09-20)
+
+
+### Bug Fixes
+
+* **monitor:** guard late callbacks and carry signal into workflow wakes ([22bcb93](https://github.com/trvon/pi-loop/commit/22bcb9335094f3652b381ca5f98ca899f97f214e))
+* **monitor:** surface silent monitor deaths ([dbca141](https://github.com/trvon/pi-loop/commit/dbca141644b99e90405540d46c5cf7118b44ba9b))
+* **monitor:** surface silent monitor deaths ([8806e4e](https://github.com/trvon/pi-loop/commit/8806e4ea668e801cb0d145bf263c5519a76fa9d3))
+
 ## [0.7.14](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.13...pi-loop-v0.7.14) (2026-09-06)
 
 
