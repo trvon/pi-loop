@@ -65,6 +65,9 @@ export function createTaskRuntimeBridge(options: TaskRuntimeBridgeOptions): Task
       unsub();
       settleCurrentDetection();
     }, 5000);
+    // The detection window must not keep a one-shot (`pi -p`) process alive:
+    // without pi-tasks nobody replies, so the full 5s would delay exit.
+    timer.unref?.();
     const unsub = pi.events.on(replyChannel(TASKS_RPC.ping, requestId), (raw: unknown) => {
       const reply = raw as RpcReply<PingReply> | undefined;
       if (!reply?.success || !reply.data) return;
