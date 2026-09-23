@@ -53,6 +53,27 @@ describe("task-rpc checkTasksVersion", () => {
     expect(setTasksAvailable).not.toHaveBeenCalled();
   });
 
+  it("unrefs the detection timer (so pi -p can exit)", () => {
+    const realSetTimeout = global.setTimeout;
+    const unref = vi.fn();
+    const timeoutSpy = vi.spyOn(global, "setTimeout").mockImplementation(((fn: TimerHandler, ms?: number, ...args: any[]) => {
+      if (ms === 5000) return { unref } as any;
+      return realSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout);
+    const { pi } = createMockPi();
+    const bridge = createTaskRuntimeBridge({
+      pi,
+      isTasksAvailable: () => false,
+      setTasksAvailable: vi.fn(),
+      getNativeTaskStore: () => undefined,
+    });
+
+    bridge.checkTasksVersion();
+
+    expect(unref).toHaveBeenCalledTimes(1);
+    timeoutSpy.mockRestore();
+  });
+
   it("ignores pi-loop's own native ping reply", async () => {
     const mock = createMockPi();
     const setTasksAvailable = vi.fn();
