@@ -1924,7 +1924,8 @@ describe("dynamic loop pump", () => {
     expect(sentCustomMessages).toHaveLength(2);
   });
 
-  it("keeps a free-text dynamic controller registered through its twentieth fire", async () => {
+  // Twenty file-backed wake/update cycles exceed 15s on Windows CI; keep the durable-write assertions.
+  it("keeps a free-text dynamic controller registered through its twentieth fire", { timeout: 60_000 }, async () => {
     const { pi, commandMap, toolMap, extensionHandlers } = createMockPi();
 
     extension(pi as any);
