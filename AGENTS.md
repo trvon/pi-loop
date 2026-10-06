@@ -15,7 +15,7 @@ Do not blur these domains:
 - `/tasks`, task RPC, `TaskClaim`, and `TaskUpdate` never control workflow work.
 - `MonitorManager` owns process-local monitor state; monitor recovery across Pi death is not implemented.
 - `pi-subagents` owns worker execution and global concurrency. pi-loop owns only session-scoped orchestration intent, bounded evidence, local capacity, and recovery decisions.
-- Pending notifications are memory-only; persisted controllers recover on resume, not while Pi is absent.
+- Ordinary pending notifications are memory-only. Orchestration wake intent is durable until acknowledgement and remains at-least-once across a crash. Persisted controllers recover on resume, not while Pi is absent.
 
 A feature that requires a cross-store workflow/task transaction violates the architecture.
 
@@ -64,7 +64,7 @@ An orchestration is one finite, session-file-backed `LoopEntry` batch.
 - Creation requires protocol-v2 `pi-subagents` and rejects memory/project/custom/off storage.
 - Every dispatch is persisted before spawn and fenced by controller revision, owner runtime/generation, work ID, dispatch ID, attempt, and upstream agent ID.
 - `spawning`, `queued`, and `running` consume local capacity; pi-subagents retains its global queue.
-- Lifecycle evidence is bounded and persisted before `subagents:rpc:consume`.
+- Lifecycle evidence is bounded and persisted before any `subagents:rpc:consume`. Normal terminal results remain provider-owned; pi-loop does not consume them or send a duplicate aggregate wake.
 - Proved failures may retry within the item budget. Ambiguous timeout/recovery never retries automatically.
 - The existing session heartbeat reconciles orchestration; do not add another timer or scheduler.
 - Session teardown invalidates callbacks before best-effort stop and state reconciliation.
@@ -125,8 +125,22 @@ RPC uses request IDs and `<channel>:reply:<requestId>` success/error envelopes. 
 - A progress notification is not a terminal pause. Persist unfinished standalone or dynamic-loop progress with `TaskUpdate` or `LoopUpdate`; persist workflow plan changes or completed phases with `WorkflowRevise` or `WorkflowTransition`, then continue while work remains actionable.
 - Mutations go through reducers/stores; do not directly edit persisted maps from tools/runtimes.
 - Rejections are state-preserving and include a specific next action.
-- Use red → green regressions for bugs and state-machine changes.
 - Keep tests deterministic and file-backed tests isolated under `tmpdir`.
+
+## Change evidence
+
+Classify each change before implementation: reproduced bug, feature expectation, hardening, or product hypothesis. Source inspection proves current behavior, not user demand. Closed reports and proposed experiment targets are not current defects or measured outcomes.
+
+- Bugs: add a regression first and run it against the unchanged implementation. Record the failed behavioral assertion, then repair the code and rerun the same test. Schema, compilation, timeout, and fixture failures alone are not a valid red reproduction. Include a nearby passing control that distinguishes the defect from intended behavior.
+- Features: write observable acceptance expectations before implementation. Test the requested behavior through the affected command, tool, runtime, or public API; initial failures represent missing feature behavior, not proof of a bug. Cover applicable absent/invalid input, boundary, and recovery cases. Do not weaken assertions or relabel a failing expectation to obtain green.
+- Invariants: name what must remain unchanged and test it independently of the new output. Cover applicable authority separation, lease/CAS ownership, state-preserving rejection, activation/resource fencing, bounded retries/expiry, persistence/restart, and cleanup. Read-only presentation must not mutate state, claim work, schedule wakes, or infer unobserved execution/delivery.
+- State-machine changes: retain generated property coverage and add a minimized deterministic regression for discovered failures. Use file-backed peers and controlled callbacks/timers for races; injected boundaries do not prove ordinary UI reachability.
+- Guidance and schemas: test valid example semantics, rejected misuse, controller selection, and copy budgets. Text assertions alone do not prove model behavior; record model/version, fixtures, attempts, semantic outcomes, and hold-outs for live evidence. `SKIP` or unavailable providers are not passes.
+- Evidence: PRs name the contract, expectations, invariants, exact commands, results, and limitations. Preserve red/green logs outside committed fixtures; do not add transcripts, secrets, unrelated artifacts, or pre-existing `.vitest/` output.
+
+Build PR stacks in dependency order. Each child targets its predecessor; each intermediate commit must pass its relevant checks and each PR tip must pass the local gate. Use signed thematic commits and normal hook-enabled pushes. Do not rewrite published stack history, merge, enable auto-merge, or release without explicit user authorization.
+
+See `docs/TESTING.md` for commands and change-specific minimums.
 
 ## Validation
 
@@ -142,7 +156,7 @@ npm audit --audit-level=moderate
 git diff --check
 ```
 
-Lint has four established optional-chain warnings; do not add new warnings. Workflow/reducer changes also require property tests and the relevant live scenario.
+Lint has two established optional-chain warnings; do not add new warnings. Workflow/reducer changes also require property tests and the relevant live scenario.
 
 ## Limits
 
