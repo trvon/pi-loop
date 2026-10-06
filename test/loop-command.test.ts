@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerLoopCommand } from "../src/commands/loop-command.js";
+import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
 import { createCtx, createMockPi } from "./helpers/mock-pi.js";
 import { currentWorkflowIdentity } from "./helpers/workflow-identity.js";
 
-function setup() {
+function setup(inspectionOptions: Record<string, unknown> = {}) {
   const { pi, commandMap } = createMockPi();
   const store = new LoopStore(); // memory mode, no file I/O
   const triggerSystem = { add: vi.fn(), remove: vi.fn() };
@@ -23,6 +24,7 @@ function setup() {
     maybeBootstrapTaskLoop,
     onDynamicLoopActivated,
     cancelOrchestration,
+    ...inspectionOptions,
   });
   const command = commandMap.get("loop")!;
   return { store, triggerSystem, updateWidget, maybeBootstrapTaskLoop, onDynamicLoopActivated, cancelOrchestration, command };
@@ -199,6 +201,133 @@ describe("registerLoopCommand", () => {
     expect(detailTitle).toContain("Lease: unowned");
     expect(detailTitle).toContain("Outcomes: ready");
     expect(detailTitle).toContain("Unavailable: retry (blocked exhausted 1)");
+  });
+
+  it("feature: shows resolved storage, lifetime, next fire and accounting without mutating the controller", async () => {
+    const next = Date.now() + 300_000;
+    const getNextFire = vi.fn(() => next);
+    h = setup({ getStorageScope: () => "project", getNextFire });
+    const entry = h.store.create({ type: "cron", schedule: "*/5 * * * *" }, "Observe the build", {
+      recurring: true, maxFires: 4,
+    });
+    const before = structuredClone(h.store.list());
+    const pause = vi.spyOn(h.store, "pause");
+    const resume = vi.spyOn(h.store, "resume");
+    const remove = vi.spyOn(h.store, "delete");
+    const fire = vi.spyOn(h.store, "fire");
+    let visits = 0;
+    let detail = "";
+    const ui = {
+      select: vi.fn(async (title: string, choices: string[]) => {
+        if (title === "Loop") return "View loops";
+        if (title === "Loops") return visits++ === 0 ? choices[0] : "< Back";
+        detail = title;
+        return "< Back";
+      }), input: vi.fn(), notify: vi.fn(),
+    };
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(detail).toContain("Kind: scheduled loop");
+    expect(detail).toContain("Storage: project file (shared; no scheduler owner election)");
+    expect(detail).toContain(`Expires at: ${new Date(entry.expiresAt).toISOString()}`);
+    expect(detail).toContain(`Next fire: ${new Date(next).toISOString()}`);
+    expect(detail).toContain("Fires: 0/4 (accounted, not delivered wakes)");
+    expect(detail).toContain("Next action:");
+    expect(getNextFire).toHaveBeenCalledWith(entry.id);
+    expect(h.store.list()).toEqual(before);
+    for (const fn of [pause, resume, remove, fire, h.triggerSystem.add, h.triggerSystem.remove, h.updateWidget, h.onDynamicLoopActivated]) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+  });
+
+  it("reads a real scheduler deadline without pumping, rearming, or changing state", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:01Z"));
+    h = setup({ getNextFire: (id: string) => scheduler.nextFire(id) });
+    const onFire = vi.fn(() => true);
+    const scheduler = new CronScheduler(h.store, onFire);
+    try {
+      const entry = h.store.create({ type: "cron", schedule: "*/5 * * * *" }, "Read deadline", { recurring: true });
+      scheduler.add(entry);
+      const deadline = scheduler.nextFire(entry.id)!;
+      expect(Number.isFinite(deadline)).toBe(true);
+      const snapshot = structuredClone(h.store.list());
+      const add = vi.spyOn(scheduler, "add");
+      const remove = vi.spyOn(scheduler, "remove");
+      const pump = vi.spyOn(scheduler, "pump");
+      let visits = 0;
+      let detail = "";
+      const ui = {
+        select: vi.fn(async (title: string, choices: string[]) => {
+          if (title === "Loop") return "View loops";
+          if (title === "Loops") return visits++ === 0 ? choices[0] : "< Back";
+          detail = title;
+          return "< Back";
+        }), input: vi.fn(), notify: vi.fn(),
+      };
+      await h.command.handler!("", { ui } as any);
+      expect(detail).toContain(`Next fire: ${new Date(deadline).toISOString()}`);
+      expect(scheduler.nextFire(entry.id)).toBe(deadline);
+      expect(h.store.list()).toEqual(snapshot);
+      for (const fn of [pump, add, remove, onFire, h.triggerSystem.add, h.triggerSystem.remove, h.updateWidget]) {
+        expect(fn).not.toHaveBeenCalled();
+      }
+    } finally {
+      scheduler.stop();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([false, true])("bug: does not offer unsupported resume after a workflow %s fire cap", async (stateCap) => {
+    h.store.create({ type: "dynamic" }, "Bounded review", {
+      recurring: true, maxFires: stateCap ? 10 : 1,
+      workflow: {
+        version: 1, initialState: "work",
+        states: {
+          work: { prompt: "Review.", on: { done: "done" }, ...(stateCap ? { loop: { schedule: "*/5 * * * *", maxFires: 1 } } : {}) },
+          done: { prompt: "Report.", terminal: "completed" },
+        },
+      },
+    });
+    h.store.fire("1");
+    expect(h.store.get("1")?.pause?.kind).toBe("controller_limit");
+    expect(h.store.resume("1")).toBeUndefined();
+    const before = structuredClone(h.store.get("1"));
+    let visits = 0;
+    let actions: string[] = [];
+    const ui = {
+      select: vi.fn(async (title: string, choices: string[]) => {
+        if (title === "Loop") return "View loops";
+        if (title === "Loops") return visits++ === 0 ? choices[0] : "< Back";
+        actions = choices;
+        return "< Back";
+      }), input: vi.fn(), notify: vi.fn(),
+    };
+    await h.command.handler!("", { ui } as any);
+    expect(actions).not.toContain("* Resume");
+    expect(h.store.get("1")).toEqual(before);
+    expect(h.triggerSystem.add).not.toHaveBeenCalled();
+  });
+
+  it("control: still offers explicit resume for an administrative pause below its budget", async () => {
+    h.store.create({ type: "dynamic" }, "Continue review", { recurring: true, maxFires: 3 });
+    h.store.pause("1");
+    let visits = 0;
+    let actions: string[] = [];
+    const ui = {
+      select: vi.fn(async (title: string, choices: string[]) => {
+        if (title === "Loop") return "View loops";
+        if (title === "Loops") return visits++ === 0 ? choices[0] : "< Back";
+        actions = choices;
+        return "< Back";
+      }), input: vi.fn(), notify: vi.fn(),
+    };
+    await h.command.handler!("", { ui } as any);
+    expect(actions).toContain("* Resume");
+    expect(h.store.get("1")?.status).toBe("paused");
+    expect(h.triggerSystem.add).not.toHaveBeenCalled();
   });
 
   it("no-args invocation with 'Create scheduled loop' prompts for prompt + interval and creates a loop", async () => {

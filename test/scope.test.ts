@@ -1,6 +1,6 @@
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveLoopStorePath, resolveTaskStorePath, type ScopeOptions } from "../src/runtime/scope.js";
+import { resolveLoopStorageScope, resolveLoopStorePath, resolveTaskStorePath, type ScopeOptions } from "../src/runtime/scope.js";
 
 const CWD = "/tmp/pi-loop-scope";
 
@@ -47,6 +47,26 @@ describe("resolveLoopStorePath", () => {
 
   it("PI_LOOP env takes precedence over scope", () => {
     expect(resolveLoopStorePath(opts({ loopScope: "memory", piLoopEnv: "/x.json" }))).toBe("/x.json");
+  });
+});
+
+describe("resolveLoopStorageScope", () => {
+  it.each([
+    [opts({ loopScope: "memory" }), "s1", "memory"],
+    [opts(), undefined, "memory"],
+    [opts(), "s1", "session"],
+    [opts({ loopScope: "project" }), undefined, "project"],
+    [opts({ loopScope: "project", piLoopEnv: "off" }), "s1", "memory"],
+    [opts({ piLoopEnv: "/custom/private.json" }), "s1", "custom"],
+    [opts({ piLoopEnv: "./private.json" }), undefined, "custom"],
+    [opts({ loopScope: "memory", piLoopEnv: "named-store" }), "s1", "custom"],
+    [opts({ piLoopEnv: "" }), "s1", "session"],
+  ] as const)("classifies the resolved store for %j and session %s as %s", (options, session, expected) => {
+    const before = structuredClone(options);
+    const scope = resolveLoopStorageScope(options, session);
+    expect(scope).toBe(expected);
+    expect(scope === "memory").toBe(resolveLoopStorePath(options, session) === undefined);
+    expect(options).toEqual(before);
   });
 });
 
