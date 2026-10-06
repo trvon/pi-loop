@@ -1,3 +1,4 @@
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
@@ -13,6 +14,7 @@ describe("TriggerSystem", () => {
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-01-01T00:00:01Z"));
     pi = createMockPi().pi;
     store = new LoopStore();
     const fireLoop = (entry: LoopEntry) => {
@@ -38,6 +40,212 @@ describe("TriggerSystem", () => {
   afterEach(() => {
     system.stop();
     vi.restoreAllMocks();
+  });
+
+  it("rejects an unsubscribed in-flight listener on the real SDK event bus", () => {
+    vi.useFakeTimers();
+    pi.events = createEventBus();
+    const entry = store.create({ type: "event", source: "in-flight" }, "old", { recurring: true });
+    const onFire = vi.fn(() => true);
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    let replaced = false;
+    pi.events.on("in-flight", () => {
+      if (replaced) return;
+      replaced = true;
+      system.remove(entry.id);
+      system.add(store.get(entry.id)!);
+    });
+    system.add(entry);
+    pi.events.emit("in-flight", {});
+    expect(onFire).not.toHaveBeenCalled();
+    pi.events.emit("in-flight", {});
+    expect(onFire).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["add", "start"] as const)("replaces changed source/filter policy via %s without retaining stale listeners", (method) => {
+    vi.useFakeTimers();
+    const onFire = vi.fn(() => true);
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({ type: "event", source: "old", filter: '{"kind":"old"}' }, "policy", { recurring: true });
+    system.add(entry);
+    entry.trigger = { type: "event", source: "new", filter: '{"kind":"new"}' };
+    if (method === "add") system.add(entry);
+    else system.start();
+    pi.events.emit("old", { kind: "old" });
+    expect(onFire).not.toHaveBeenCalled();
+    pi.events.emit("new", { kind: "old" });
+    expect(onFire).not.toHaveBeenCalled();
+    pi.events.emit("new", { kind: "new" });
+    expect(onFire).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a mutable same-source filter supersession before filtering", () => {
+    const onFire = vi.fn(() => true);
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({ type: "event", source: "policy", filter: '{"kind":"old"}' }, "old", { recurring: true });
+    system.add(entry);
+    entry.trigger = { type: "event", source: "policy", filter: '{"kind":"new"}' };
+    const getter = vi.fn(() => "old");
+    pi.events.emit("policy", { get kind() { return getter(); } });
+    expect(getter).not.toHaveBeenCalled();
+    expect(onFire).not.toHaveBeenCalled();
+    system.add(entry);
+    pi.events.emit("policy", { kind: "new" });
+    expect(onFire).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])("preserves a filter reentrant replacement when the filter matches %s", (matches) => {
+    const onFire = vi.fn(() => true);
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({ type: "event", source: "policy", filter: '{"kind":"old"}' }, "old", { recurring: false });
+    system.add(entry);
+    pi.events.emit("policy", { get kind() {
+      system.remove(entry.id);
+      system.add(store.get(entry.id)!);
+      return matches ? "old" : "new";
+    } });
+    expect(onFire).not.toHaveBeenCalled();
+    expect(store.get(entry.id)).toBeDefined();
+    pi.events.emit("policy", { kind: "old" });
+    expect(onFire).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])("preserves an onFire reentrant one-shot replacement when dispatch returns %s", (accepted) => {
+    let replacement = false;
+    const entry = store.create({ type: "event", source: "replace" }, "old", { recurring: false });
+    const onFire = vi.fn(() => {
+      if (!replacement) {
+        replacement = true;
+        system.remove(entry.id);
+        system.add(store.get(entry.id)!);
+      }
+      return accepted;
+    });
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    system.add(entry);
+    pi.events.emit("replace", {});
+    expect(store.get(entry.id)).toBeDefined();
+    pi.events.emit("replace", {});
+    expect(onFire).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([true, false])("does not let a captured stale hybrid timer delete a newer timer slot (replace registration %s)", (replaceRegistration) => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(globalThis, "setTimeout");
+    const onFire = vi.fn(() => true);
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({ type: "hybrid", cron: "0 0 * * *", event: { source: "timer" }, debounceMs: 1000 }, "timer", { recurring: true });
+    system.add(entry);
+    pi.events.emit("timer", {});
+    pi.events.emit("timer", {});
+    const staleCallback = timeout.mock.calls.at(-1)![0] as () => void;
+    if (replaceRegistration) {
+      system.remove(entry.id);
+      system.add(store.get(entry.id)!);
+    }
+    pi.events.emit("timer", {});
+    pi.events.emit("timer", {});
+    const timers = (system as unknown as { hybridTimers: Map<string, unknown> }).hybridTimers;
+    const newerTimer = timers.get(entry.id);
+    const calls = onFire.mock.calls.length;
+    staleCallback();
+    expect(onFire).toHaveBeenCalledTimes(calls);
+    expect(timers.get(entry.id)).toBe(newerTimer);
+    vi.advanceTimersByTime(1000);
+    expect(onFire).toHaveBeenCalledTimes(calls + 1);
+  });
+
+  it("rejects an in-flight real SDK listener after stop invalidates its ownership", () => {
+    pi.events = createEventBus();
+    const onFire = vi.fn(() => true);
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({ type: "event", source: "stop-in-flight" }, "event", { recurring: true });
+    pi.events.on("stop-in-flight", () => system.stop());
+    system.add(entry);
+    pi.events.emit("stop-in-flight", {});
+    expect(onFire).not.toHaveBeenCalled();
+  });
+
+  it.each(["event", "hybrid"] as const)("refreshes recurring %s callback counters and metadata without re-registration", (type) => {
+    vi.useFakeTimers();
+    const observations: Array<{ fireCount: number; prompt: string }> = [];
+    const onFire = vi.fn((current: LoopEntry) => {
+      observations.push({ fireCount: current.fireCount ?? 0, prompt: current.prompt });
+      store.fire(current.id);
+    });
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    const trigger: Trigger = type === "event"
+      ? { type: "event", source: "refresh" }
+      : { type: "hybrid", cron: "0 0 * * *", event: { source: "refresh" }, debounceMs: 1000 };
+    const entry = store.create(trigger, "old", { recurring: true });
+    system.add(entry);
+    pi.events.emit("refresh", {});
+    if (type === "hybrid") {
+      pi.events.emit("refresh", {});
+      expect(onFire).toHaveBeenCalledTimes(1);
+    }
+    store.updateMetadata(entry.id, { prompt: "updated" });
+    if (type === "hybrid") vi.advanceTimersByTime(1000);
+    else pi.events.emit("refresh", {});
+    expect(observations).toEqual([
+      { fireCount: 0, prompt: "old" },
+      { fireCount: 1, prompt: "updated" },
+    ]);
+    expect(onFire.mock.calls[1]![0]).not.toBe(store.get(entry.id));
+    expect(store.get(entry.id)).toMatchObject({ fireCount: 2, prompt: "updated" });
+  });
+
+  it("keeps the subscribed activation private from a mutating denied callback", () => {
+    const entry = store.create({ type: "event", source: "captured" }, "event", { recurring: true });
+    const onFire = vi.fn((captured) => { captured.createdAt++; return false; });
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    system.add(entry);
+    pi.events.emit("captured", {});
+    pi.events.emit("captured", {});
+    expect(onFire).toHaveBeenCalledTimes(2);
+    expect(onFire.mock.calls[0]![0]).not.toBe(entry);
+  });
+
+  it("does not roll back the debounce reservation of a reentrant replacement", () => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "hybrid", cron: "0 0 * * *", event: { source: "reservation" }, debounceMs: 1000 }, "hybrid", { recurring: true });
+    let replaced = false;
+    const onFire = vi.fn(() => {
+      if (replaced) return true;
+      replaced = true;
+      system.remove(entry.id);
+      system.add(store.get(entry.id)!);
+      pi.events.emit("reservation", {});
+      return false;
+    });
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    system.add(entry);
+    pi.events.emit("reservation", {});
+    expect(onFire).toHaveBeenCalledTimes(2);
+    pi.events.emit("reservation", {});
+    expect(onFire).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(1000);
+    expect(onFire).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not remove a replacement event registration installed during expiry", () => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "event", source: "expiry-replace" }, "old", { recurring: true });
+    entry.expiresAt = Date.now();
+    scheduler = new CronScheduler(store, vi.fn(), undefined, () => {
+      system.remove(entry.id);
+      entry.createdAt++;
+      entry.expiresAt = Date.now() + 60_000;
+      system.add(entry);
+      return true;
+    });
+    const onFire = vi.fn(() => true);
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    system.add(entry);
+    pi.events.emit("expiry-replace", {});
+    expect(store.get(entry.id)).toBeDefined();
+    pi.events.emit("expiry-replace", {});
+    expect(onFire).toHaveBeenCalledTimes(1);
   });
 
   it("adds cron triggers to scheduler (no event subscription needed)", () => {
@@ -386,6 +594,74 @@ describe("TriggerSystem", () => {
       (c: string[]) => c[0] === "loop:fire"
     );
     expect(afterCalls).toHaveLength(1);
+  });
+
+  it("unsubscribes a backlog already paused by a capped void callback without settling the cap twice", () => {
+    const mock = createMockPi();
+    pi = mock.pi;
+    const onFire = vi.fn((entry: LoopEntry) => { store.fire(entry.id); });
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({ type: "event", source: "capped-backlog" }, "bounded worker", {
+      recurring: true, taskBacklog: true, maxFires: 1,
+    });
+    const pause = vi.spyOn(store, "pause");
+    const deleteEntry = vi.spyOn(store, "delete");
+    system.add(entry);
+    expect(mock.eventHandlers.get("capped-backlog")).toHaveLength(1);
+    pi.events.emit("capped-backlog", {});
+    expect(store.get(entry.id)).toMatchObject({ status: "paused", fireCount: 1 });
+    expect(mock.eventHandlers.get("capped-backlog")).toHaveLength(0);
+    expect(pause).not.toHaveBeenCalled();
+    expect(deleteEntry).not.toHaveBeenCalled();
+    pi.events.emit("capped-backlog", {});
+    expect(onFire).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not clean up a paused superseding identity after a capped callback", () => {
+    const mock = createMockPi();
+    pi = mock.pi;
+    const onFire = vi.fn((entry: LoopEntry) => {
+      store.fire(entry.id);
+      store.get(entry.id)!.createdAt++;
+    });
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({ type: "event", source: "superseded-backlog" }, "bounded worker", {
+      recurring: true, taskBacklog: true, maxFires: 1,
+    });
+    const pause = vi.spyOn(store, "pause");
+    const deleteEntry = vi.spyOn(store, "delete");
+    system.add(entry);
+    pi.events.emit("superseded-backlog", {});
+    expect(store.get(entry.id)).toMatchObject({ status: "paused", fireCount: 1 });
+    expect(mock.eventHandlers.get("superseded-backlog")).toHaveLength(1);
+    expect(pause).not.toHaveBeenCalled();
+    expect(deleteEntry).not.toHaveBeenCalled();
+  });
+
+  it("preserves a reentrant registration installed after the callback settles a backlog cap", () => {
+    const mock = createMockPi();
+    pi = mock.pi;
+    let replaced = false;
+    const onFire = vi.fn((entry: LoopEntry) => {
+      store.fire(entry.id);
+      if (replaced) return;
+      replaced = true;
+      system.remove(entry.id);
+      store.get(entry.id)!.maxFires = 3;
+      system.add(store.resume(entry.id)!);
+    });
+    system = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({ type: "event", source: "reentrant-backlog" }, "bounded worker", {
+      recurring: true, taskBacklog: true, maxFires: 1,
+    });
+    system.add(entry);
+    const oldListener = mock.eventHandlers.get("reentrant-backlog")![0]!;
+    oldListener({});
+    expect(store.get(entry.id)).toMatchObject({ status: "active", fireCount: 1 });
+    expect(mock.eventHandlers.get("reentrant-backlog")).toHaveLength(1);
+    pi.events.emit("reentrant-backlog", {});
+    expect(onFire).toHaveBeenCalledTimes(2);
+    expect(store.get(entry.id)).toMatchObject({ status: "active", fireCount: 2 });
   });
 
   it("pauses task-backlog controllers when their fire budget is exhausted", () => {
