@@ -36,6 +36,19 @@ The fixed checklist is:
 
 A scenario succeeds only when every critical item passes. Accuracy is the fraction of all four items that pass. Reports also record duration, tool-call and retry counts, agent-run count, bounded assistant text, errors, and event traces. A failed argument or single-turn item lowers accuracy even when critical routing succeeds.
 
+## First-attempt schema conformance
+
+Evaluation version 2 reports two fields separately from the fixed four-item checklist:
+
+- `firstAttemptValid`: the first observed controller-creation batch has the expected type/count and every call has an accepted tool result. For the independent-task case, the batch contains three calls, not one.
+- `firstAttemptSemantic`: that valid batch also passes the scenario's existing argument checks.
+
+An invalid first call repaired in-turn can still pass routing and score 100% on the original checklist. Both first-attempt fields remain false. Conversely, an accepted definition that omits the requested rework can pass validity but fail semantics. Neither field changes critical-success rules, accuracy, retries, or single-turn judgment.
+
+The observation boundary is `tool_execution_start`/`tool_execution_end`, not hypothetical tool choices or every raw model token. Missing or rejected results do not pass. Response model/provider/API metadata is captured separately from the requested model string; absent metadata remains absent. Reports include Pi/Node versions and explicitly count model observations dropped by the eight-entry bound. Argument checks are structural scenario checks, not proof that an entire workflow executes correctly. A timeout/process/extension failure can still omit in-flight observations and earlier completed scenarios for that model from the failed report; version-probe recovery does not establish complete failed-run retention.
+
+Deterministic tests cover repaired attempts, accepted-but-wrong semantics, missing/error results, competing controllers, multi-task batches, late failed calls, timing, and input non-mutation. The published usage-guide example also runs through the production definition validator and LoopStore; cadence/rework misuse is tested independently. These tests establish measurement and example contracts, not model effectiveness.
+
 ## Run across models
 
 ```bash
@@ -68,5 +81,11 @@ Because no critical or normal routing item failed across two consecutive passes 
 ## Initial live result
 
 The initial full RPC run with `openai-codex/gpt-5.6-sol:minimal` passed all six scenarios at 100% checklist accuracy. The three workflow scenarios each repaired one invalid first attempt in the same user-request turn after incorrectly treating a state-level `loop` field as rework metadata. Their final workflow calls passed and preserved the intended route; the task and loop scenarios required no retries. This is recorded as schema-repair evidence, not hidden or counted as a controller-selection failure.
+
+## Current bounded baseline
+
+An unchanged-copy run on 2026-10-06 requested `openai/gpt-6.1-sol:minimal` using Pi1.0.4 and Node26.10.0. All six fixtures passed all four checklist items. Each workflow case used one creation call with zero repairs. The older harness did not capture response model metadata, so the model string identifies the requested configuration, not an independently observed response model. The existing three hold-outs were included; they are now seen controls, not fresh unseen validation.
+
+This one-model, one-pass run did not reproduce the historical schema problem. Compact tool copy and examples were left unchanged. No guidance improvement, model-wide failure rate, empirical convergence, or operator benefit is claimed. Proposed multi-model/repeat and operator studies remain unrun. Future tuning requires a reproducible current failure, pinned copy/model provenance, first-attempt semantic comparisons, and fresh frozen hold-outs; provider errors and `SKIP` are not passes.
 
 A 9-second startup window is intentional. Native fallback task tools now register at `session_start`, before the first request, so the window no longer guards tool registration; it is kept so the protocol-v2 `pi-tasks` probe has settled before controller judgment is measured.

@@ -460,6 +460,25 @@ describe("subagent orchestration runtime", () => {
     expect(h.store.get(h.entry.id)?.orchestration?.pendingWake).toMatchObject({ reason: "uncertain", sequence: 1 });
   });
 
+  it("retires an existing attention wake on expiry without replaying uncertain work", async () => {
+    const rpc = vi.fn(async (channel: string) => {
+      if (channel === "subagents:rpc:spawn") throw new RpcError(channel, "timed out", true);
+      return undefined;
+    });
+    const h = setup({ workCount: 1, rpc });
+    await h.runtime.pump();
+    await h.drain();
+    expect(h.store.get(h.entry.id)?.orchestration?.pendingWake?.reason).toBe("uncertain");
+    expect(h.emitWake).toHaveBeenCalledTimes(1);
+    h.setNow(h.entry.expiresAt);
+    await h.runtime.pump();
+    expect(h.store.get(h.entry.id)?.orchestration).toMatchObject({ status: "cancelled", pendingWake: undefined });
+    expect(h.store.get(h.entry.id)?.status).toBe("paused");
+    expect(h.emitWake).toHaveBeenCalledTimes(1);
+    expect(spawnCalls(rpc)).toHaveLength(1);
+    expect(h.onExpired).toHaveBeenCalledWith(expect.objectContaining({ id: h.entry.id }), "paused");
+  });
+
   it("does not retry consumption for provider-owned completion", async () => {
     const h = setup({ workCount: 1 });
     await h.runtime.pump();
