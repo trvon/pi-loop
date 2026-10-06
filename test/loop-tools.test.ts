@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
 import { registerLoopTools } from "../src/tools/loop-tools.js";
 import { formatWorkflowSummary, registerWorkflowTools } from "../src/tools/workflow-tools.js";
+import { TriggerSystem } from "../src/trigger-system.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
 function setup() {
@@ -1280,5 +1282,166 @@ describe("LoopDelete", () => {
 
   it("reports not found for an unknown id", async () => {
     expect(await h.text("LoopDelete", { id: "99", action: "delete" })).toBe("Loop #99 not found");
+  });
+});
+
+describe("Workflow tool runtime fencing", () => {
+  const workflow = {
+    version: 1 as const,
+    initialState: "work",
+    states: {
+      work: { prompt: "Work.", on: { done: "complete" } },
+      complete: { prompt: "Done.", terminal: "completed" as const },
+    },
+  };
+
+  it("does not remove a replacement runtime's trigger when a transition continuation resumes after rebinding", async () => {
+    const { pi, toolMap } = createMockPi();
+    const oldStore = new LoopStore();
+    const replacementStore = new LoopStore();
+    const oldEntry = oldStore.create({ type: "dynamic" }, "Old session", { recurring: true, workflow });
+    const replacementEntry = replacementStore.create({ type: "dynamic" }, "Replacement session", {
+      recurring: true,
+      workflow: { ...workflow, states: {
+        ...workflow.states,
+        work: { ...workflow.states.work, loop: { schedule: "*/5 * * * *", startImmediately: false } },
+      } },
+    });
+    expect(oldEntry.id).toBe(replacementEntry.id);
+
+    type TriggerSpy = Pick<TriggerSystem, "add" | "remove">;
+    interface AuditRuntime {
+      store: LoopStore;
+      triggers: TriggerSpy;
+      sessionId: string;
+      digest: string;
+    }
+
+    const replacementScheduler = new CronScheduler(replacementStore, vi.fn());
+    const replacementTriggers = new TriggerSystem(pi, replacementScheduler, replacementStore, vi.fn());
+    replacementTriggers.add(replacementEntry);
+    const scheduledAt = replacementScheduler.nextFire(replacementEntry.id);
+    expect(scheduledAt).toBeGreaterThan(Date.now());
+    let runtime: AuditRuntime = {
+      store: oldStore,
+      triggers: { add: vi.fn(), remove: vi.fn() },
+      sessionId: "old-session",
+      digest: "old-context",
+    };
+    registerWorkflowTools({
+      pi,
+      getStore: () => runtime.store,
+      getTriggerSystem: () => runtime.triggers,
+      getActor: () => ({ sessionId: runtime.sessionId, runtimeId: runtime.sessionId }),
+      getAdmissionContextDigest: () => runtime.digest,
+      getAdmissionProviders: () => [],
+      updateWidget: vi.fn(),
+    });
+
+    const replacementRuntime: AuditRuntime = {
+      store: replacementStore,
+      triggers: replacementTriggers,
+      sessionId: "replacement-session",
+      digest: "replacement-context",
+    };
+    const transition = oldStore.transitionWorkflow.bind(oldStore);
+    // Inject a rebind after commit. This tests the defensive boundary, not Pi's
+    // normal UI-switch ordering, and does not depend on synchronous admission.
+    const commit = vi.spyOn(oldStore, "transitionWorkflow").mockImplementation((...args) => {
+      const result = transition(...args);
+      if (result.applied) runtime = replacementRuntime;
+      return result;
+    });
+    try {
+      await toolMap.get("WorkflowTransition")!.execute!("transition-old", {
+        id: oldEntry.id, outcome: "done", evidence: "Old session finished.",
+      });
+      expect(oldStore.get(oldEntry.id)).toBeUndefined();
+      expect(replacementStore.get(replacementEntry.id)?.status).toBe("active");
+      expect(replacementScheduler.nextFire(replacementEntry.id)).toBe(scheduledAt);
+    } finally {
+      commit.mockRestore();
+      replacementTriggers.stop();
+    }
+  });
+
+  it("fences a committed transition after the generation changes with the same runtime resources", async () => {
+    const { pi, toolMap } = createMockPi();
+    const store = new LoopStore();
+    const entry = store.create({ type: "dynamic" }, "Work", { recurring: true, workflow });
+    const triggers = { add: vi.fn(), remove: vi.fn() };
+    const updateWidget = vi.fn();
+    let generation = 1;
+    registerWorkflowTools({
+      pi, getStore: () => store, getTriggerSystem: () => triggers,
+      getActor: () => ({ sessionId: "same-session", runtimeId: "same-runtime" }),
+      getAdmissionContextDigest: () => "same-context",
+      getSessionGeneration: () => generation,
+      getAdmissionProviders: () => [], updateWidget,
+    });
+    const transition = store.transitionWorkflow.bind(store);
+    const commit = vi.spyOn(store, "transitionWorkflow").mockImplementation((...args) => {
+      const result = transition(...args);
+      if (result.applied) generation++;
+      return result;
+    });
+    try {
+      await toolMap.get("WorkflowTransition")!.execute!("old-generation", { id: entry.id, outcome: "done" });
+      expect(store.get(entry.id)).toBeUndefined();
+      expect(triggers.remove).not.toHaveBeenCalled();
+      expect(triggers.add).not.toHaveBeenCalled();
+      expect(updateWidget).not.toHaveBeenCalled();
+    } finally {
+      commit.mockRestore();
+    }
+  });
+
+  it("leaves a newer state's cadence armed when a transition's activation is superseded", async () => {
+    const { pi, toolMap } = createMockPi();
+    const store = new LoopStore();
+    const entry = store.create({ type: "dynamic" }, "Prepare then poll", {
+      recurring: true,
+      workflow: { version: 1, initialState: "prepare", states: {
+        prepare: { prompt: "Prepare.", on: { next: "review" } },
+        review: { prompt: "Review.", on: { next: "poll" } },
+        poll: { prompt: "Poll.", loop: { schedule: "*/5 * * * *", startImmediately: false }, on: { done: "done" } },
+        done: { prompt: "Done.", terminal: "completed" },
+      } },
+    });
+    const scheduler = new CronScheduler(store, vi.fn());
+    const triggers = new TriggerSystem(pi, scheduler, store, vi.fn());
+    const activate = vi.fn();
+    registerWorkflowTools({
+      pi, getStore: () => store, getTriggerSystem: () => triggers,
+      getActor: () => ({ sessionId: "same-session", runtimeId: "same-runtime" }),
+      getAdmissionContextDigest: () => "same-context", getAdmissionProviders: () => [],
+      updateWidget: vi.fn(), onDynamicLoopActivated: activate,
+    });
+    const transition = store.transitionWorkflow.bind(store);
+    let scheduledAt: number | undefined;
+    const commit = vi.spyOn(store, "transitionWorkflow").mockImplementation((...args) => {
+      const result = transition(...args);
+      if (result.entry?.workflow?.currentState === "review") {
+        const workflow = result.entry.workflow;
+        const advanced = transition(entry.id, { outcome: "next" }, {
+          currentState: workflow.currentState, transitionSeq: workflow.transitionSeq,
+          definitionRevision: workflow.definitionRevision, activeExecutionId: workflow.activeExecution?.id,
+        });
+        expect(advanced.applied).toBe(true);
+        triggers.add(advanced.entry!);
+        scheduledAt = scheduler.nextFire(entry.id);
+      }
+      return result;
+    });
+    try {
+      await toolMap.get("WorkflowTransition")!.execute!("superseded", { id: entry.id, outcome: "next" });
+      expect(store.get(entry.id)?.workflow?.currentState).toBe("poll");
+      expect(scheduledAt).toBeGreaterThan(Date.now());
+      expect(scheduler.nextFire(entry.id)).toBe(scheduledAt);
+      expect(activate).not.toHaveBeenCalled();
+    } finally {
+      commit.mockRestore();
+      triggers.stop();
+    }
   });
 });

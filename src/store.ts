@@ -667,7 +667,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         });
       }
       return { entry: this.entries.get(id), applied: true };
-    });
+    }, (result) => result.applied);
   }
 
   claimWorkflowExecution(
@@ -703,7 +703,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         payload: { id, actor, leaseMs },
       });
       return { entry: this.entries.get(id), claimed: true };
-    });
+    }, (result) => result.claimed);
   }
 
   attachWorkflowMonitor(
@@ -882,8 +882,12 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
     return { entry, disposition, reason: "expires_at" };
   }
 
-  expireEntry(id: string, now = Date.now()): ExpiredLoopRecord | undefined {
-    return this.withLock(() => this.expireEntryUnlocked(id, now));
+  expireEntry(id: string, now = Date.now(), expected?: Pick<LoopEntry, "createdAt" | "expiresAt">): ExpiredLoopRecord | undefined {
+    return this.withLock(() => {
+      const current = this.entries.get(id);
+      if (expected && (current?.createdAt !== expected.createdAt || current.expiresAt !== expected.expiresAt)) return undefined;
+      return this.expireEntryUnlocked(id, now);
+    }, expected ? (record) => record !== undefined : undefined);
   }
 
   expireEntries(now = Date.now()): ExpiredLoopRecord[] {

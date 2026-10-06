@@ -25,7 +25,7 @@ npm audit --audit-level=moderate
 git diff --check
 ```
 
-Lint currently reports four established optional-chain warnings; new warnings are not accepted.
+Lint currently reports two established optional-chain warnings; new warnings are not accepted.
 
 ## Test layers
 

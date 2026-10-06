@@ -1,7 +1,10 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
-import type { Trigger } from "../src/types.js";
+import type { LoopEntry, Trigger } from "../src/types.js";
 import { currentMonitorAttachmentIdentity, currentWorkflowIdentity } from "./helpers/workflow-identity.js";
 
 const cronTrigger: Trigger = { type: "cron", schedule: "*/5 * * * *" };
@@ -14,6 +17,7 @@ describe("CronScheduler", () => {
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-01-01T00:00:01Z"));
     store = new LoopStore();
     fired = [];
     expired = [];
@@ -27,6 +31,284 @@ describe("CronScheduler", () => {
   afterEach(() => {
     scheduler.stop();
     vi.restoreAllMocks();
+  });
+
+  it.each([true, false])("preserves filter reentrant registration when the filter returns %s", (accepted) => {
+    vi.useFakeTimers();
+    const onFire = vi.fn(() => true);
+    scheduler = new CronScheduler(store, onFire);
+    const entry = store.create({ type: "dynamic" }, "old", { recurring: false });
+    scheduler.add(entry);
+    const deadline = Date.now() + 60_000;
+    scheduler.pump(Date.now(), () => {
+      scheduler.remove(entry.id);
+      const replacement = store.updateDynamic(entry.id, { dynamic: { nextWakeAt: deadline, iteration: 1 } })!;
+      scheduler.add(replacement);
+      return accepted;
+    });
+    expect(onFire).not.toHaveBeenCalled();
+    expect(store.get(entry.id)).toBeDefined();
+    expect(scheduler.nextFire(entry.id)).toBe(deadline);
+  });
+
+  it.each([true, false])("preserves onFire reentrant registration when dispatch returns %s", (accepted) => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "dynamic" }, "old", { recurring: false });
+    const deadline = Date.now() + 60_000;
+    const onFire = vi.fn(() => {
+      scheduler.remove(entry.id);
+      scheduler.add(store.updateDynamic(entry.id, { dynamic: { nextWakeAt: deadline, iteration: 1 } })!);
+      return accepted;
+    });
+    scheduler = new CronScheduler(store, onFire);
+    scheduler.add(entry);
+    scheduler.pump(Date.now());
+    expect(onFire).toHaveBeenCalledTimes(1);
+    expect(store.get(entry.id)).toBeDefined();
+    expect(scheduler.nextFire(entry.id)).toBe(deadline);
+  });
+
+  it("does not visit a newly added due registration in the same pump", () => {
+    vi.useFakeTimers();
+    const first = store.create({ type: "dynamic" }, "first", { recurring: false });
+    const second = store.create({ type: "dynamic" }, "second", { recurring: false });
+    scheduler = new CronScheduler(store, (entry) => {
+      fired.push(entry.id);
+      if (entry.id === first.id) scheduler.add(second);
+    });
+    scheduler.add(first);
+    scheduler.pump(Date.now());
+    expect(fired).toEqual([first.id]);
+    scheduler.pump(Date.now());
+    expect(fired).toEqual([first.id, second.id]);
+  });
+
+  it("reconciles a file-backed peer cadence advance without firing the old deadline", () => {
+    vi.useFakeTimers();
+    const dir = mkdtempSync(join(tmpdir(), "pi-loop-dispatch-"));
+    try {
+      store = new LoopStore(join(dir, "loops.json"));
+      const entry = store.create({ type: "dynamic" }, "cadence", {
+        recurring: true, dynamic: { nextWakeAt: Date.now() + 1000, iteration: 0 },
+      });
+      const onFire = vi.fn(() => true);
+      scheduler = new CronScheduler(store, onFire);
+      scheduler.add(entry);
+      const peer = new LoopStore(join(dir, "loops.json"));
+      const deadline = Date.now() + 60_000;
+      peer.updateDynamic(entry.id, { dynamic: { nextWakeAt: deadline, iteration: 1 } });
+      vi.advanceTimersByTime(1000);
+      scheduler.pump(Date.now());
+      expect(onFire).not.toHaveBeenCalled();
+      expect(scheduler.nextFire(entry.id)).toBe(deadline);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([true, false])("reconciles post-callback supersession without explicit rearm (%s)", (accepted) => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "dynamic" }, "workflow", {
+      recurring: true,
+      workflow: {
+        version: 1, initialState: "first", states: {
+          first: { prompt: "First", on: { next: "second" } },
+          second: { prompt: "Second", loop: { schedule: "0 7 * * *" }, on: { done: "done" } },
+          done: { prompt: "Done", terminal: "completed" },
+        },
+      },
+    });
+    scheduler = new CronScheduler(store, () => {
+      store.transitionWorkflow(entry.id, { outcome: "next" }, currentWorkflowIdentity(store, entry.id));
+      return accepted;
+    });
+    scheduler.add(entry);
+    scheduler.pump(Date.now());
+    expect(store.get(entry.id)?.workflow?.currentState).toBe("second");
+    expect(scheduler.nextFire(entry.id)).toBeGreaterThan(Date.now());
+  });
+
+  it("reconciles a file-backed workflow transition without dispatching at the old cadence deadline", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-06T12:00:00Z"));
+    const dir = mkdtempSync(join(tmpdir(), "pi-loop-peer-cadence-"));
+    try {
+      const path = join(dir, "loops.json");
+      store = new LoopStore(path);
+      scheduler = new CronScheduler(store, (entry) => {
+        fired.push(entry.id);
+        store.fire(entry.id);
+      });
+      const entry = store.create({ type: "dynamic" }, "workflow", {
+        recurring: true, workflow: { version: 1, initialState: "first", states: {
+          first: { prompt: "First", loop: { schedule: "*/1 * * * *" }, on: { next: "second" } },
+          second: { prompt: "Second", loop: { schedule: "0 7 * * *", startImmediately: false }, on: { done: "done" } },
+          done: { prompt: "Done", terminal: "completed" },
+        } },
+      });
+      scheduler.add(entry);
+      const oldDeadline = scheduler.nextFire(entry.id)!;
+      const peer = new LoopStore(path);
+      expect(peer.transitionWorkflow(entry.id, { outcome: "next" }, currentWorkflowIdentity(peer, entry.id)).applied).toBe(true);
+      vi.setSystemTime(oldDeadline);
+      scheduler.pump(Date.now());
+      expect(fired).toEqual([]);
+      expect(peer.get(entry.id)).toMatchObject({ fireCount: 0, workflow: { currentState: "second" } });
+      const destinationDeadline = scheduler.nextFire(entry.id)!;
+      expect(destinationDeadline).toBeGreaterThan(oldDeadline);
+      vi.setSystemTime(destinationDeadline);
+      scheduler.pump(Date.now());
+      expect(fired).toEqual([entry.id]);
+      expect(peer.get(entry.id)?.workflow?.stateFireCounts).toEqual({ second: 1 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes same-activation filter and fire arguments, including metadata changed by the filter", () => {
+    vi.useFakeTimers();
+    const observations: Array<{ fireCount: number; prompt: string }> = [];
+    const onFire = vi.fn((current: LoopEntry) => {
+      observations.push({ fireCount: current.fireCount ?? 0, prompt: current.prompt });
+      store.fire(current.id);
+    });
+    scheduler = new CronScheduler(store, onFire);
+    const entry = store.create(cronTrigger, "old", { recurring: true });
+    scheduler.add(entry);
+    store.fire(entry.id);
+    store.updateMetadata(entry.id, { prompt: "before filter" });
+    const filter = vi.fn((current: LoopEntry) => {
+      expect(current).not.toBe(store.get(entry.id));
+      expect(current).toMatchObject({ fireCount: 1, prompt: "before filter" });
+      store.fire(current.id);
+      store.updateMetadata(current.id, { prompt: "after filter" });
+      return true;
+    });
+    vi.setSystemTime(scheduler.nextFire(entry.id)!);
+    scheduler.pump(Date.now(), filter);
+    expect(filter).toHaveBeenCalledTimes(1);
+    expect(observations).toEqual([{ fireCount: 2, prompt: "after filter" }]);
+    expect(onFire.mock.calls[0]![0]).not.toBe(store.get(entry.id));
+    store.updateMetadata(entry.id, { prompt: "next fire" });
+    vi.setSystemTime(scheduler.nextFire(entry.id)!);
+    scheduler.pump(Date.now());
+    expect(observations).toEqual([
+      { fireCount: 2, prompt: "after filter" },
+      { fireCount: 3, prompt: "next fire" },
+    ]);
+    expect(store.get(entry.id)).toMatchObject({ fireCount: 4, prompt: "next fire" });
+  });
+
+  it("rejects an activation superseded during the filter without explicit rearm", () => {
+    vi.useFakeTimers();
+    const onFire = vi.fn(() => true);
+    scheduler = new CronScheduler(store, onFire);
+    const entry = store.create(cronTrigger, "old", { recurring: true });
+    scheduler.add(entry);
+    vi.setSystemTime(scheduler.nextFire(entry.id)!);
+    scheduler.pump(Date.now(), () => {
+      store.updateMetadata(entry.id, { trigger: { type: "cron", schedule: "0 7 * * *" }, prompt: "replacement" });
+      return true;
+    });
+    expect(onFire).not.toHaveBeenCalled();
+    expect(scheduler.nextFire(entry.id)).toBeGreaterThan(Date.now());
+  });
+
+  it("keeps its captured activation private from mutating callback arguments", () => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "dynamic" }, "captured", { recurring: false });
+    const onFire = vi.fn((captured) => {
+      captured.createdAt++;
+      return false;
+    });
+    scheduler = new CronScheduler(store, onFire);
+    scheduler.add(entry);
+    scheduler.pump(Date.now(), (captured) => { captured.createdAt++; return true; });
+    scheduler.pump(Date.now());
+    expect(onFire).toHaveBeenCalledTimes(2);
+    expect(onFire.mock.calls[0]![0]).not.toBe(entry);
+    expect(scheduler.nextFire(entry.id)).toBe(Date.now());
+  });
+
+  it("reconciles a mutable trigger replacement instead of dispatching its old activation", () => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "dynamic" }, "old", { recurring: true });
+    scheduler.add(entry);
+    entry.trigger = { type: "cron", schedule: "0 7 * * *" };
+    scheduler.pump(Date.now());
+    expect(fired).toEqual([]);
+    expect(scheduler.nextFire(entry.id)).toBeGreaterThan(Date.now());
+  });
+
+  it.each([true, false])("does not expire a replacement creation installed during canExpire (explicit rearm %s)", (rearm) => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "event", source: "expiry" }, "old", { recurring: true });
+    entry.expiresAt = Date.now();
+    scheduler = new CronScheduler(store, vi.fn(), (loop, disposition) => {
+      expired.push({ id: loop.id, disposition });
+    }, () => {
+      const replacement = store.get(entry.id)!;
+      replacement.createdAt++;
+      replacement.expiresAt = Date.now();
+      if (rearm) { scheduler.remove(entry.id); scheduler.add(replacement); }
+      return true;
+    });
+    scheduler.add(entry);
+    scheduler.pump(Date.now());
+    expect(store.get(entry.id)?.createdAt).toBe(entry.createdAt);
+    expect(store.get(entry.id)).toBeDefined();
+    expect(expired).toEqual([]);
+  });
+
+  it("rearms changed expiry policy without firing at the stale expiry deadline", () => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "event", source: "expiry" }, "old", { recurring: true });
+    entry.expiresAt = Date.now();
+    scheduler.add(entry);
+    entry.trigger = { type: "dynamic" };
+    entry.expiresAt = Date.now() + 60_000;
+    scheduler.pump(Date.now());
+    expect(fired).toEqual([]);
+    expect(scheduler.nextFire(entry.id)).toBe(Date.now());
+    scheduler.pump(Date.now());
+    expect(fired).toEqual([entry.id]);
+  });
+
+  it("keeps expiry committed but suppresses effects after the dispatcher stops", () => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "event", source: "expiry" }, "old runtime", { recurring: true });
+    entry.expiresAt = Date.now();
+    const onExpired = vi.fn();
+    scheduler = new CronScheduler(store, vi.fn(), onExpired);
+    const originalExpire = store.expireEntry;
+    vi.spyOn(store, "expireEntry").mockImplementation((...args) => {
+      const result = originalExpire.apply(store, args);
+      scheduler.stop();
+      return result;
+    });
+    scheduler.add(entry);
+    scheduler.pump(Date.now());
+    expect(store.get(entry.id)).toBeUndefined();
+    expect(onExpired).not.toHaveBeenCalled();
+  });
+
+  it("expires the same controller after a workflow transition", () => {
+    vi.useFakeTimers();
+    const entry = store.create({ type: "dynamic" }, "workflow expiry", {
+      recurring: true,
+      workflow: { version: 1, initialState: "first", states: {
+        first: { prompt: "First", loop: { schedule: "0 7 * * *" }, on: { next: "second" } },
+        second: { prompt: "Second", on: { done: "done" } },
+        done: { prompt: "Done", terminal: "completed" },
+      } },
+    });
+    entry.expiresAt = Date.now() + 1000;
+    scheduler.add(entry);
+    store.transitionWorkflow(entry.id, { outcome: "next" }, currentWorkflowIdentity(store, entry.id));
+    vi.advanceTimersByTime(1000);
+    scheduler.pump(Date.now());
+    expect(store.get(entry.id)?.status).toBe("paused");
+    expect(expired).toEqual([{ id: entry.id, disposition: "paused" }]);
   });
 
   it("does not arm LoopStore-owned orchestration in the generic scheduler", () => {
@@ -64,9 +346,25 @@ describe("CronScheduler", () => {
     expect(fired).toEqual([entry.id]);
     expect(store.get(entry.id)).toBeUndefined();
     scheduler.stop();
-    scheduler = new CronScheduler(store, (loop) => fired.push(loop.id));
+    scheduler = new CronScheduler(store, (loop) => { fired.push(loop.id); });
     scheduler.start();
     expect(scheduler.nextFire(entry.id)).toBeUndefined();
+  });
+
+  it("keeps a denied one-shot fire pending until the callback accepts it", () => {
+    let accepted = false;
+    const onFire = vi.fn(() => accepted);
+    scheduler = new CronScheduler(store, onFire);
+    const entry = store.create(cronTrigger, "denied one-shot", { recurring: false });
+    scheduler.add(entry);
+    const scheduledAt = scheduler.nextFire(entry.id)!;
+    scheduler.pump(scheduledAt);
+    expect(store.get(entry.id)?.status).toBe("active");
+    expect(scheduler.nextFire(entry.id)).toBe(scheduledAt);
+    accepted = true;
+    scheduler.pump(scheduledAt);
+    expect(onFire).toHaveBeenCalledTimes(2);
+    expect(store.get(entry.id)).toBeUndefined();
   });
 
   it("does not fire paused loops", () => {
