@@ -557,6 +557,7 @@ export default function (pi: ExtensionAPI) {
     getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId } : undefined,
     getAdmissionContextDigest: () => resolveLoopStorePath(getScopeOptions(), _sessionId)
       ?? `memory:${process.cwd()}:${_sessionId ?? "unbound"}`,
+    getSessionGeneration: () => sessionGeneration,
     getAdmissionProviders: () => [monitorWorkflowAdmissionProvider],
   });
 

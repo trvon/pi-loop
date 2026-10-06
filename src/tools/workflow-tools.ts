@@ -99,6 +99,7 @@ export interface WorkflowToolsOptions {
   getTriggerSystem: () => TriggerSystemLike;
   getActor: () => WorkflowRuntimeActor | undefined;
   getAdmissionContextDigest: () => string;
+  getSessionGeneration?: () => number;
   getAdmissionProviders: () => WorkflowAdmissionProvider[];
   updateWidget: () => void;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
@@ -227,6 +228,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     getTriggerSystem,
     getActor,
     getAdmissionContextDigest,
+    getSessionGeneration,
     getAdmissionProviders,
     updateWidget,
     onDynamicLoopActivated,
@@ -466,6 +468,17 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       const store = getStore();
       const actor = getActor();
       const contextDigest = getAdmissionContextDigest();
+      const generation = getSessionGeneration?.();
+      const triggers = getTriggerSystem();
+      const isContextCurrent = () => {
+        const currentActor = getActor();
+        return getStore() === store
+          && getTriggerSystem() === triggers
+          && getSessionGeneration?.() === generation
+          && getAdmissionContextDigest() === contextDigest
+          && currentActor?.sessionId === actor?.sessionId
+          && currentActor?.runtimeId === actor?.runtimeId;
+      };
       const admission = await admitWorkflowTransition({
         store,
         workflowId: params.id,
@@ -475,13 +488,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         claim: params.claim,
         contextDigest,
         providers: getAdmissionProviders(),
-        isContextCurrent: () => {
-          const currentActor = getActor();
-          return getStore() === store
-            && getAdmissionContextDigest() === contextDigest
-            && currentActor?.sessionId === actor?.sessionId
-            && currentActor?.runtimeId === actor?.runtimeId;
-        },
+        isContextCurrent,
       });
       const result = admission.transition;
       if (!result) {
@@ -519,7 +526,22 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
           : { kind: "workflow", action: "transition", tone: "error", summary: `Workflow #${params.id} transition rejected`, expanded: [`Reason: ${error}`] });
       }
       const entry = result.entry;
-      getTriggerSystem().remove(entry.id);
+      const latest = store.get(entry.id);
+      // Admission fences the commit, not the continuation's scheduler/UI effects.
+      // A committed transition stays committed when its activation is superseded.
+      const activationChanged = result.terminal === "completed" ? latest !== undefined : (
+        latest?.createdAt !== entry.createdAt
+        || latest?.status !== entry.status
+        || latest?.workflow?.currentState !== entry.workflow?.currentState
+        || latest?.workflow?.transitionSeq !== entry.workflow?.transitionSeq
+        || latest?.workflow?.definitionRevision !== entry.workflow?.definitionRevision
+        || latest?.workflow?.activeExecution?.id !== entry.workflow?.activeExecution?.id
+        || latest?.workflow?.waitingMonitor?.monitorId !== entry.workflow?.waitingMonitor?.monitorId
+      );
+      if (!isContextCurrent() || activationChanged) {
+        return textResult(`Workflow #${entry.id} transition committed; activation superseded. Inspect LoopList for current work.`);
+      }
+      triggers.remove(entry.id);
       updateWidget();
       if (result.terminal === "completed") {
         const transition = `${entry.workflow?.lastTransition?.from ?? "?"} → ${entry.workflow?.currentState ?? "?"}`;
@@ -545,11 +567,11 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         );
       }
       if (entry.status === "active") {
-        getTriggerSystem().add(entry);
+        triggers.add(entry);
         if (stateShouldWakeImmediately(entry)) onDynamicLoopActivated?.(entry);
       }
       const current = store.get(entry.id) ?? entry;
-      if (current.status !== "active") getTriggerSystem().remove(current.id);
+      if (current.status !== "active") triggers.remove(current.id);
       updateWidget();
       const transition = `${current.workflow?.lastTransition?.from ?? "?"} → ${current.workflow?.currentState ?? "?"}`;
       return textResult(
