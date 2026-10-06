@@ -37,6 +37,12 @@ A hybrid trigger combines cron and event delivery with a debounce window:
 LoopCreate trigger="cron:5m event:tasks:created" prompt="Process pending tasks" triggerType="hybrid" debounceMs=30000
 ```
 
+### Inspection
+
+Open `/loop` → `View loops` and select a controller. The detail view shows its kind, resolved storage scope, authority, expiry, reported next fire, fire budget, pause provenance, and supported next action. Workflow and orchestration details remain available below the lifecycle fields. Hybrid detail retains the event source and debounce window, not the event filter.
+
+Inspection does not claim work, resume a controller, or schedule a wake. A live workflow lease is not proof of execution; fire counts are accounting, not delivered-wake counts. Expired, terminal, and orchestration controllers do not offer generic resume. A `controller_limit` pause at an exhausted budget also blocks resume. Custom `PI_LOOP` files are labelled separately from session storage; paths and event filters are not displayed in the lifecycle fields.
+
 ### Choosing one controller
 
 Choose one durable owner before decomposing work:

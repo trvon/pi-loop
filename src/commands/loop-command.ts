@@ -5,11 +5,12 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { formatTrigger } from "../loop-format.js";
 import { isValidCronExpression, parseInterval } from "../loop-parse.js";
+import type { LoopStorageScope } from "../runtime/scope.js";
 import type { OrchestrationCancellation } from "../runtime/subagent-orchestration-runtime.js";
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
+import { canResumeFromInspection, formatLoopLifecycle } from "../ui/lifecycle-presentation.js";
 import { formatOrchestrationInspection, orchestrationCancellationMessage, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
 import { formatWorkflowInspection, workflowActivityLabel } from "../ui/workflow-presentation.js";
-import { isTerminalWorkflowRun } from "../workflow-reducer.js";
 
 interface LoopStoreLike {
   list(): LoopEntry[];
@@ -37,6 +38,8 @@ export interface LoopCommandOptions {
   pi: ExtensionAPI;
   getStore: () => LoopStoreLike;
   getTriggerSystem: () => TriggerSystemLike;
+  getStorageScope?: () => LoopStorageScope;
+  getNextFire?: (id: string) => number | undefined;
   updateWidget: () => void;
   maybeBootstrapTaskLoop?: (entry: LoopEntry) => Promise<boolean>;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
@@ -198,19 +201,19 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
       if (entry) {
         const actions = ["x Delete"];
         if (entry.status === "active") actions.unshift("- Pause");
-        else if (
-          entry.status === "paused"
-          && Date.now() < entry.expiresAt
-          && !entry.orchestration
-          && !isTerminalWorkflowRun(entry.workflow)
-        ) actions.unshift("* Resume");
+        else if (canResumeFromInspection(entry)) actions.unshift("* Resume");
         actions.push("< Back");
 
-        const detail = entry.workflow
+        const inspection = entry.workflow
           ? formatWorkflowInspection(entry)
           : entry.orchestration
             ? formatOrchestrationInspection(entry)
-            : `#${entry.id}: ${entry.prompt}\nTrigger: ${JSON.stringify(entry.trigger)}`;
+            : `#${entry.id}: ${entry.prompt}`;
+        const [heading, ...body] = inspection.split("\n");
+        const detail = [heading, ...formatLoopLifecycle(entry, {
+          storageScope: options.getStorageScope?.(),
+          nextFireAt: options.getNextFire?.(entry.id),
+        }), ...body].join("\n");
         const action = await ui.select(detail, actions);
 
         if (entry.orchestration && (action === "x Delete" || action === "- Pause")) {

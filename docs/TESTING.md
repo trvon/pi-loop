@@ -9,7 +9,7 @@ npm install
 npm run hooks:install
 ```
 
-Contributions use focused branches and signed, thematic commits. Open pull requests against `master` after the local gate passes. Contributions are MIT licensed.
+Contributions use focused branches and signed, thematic commits. Open the first pull request against `master`; dependent pull requests target their predecessor branch. Run the local gate at every PR tip and relevant checks at each intermediate commit. Push normally with hooks; do not rewrite published stack history. Contributions are MIT licensed.
 
 ## Local gate
 
@@ -181,6 +181,17 @@ npm run profile:core
 ```
 
 `npm run bench` prints a table of throughput, mean latency, and margin of error. `bench:baseline` writes those results to `.artifacts/benchmarks/baseline.json`, and `bench:compare` reports the throughput change of a fresh run against that baseline. Compare benchmarks only on the same machine, Node version, architecture, timezone, and power state. Profiles are written to `.artifacts/profiles/`; load the `.cpuprofile` in a V8-compatible viewer. Shared benchmark workloads live in `benchmarks/workloads.ts`.
+
+## Change evidence
+
+Follow `AGENTS.md` for the testing contract:
+
+- Bug: behavioral regression fails on unchanged code, nearby control passes, same regression passes after repair.
+- Feature: acceptance expectations precede implementation; test the affected surface and applicable boundaries.
+- Invariant: independently test authority, ownership, rejection, lifecycle, bounds, and persistence properties that must remain unchanged.
+- Model-facing guidance: validate examples and misuse deterministically; report bounded live model/fixture/attempt evidence separately. A text match is not a model-behavior result.
+
+Name the expectations and invariants in the PR body. Record exact red/green commands and limitations. Compilation, fixture, or provider failures do not establish a product defect; skipped live checks do not pass.
 
 ## Change-specific minimums
 

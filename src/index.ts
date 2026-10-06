@@ -29,7 +29,7 @@ import {
   createNotificationRuntime,
   type LoopFireEvent,
 } from "./runtime/notification-runtime.js";
-import { resolveLoopStorePath, resolveTaskStorePath } from "./runtime/scope.js";
+import { resolveLoopStorageScope, resolveLoopStorePath, resolveTaskStorePath } from "./runtime/scope.js";
 import { registerSessionRuntimeHooks } from "./runtime/session-runtime.js";
 import { isStaleExtensionContextError } from "./runtime/stale-context.js";
 import { createSubagentOrchestrationRuntime, type SubagentOrchestrationRuntime } from "./runtime/subagent-orchestration-runtime.js";
@@ -599,6 +599,8 @@ export default function (pi: ExtensionAPI) {
     pi,
     getStore: () => store,
     getTriggerSystem: () => triggerSystem,
+    getStorageScope: () => resolveLoopStorageScope(getScopeOptions(), _sessionId),
+    getNextFire: (id) => scheduler.nextFire(id),
     updateWidget: () => {
       widget.update();
     },
