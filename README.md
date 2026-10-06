@@ -9,6 +9,8 @@
 pi install npm:@trevonistrevon/pi-loop
 ```
 
+pi-loop runs only while Pi is active. Persisted controller intent is not an always-on worker; ordinary pending wakes and monitor handles/output are memory-only. See the [runtime continuity matrix](./docs/RUNTIME_CONTINUITY.md) before relying on restart or unattended operation.
+
 ## Quick start
 
 Create scheduled, event-driven, or self-paced loops:
