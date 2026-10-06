@@ -36,6 +36,9 @@
 		"includes": [
 			"src/**/*.ts",
 			"test/**/*.ts",
+			"test/controller-routing-evaluation.test.mjs",
+			"test/e2e/controller-routing-evaluation.mjs",
+			"test/e2e/controller-routing-conformance.mjs",
 			"benchmarks/**/*.ts"
 		]
 	}
