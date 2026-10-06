@@ -304,13 +304,25 @@ export default function (pi: ExtensionAPI) {
       emitLoopExpired(expired.entry, expired.disposition, expirySource, expired.reason);
       return true;
     };
-    if (retireIfExpired()) return;
-    debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     const current = store.get(entry.id);
-    if (current?.createdAt !== entry.createdAt || current.status !== "active" || isTerminalWorkflowRun(current.workflow)) {
+    if (!current) {
       triggerSystem.remove(entry.id);
       return;
     }
+    if (current.createdAt !== entry.createdAt) return;
+    if (current.status !== "active" || isTerminalWorkflowRun(current.workflow)) {
+      triggerSystem.remove(entry.id);
+      return;
+    }
+    // Creation identity survives transitions/revisions. Never turn an old
+    // activation into a new state's fire by rebuilding CAS from the reread.
+    if (current.workflow?.currentState !== entry.workflow?.currentState
+      || current.workflow?.transitionSeq !== entry.workflow?.transitionSeq
+      || current.workflow?.definitionRevision !== entry.workflow?.definitionRevision
+      || current.workflow?.activeExecution?.id !== entry.workflow?.activeExecution?.id
+      || current.workflow?.waitingMonitor?.monitorId !== entry.workflow?.waitingMonitor?.monitorId) return;
+    if (retireIfExpired()) return;
+    debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     if (current.workflow?.waitingMonitor) {
       debug(`workflow #${entry.id} — waiting on monitor; suppressing cadence wake`);
       return;

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "../src/index.js";
 import { TASKS_RPC } from "../src/rpc/channels.js";
 import { resolveLoopStorePath, resolveTaskStorePath } from "../src/runtime/scope.js";
+import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
 import { TaskStore } from "../src/task-store.js";
 import { createCtx, createMockPi, flushAsync } from "./helpers/mock-pi.js";
@@ -59,7 +60,7 @@ describe("loop expiry runtime wiring", () => {
 });
 
 describe("workflow runtime wiring", () => {
-  const sessionIds = ["workflow-cap-session", "workflow-cap-race-session", "workflow-task-session", "workflow-reissue-session", "workflow-stale-wake-session"];
+  const sessionIds = ["workflow-cap-session", "workflow-cap-race-session", "workflow-task-session", "workflow-reissue-session", "workflow-stale-wake-session", "workflow-stale-activation-session"];
   beforeEach(() => sessionIds.forEach(clearTestLoopStore));
   afterEach(() => {
     sessionIds.forEach(clearTestLoopStore);
@@ -120,7 +121,7 @@ describe("workflow runtime wiring", () => {
     const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
     const original = LoopStore.prototype.fireOrExpire;
     let interposed = false;
-    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (...args) {
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (this: LoopStore, ...args: Parameters<LoopStore["fireOrExpire"]>) {
       const result = original.apply(this, args);
       if (!interposed && result.kind === "fired" && result.entry.workflow?.currentState === "poll") {
         interposed = true;
@@ -175,7 +176,7 @@ describe("workflow runtime wiring", () => {
     const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
     const original = LoopStore.prototype.fireOrExpire;
     let interposed = false;
-    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (...args) {
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (this: LoopStore, ...args: Parameters<LoopStore["fireOrExpire"]>) {
       if (!interposed) {
         interposed = true;
         const workflow = new LoopStore(loopPath).get(String(args[0]))!.workflow!;
@@ -209,6 +210,76 @@ describe("workflow runtime wiring", () => {
     expect(sentMessages.some((item) => item.message.content.includes("Poll later."))).toBe(false);
   });
 
+  it("a peer advance before activation cannot fire a non-immediate cadence destination", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-06T12:00:00Z"));
+    vi.stubEnv("PI_LOOP_SCOPE", "session");
+    const { pi, toolMap, emittedEvents, emitExtension } = createMockPi();
+    const sessionId = "workflow-stale-activation-session";
+    const ctx = createCtx({ sessionId });
+    const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
+    clearTestLoopStore(sessionId);
+    extension(pi as any);
+    let scheduledAt: number | undefined;
+    let interposed = false;
+    const originalAdd = CronScheduler.prototype.add;
+    vi.spyOn(CronScheduler.prototype, "add").mockImplementation(function (this: CronScheduler, entry) {
+      originalAdd.call(this, entry);
+      if (interposed || entry.workflow?.currentState !== "prepare") return;
+      interposed = true;
+      // A file-backed peer commits before the original activation callback reads
+      // the store. This boundary does not depend on admission's await structure.
+      const peer = new LoopStore(loopPath);
+      const workflow = peer.get(entry.id)!.workflow!;
+      expect(peer.transitionWorkflow(entry.id, { outcome: "ready", evidence: "Preparation complete." }, {
+        currentState: workflow.currentState,
+        transitionSeq: workflow.transitionSeq,
+        definitionRevision: workflow.definitionRevision,
+        activeExecutionId: workflow.activeExecution?.id,
+      }).applied).toBe(true);
+      originalAdd.call(this, peer.get(entry.id)!);
+      scheduledAt = this.nextFire(entry.id);
+    });
+
+    try {
+      await emitExtension("turn_start", null, ctx);
+      await toolMap.get("WorkflowCreate")!.execute!("workflow-stale-activation", {
+        goal: "Prepare then poll",
+        maxFires: 10,
+        definition: JSON.stringify({
+          version: 1,
+          initialState: "prepare",
+          states: {
+            prepare: { prompt: "Prepare.", on: { ready: "poll" } },
+            poll: {
+              prompt: "Poll only on cadence.",
+              loop: { schedule: "* * * * *", maxFires: 3, startImmediately: false },
+              on: { done: "done" },
+            },
+            done: { prompt: "Done.", terminal: "completed" },
+          },
+        }),
+      });
+      expect(interposed).toBe(true);
+      expect(scheduledAt).toBeGreaterThan(Date.now());
+      expect(new LoopStore(loopPath).get("1")).toMatchObject({
+        status: "active", fireCount: 0, workflow: { currentState: "poll", transitionSeq: 1 },
+      });
+      expect(emittedEvents.filter((event) => event.name === "loop:fire")).toEqual([]);
+
+      // Suppressing the stale activation must not suppress the legitimate cadence.
+      vi.setSystemTime(scheduledAt!);
+      await emitExtension("agent_end", null, ctx);
+      expect(emittedEvents.filter((event) => event.name === "loop:fire")).toHaveLength(1);
+      expect(new LoopStore(loopPath).get("1")).toMatchObject({
+        fireCount: 1, workflow: { currentState: "poll", stateFireCounts: { poll: 1 } },
+      });
+    } finally {
+      await emitExtension("session_shutdown", null, ctx);
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("post-fire administrative pause suppresses workflow delivery", async () => {
     const { pi, toolMap, extensionHandlers, sentMessages } = createMockPi();
     const sessionId = "workflow-postfire-pause-session";
@@ -218,7 +289,7 @@ describe("workflow runtime wiring", () => {
     for (const handler of extensionHandlers.get("turn_start") ?? []) await handler(null, ctx);
     const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
     const original = LoopStore.prototype.fireOrExpire;
-    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (...args) {
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (this: LoopStore, ...args: Parameters<LoopStore["fireOrExpire"]>) {
       const result = original.apply(this, args);
       if (result.kind === "fired") new LoopStore(loopPath).pause(result.entry.id, "administrative", "Operator pause");
       return result;
@@ -254,12 +325,12 @@ describe("workflow runtime wiring", () => {
     let target: LoopStore | undefined;
     let reads = 0;
     let interposed = false;
-    vi.spyOn(LoopStore.prototype, "updateDynamic").mockImplementation(function (...args) {
+    vi.spyOn(LoopStore.prototype, "updateDynamic").mockImplementation(function (this: LoopStore, ...args: Parameters<LoopStore["updateDynamic"]>) {
       const result = originalUpdate.apply(this, args);
       if (result?.workflow?.currentState === "prepare") target = this;
       return result;
     });
-    vi.spyOn(LoopStore.prototype, "get").mockImplementation(function (id) {
+    vi.spyOn(LoopStore.prototype, "get").mockImplementation(function (this: LoopStore, id: string) {
       if (this === target && ++reads === 2) {
         interposed = true;
         const peer = new LoopStore(loopPath);
@@ -306,7 +377,7 @@ describe("workflow runtime wiring", () => {
     const loopPath = resolveLoopStorePath({ loopScope: "session" }, sessionId)!;
     const original = LoopStore.prototype.fireOrExpire;
     let interposed = false;
-    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (...args) {
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (this: LoopStore, ...args: Parameters<LoopStore["fireOrExpire"]>) {
       const result = original.apply(this, args);
       if (!interposed && result.kind === "fired" && result.entry.workflow?.currentState === "prepare") {
         interposed = true;
@@ -1853,6 +1924,8 @@ describe("native task fallback", () => {
     expect(result.content[0].text).toContain("* #1 [active] Preserve this fire for the current runtime");
     expect(sentMessages).toHaveLength(0);
   });
+
+
 });
 
 describe("dynamic loop pump", () => {
