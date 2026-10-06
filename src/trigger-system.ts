@@ -14,7 +14,8 @@ export class TriggerSystem {
     private pi: ExtensionAPI,
     private scheduler: CronScheduler,
     private store: LoopStore,
-    private onFire: (entry: LoopEntry, origin: LoopFireOrigin) => void,
+    private onFire: ((entry: LoopEntry, origin: LoopFireOrigin) => boolean)
+      | ((entry: LoopEntry, origin: LoopFireOrigin) => void),
   ) {}
 
   start(): void {
@@ -121,8 +122,16 @@ export class TriggerSystem {
       return;
     }
 
+    // Reserve debounce before dispatch: callbacks can synchronously emit their
+    // own source event. An explicit denial rolls back that reservation; void
+    // preserves legacy callbacks without consuming a denied one-shot.
+    const previousFireTime = this.lastFireTime.get(current.id);
     this.lastFireTime.set(current.id, now);
-    this.onFire(current, "event");
+    if (this.onFire(current, "event") === false) {
+      if (previousFireTime === undefined) this.lastFireTime.delete(current.id);
+      else this.lastFireTime.set(current.id, previousFireTime);
+      return;
+    }
 
     const fresh = this.store.get(entry.id);
     if (!fresh) {

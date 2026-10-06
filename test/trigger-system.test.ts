@@ -183,6 +183,24 @@ describe("TriggerSystem", () => {
     }
   });
 
+  it("keeps a denied one-shot event subscribed until the callback accepts it", () => {
+    let accepted = false;
+    const onFire = vi.fn(() => accepted);
+    const guarded = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({ type: "event", source: "denied_fire" }, "denied one-shot", { recurring: false });
+    guarded.add(entry);
+    try {
+      pi.events.emit("denied_fire", {});
+      expect(store.get(entry.id)?.status).toBe("active");
+      accepted = true;
+      pi.events.emit("denied_fire", {});
+      expect(onFire).toHaveBeenCalledTimes(2);
+      expect(store.get(entry.id)).toBeUndefined();
+    } finally {
+      guarded.stop();
+    }
+  });
+
   it("deletes one-shot event loops immediately after the first fire", () => {
     const eventTrigger: Trigger = { type: "event", source: "fire_once" };
     const entry = store.create(eventTrigger, "one-shot", { recurring: false });
@@ -203,6 +221,54 @@ describe("TriggerSystem", () => {
       (c: string[]) => c[0] === "loop:fire"
     );
     expect(afterCalls).toHaveLength(1);
+  });
+
+  it("reserves hybrid debounce while an accepted callback synchronously re-enters", () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const onFire = vi.fn((entry: LoopEntry) => {
+      calls++;
+      store.fire(entry.id);
+      // Bound the reproduction so a regression fails an assertion, not the stack.
+      if (calls < 4) pi.events.emit("loop:fire", {});
+      return true;
+    });
+    const guarded = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({
+      type: "hybrid", cron: "0 0 * * *", event: { source: "loop:fire" }, debounceMs: 1000,
+    }, "self-notifying hybrid", { recurring: true });
+    guarded.add(entry);
+    try {
+      pi.events.emit("loop:fire", {});
+      expect(onFire).toHaveBeenCalledTimes(1);
+      expect(store.get(entry.id)?.fireCount).toBe(1);
+      vi.advanceTimersByTime(1000);
+      expect(onFire).toHaveBeenCalledTimes(2);
+      expect(store.get(entry.id)?.fireCount).toBe(2);
+    } finally {
+      guarded.stop();
+    }
+  });
+
+  it("does not reserve a hybrid debounce window when its fire is denied", () => {
+    vi.useFakeTimers();
+    let accepted = false;
+    const onFire = vi.fn(() => accepted);
+    const guarded = new TriggerSystem(pi, scheduler, store, onFire);
+    const entry = store.create({
+      type: "hybrid", cron: "0 0 * * *", event: { source: "denied_hybrid" }, debounceMs: 1000,
+    }, "denied hybrid", { recurring: false });
+    guarded.add(entry);
+    try {
+      pi.events.emit("denied_hybrid", {});
+      expect(store.get(entry.id)?.status).toBe("active");
+      accepted = true;
+      pi.events.emit("denied_hybrid", {});
+      expect(onFire).toHaveBeenCalledTimes(2);
+      expect(store.get(entry.id)).toBeUndefined();
+    } finally {
+      guarded.stop();
+    }
   });
 
   it("debounces hybrid triggers", () => {

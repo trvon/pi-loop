@@ -295,8 +295,8 @@ export default function (pi: ExtensionAPI) {
     monitor?: MonitorEntry,
     origin: LoopFireOrigin = monitor ? "monitor" : "dynamic",
     promptOverride?: string,
-  ): void {
-    if (!isCurrentExtensionContext()) return;
+  ): boolean {
+    if (!isCurrentExtensionContext()) return false;
     const expirySource = origin === "monitor" ? "monitor" : "scheduler";
     const retireIfExpired = () => {
       const expired = store.expireEntry(entry.id, Date.now());
@@ -307,12 +307,12 @@ export default function (pi: ExtensionAPI) {
     const current = store.get(entry.id);
     if (!current) {
       triggerSystem.remove(entry.id);
-      return;
+      return false;
     }
-    if (current.createdAt !== entry.createdAt) return;
+    if (current.createdAt !== entry.createdAt) return false;
     if (current.status !== "active" || isTerminalWorkflowRun(current.workflow)) {
       triggerSystem.remove(entry.id);
-      return;
+      return false;
     }
     // Creation identity survives transitions/revisions. Never turn an old
     // activation into a new state's fire by rebuilding CAS from the reread.
@@ -320,18 +320,18 @@ export default function (pi: ExtensionAPI) {
       || current.workflow?.transitionSeq !== entry.workflow?.transitionSeq
       || current.workflow?.definitionRevision !== entry.workflow?.definitionRevision
       || current.workflow?.activeExecution?.id !== entry.workflow?.activeExecution?.id
-      || current.workflow?.waitingMonitor?.monitorId !== entry.workflow?.waitingMonitor?.monitorId) return;
-    if (retireIfExpired()) return;
+      || current.workflow?.waitingMonitor?.monitorId !== entry.workflow?.waitingMonitor?.monitorId) return false;
+    if (retireIfExpired()) return false;
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     if (current.workflow?.waitingMonitor) {
       debug(`workflow #${entry.id} — waiting on monitor; suppressing cadence wake`);
-      return;
+      return false;
     }
 
     const isTaskBacklog = taskBacklogRuntime.isTaskBacklogLoop(current);
     if (isTaskBacklog && activeTaskBacklogWakes.has(entry.id)) {
       debug(`task backlog loop #${entry.id} — wake already active, adopting event into current wake`);
-      return;
+      return false;
     }
 
     if (atMaxFires(current)) {
@@ -340,7 +340,7 @@ export default function (pi: ExtensionAPI) {
       if (current.workflow || current.taskBacklog) store.pause(current.id, "controller_limit", "loop fire cap reached");
       else store.delete(current.id);
       widget.update();
-      return;
+      return false;
     }
     const fireResult = store.fireOrExpire(current.id, origin, undefined, {
       createdAt: current.createdAt,
@@ -355,9 +355,9 @@ export default function (pi: ExtensionAPI) {
     });
     if (fireResult.kind === "expired") {
       emitLoopExpired(fireResult.record.entry, fireResult.record.disposition, expirySource, fireResult.record.reason);
-      return;
+      return false;
     }
-    if (fireResult.kind === "ignored" || retireIfExpired()) return;
+    if (fireResult.kind === "ignored" || retireIfExpired()) return false;
     const fired = fireResult.entry;
     if (isTaskBacklog) activeTaskBacklogWakes.add(current.id);
 
@@ -380,14 +380,14 @@ export default function (pi: ExtensionAPI) {
         activeExecutionId: fired.workflow.activeExecution?.id,
       } : undefined);
       if (!updatedEntry) {
-        if (fireResult.settlement !== "deleted_by_fire_limit") return;
+        if (fireResult.settlement !== "deleted_by_fire_limit") return false;
       } else {
         firedEntry = updatedEntry;
       }
     }
     if (retireIfExpired()) {
       activeTaskBacklogWakes.delete(current.id);
-      return;
+      return false;
     }
 
     const postFireEntry = store.get(firedEntry.id);
@@ -395,18 +395,18 @@ export default function (pi: ExtensionAPI) {
       && (postFireEntry.workflow.currentState !== firedEntry.workflow.currentState
         || postFireEntry.workflow.transitionSeq !== firedEntry.workflow.transitionSeq
         || postFireEntry.workflow.activeExecution?.id !== firedEntry.workflow.activeExecution?.id)) {
-      return;
+      return false;
     }
     if (postFireEntry?.status !== "active") {
       triggerSystem.remove(firedEntry.id);
       widget.update();
-      if (postFireEntry && postFireEntry.pause?.kind !== "controller_limit") return;
+      if (postFireEntry && postFireEntry.pause?.kind !== "controller_limit") return false;
     }
 
     if (Date.now() >= firedEntry.expiresAt) {
       retireIfExpired();
       activeTaskBacklogWakes.delete(current.id);
-      return;
+      return false;
     }
 
     if (current.autoTask && !current.workflow) {
@@ -419,6 +419,7 @@ export default function (pi: ExtensionAPI) {
       ...firedEntry,
       prompt: promptOverride ?? firedEntry.prompt,
     }, monitor);
+    return true;
   }
 
   // ── Session lifecycle ──

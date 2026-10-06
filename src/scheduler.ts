@@ -21,7 +21,8 @@ export class CronScheduler {
 
   constructor(
     private store: LoopStore,
-    private onFire: (entry: LoopEntry, origin: LoopFireOrigin) => void,
+    private onFire: ((entry: LoopEntry, origin: LoopFireOrigin) => boolean)
+      | ((entry: LoopEntry, origin: LoopFireOrigin) => void),
     private onExpired?: (entry: LoopEntry, disposition: LoopExpiryDisposition) => void,
     private canExpire: () => boolean = () => true,
   ) {}
@@ -157,7 +158,8 @@ export class CronScheduler {
         continue;
       }
 
-      this.onFire(entry, "scheduler");
+      // Keep a denied fire pending instead of retiring or re-arming its entry.
+      if (this.onFire(entry, "scheduler") === false) continue;
 
       const fresh = this.store.get(id);
       if (!fresh) {

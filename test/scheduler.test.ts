@@ -64,9 +64,25 @@ describe("CronScheduler", () => {
     expect(fired).toEqual([entry.id]);
     expect(store.get(entry.id)).toBeUndefined();
     scheduler.stop();
-    scheduler = new CronScheduler(store, (loop) => fired.push(loop.id));
+    scheduler = new CronScheduler(store, (loop) => { fired.push(loop.id); });
     scheduler.start();
     expect(scheduler.nextFire(entry.id)).toBeUndefined();
+  });
+
+  it("keeps a denied one-shot fire pending until the callback accepts it", () => {
+    let accepted = false;
+    const onFire = vi.fn(() => accepted);
+    scheduler = new CronScheduler(store, onFire);
+    const entry = store.create(cronTrigger, "denied one-shot", { recurring: false });
+    scheduler.add(entry);
+    const scheduledAt = scheduler.nextFire(entry.id)!;
+    scheduler.pump(scheduledAt);
+    expect(store.get(entry.id)?.status).toBe("active");
+    expect(scheduler.nextFire(entry.id)).toBe(scheduledAt);
+    accepted = true;
+    scheduler.pump(scheduledAt);
+    expect(onFire).toHaveBeenCalledTimes(2);
+    expect(store.get(entry.id)).toBeUndefined();
   });
 
   it("does not fire paused loops", () => {

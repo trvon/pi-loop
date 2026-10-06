@@ -1925,7 +1925,35 @@ describe("native task fallback", () => {
     expect(sentMessages).toHaveLength(0);
   });
 
+  it("keeps a non-recurring event loop when a stale runtime cannot dispatch its only fire", async () => {
+    const { pi, toolMap, sentMessages } = createMockPi();
 
+    extension(pi as any);
+    await vi.advanceTimersByTimeAsync(6100);
+    await Promise.resolve();
+
+    await toolMap.get("LoopCreate")!.execute?.("1", {
+      trigger: "stale-one-shot:test:event",
+      prompt: "Survive the stale callback",
+      triggerType: "event",
+      recurring: false,
+    });
+
+    const dispatch = pi.events.emit.getMockImplementation();
+    pi.events.emit.mockImplementation((name: string, payload: unknown) => {
+      if (name !== "stale-one-shot:test:event") {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      }
+      return dispatch?.(name, payload);
+    });
+
+    expect(() => pi.events.emit("stale-one-shot:test:event", {})).not.toThrow();
+    await Promise.resolve();
+
+    const result = await toolMap.get("LoopList")!.execute?.("2", {});
+    expect(result.content[0].text).toContain("* #1 [active] Survive the stale callback");
+    expect(sentMessages).toHaveLength(0);
+  });
 });
 
 describe("dynamic loop pump", () => {
