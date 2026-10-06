@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -1461,6 +1461,78 @@ describe("LoopStore workflow execution leases", () => {
       rmSync(lPath + ".prev", { force: true });
       rmSync(lPath + ".lock", { force: true });
       rmSync(lPath + ".tmp", { force: true });
+    }
+  });
+
+  it.each([
+    ["transition", false], ["claim", false], ["transition", true], ["claim", true],
+  ] as const)("preserves legacy bytes and backup on rejected foreign %s (existing backup: %s)", (operation, existingBackup) => {
+    const directory = mkdtempSync(join(tmpdir(), "pi-loop-rejected-legacy-"));
+    const lPath = join(directory, "loops.json");
+    const raw = JSON.stringify({
+      nextId: 2,
+      loops: [{
+        id: "1",
+        prompt: "legacy",
+        trigger: { type: "dynamic" },
+        status: "active",
+        recurring: true,
+        createdAt: 1,
+        updatedAt: 1,
+        expiresAt: Date.now() + 60_000,
+        workflow: {
+          definition: workflow,
+          currentState: "work",
+          transitionSeq: 0,
+          stateEnteredAt: 1,
+          attemptsByState: { work: 1 },
+          stateFireCounts: {},
+          activeExecution: {
+            id: "work:0",
+            stateId: "work",
+            transitionSeq: 0,
+            subject: "Work",
+            description: "Complete it.",
+            status: "active",
+            createdAt: 1,
+            updatedAt: 1,
+            lease: {
+              ownerSessionId: "session-a",
+              ownerRuntimeId: "runtime-a",
+              acquiredAt: 1,
+              heartbeatAt: 1,
+              expiresAt: Date.now() + 3_600_000,
+              attempt: 1,
+            },
+          },
+        },
+      }],
+    });
+    const foreign = { sessionId: "session-b", runtimeId: "runtime-b" };
+    const previous = JSON.stringify({ nextId: 1, loops: [] });
+    try {
+      writeFileSync(lPath, raw);
+      if (existingBackup) writeFileSync(`${lPath}.prev`, previous);
+      const store = new LoopStore(lPath);
+      const before = structuredClone(store.get("1"));
+      if (operation === "transition") {
+        expect(store.transitionWorkflow("1", { outcome: "done", actor: foreign }, {
+          currentState: "work",
+          transitionSeq: 0,
+          definitionRevision: 1,
+          activeExecutionId: "work:0",
+        })).toMatchObject({ applied: false, error: "Workflow execution is leased to another active runtime" });
+      } else {
+        expect(store.claimWorkflowExecution("1", foreign, 60)).toMatchObject({
+          claimed: false, error: "Workflow execution is leased to another active runtime",
+        });
+      }
+      expect(store.get("1")).toEqual(before);
+      expect.soft(readFileSync(lPath, "utf8")).toBe(raw);
+      if (existingBackup) expect(readFileSync(`${lPath}.prev`, "utf8")).toBe(previous);
+      else expect(existsSync(`${lPath}.prev`)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 

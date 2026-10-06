@@ -137,6 +137,7 @@ Monitor recovery across Pi process death is not implemented.
 
 - Store mutations hold one file lock and persist one reducer snapshot.
 - Rejected dynamic, workflow, and orchestration CAS operations are state-preserving.
+- Rejected workflow transitions, execution claims, and revisions do not persist load-time normalization or rotate recovery snapshots.
 - Workflow writes never span LoopStore and TaskStore.
 - Server-held workflow leases expose no bearer token.
 - Standalone task claims intentionally use bearer IDs because task RPC crosses extension boundaries.

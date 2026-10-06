@@ -667,7 +667,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         });
       }
       return { entry: this.entries.get(id), applied: true };
-    });
+    }, (result) => result.applied);
   }
 
   claimWorkflowExecution(
@@ -703,7 +703,7 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
         payload: { id, actor, leaseMs },
       });
       return { entry: this.entries.get(id), claimed: true };
-    });
+    }, (result) => result.claimed);
   }
 
   attachWorkflowMonitor(
