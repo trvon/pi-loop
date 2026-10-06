@@ -25,7 +25,7 @@ Disk persistence, scheduler activation, message acceptance, execution ownership,
 
 ## Safe recovery
 
-1. Inspect `/loop` → `View loops` or `LoopList` for current scope, lifetime, controller kind, and supported actions. A missing controller is not a tombstone.
+1. Resolved storage and the action menu are available through `/loop` → `View loops`. `LoopList` reports IDs, status, triggers, expiry, and recorded next-fire times. Workflow rows also include execution/outcome guidance. `LoopList` does not report resolved storage or the generic action menu. A missing controller is not a tombstone.
 2. For workflows, inspect the live state/revision/execution and declared outcomes. Use `WorkflowClaim` when required; use `WorkflowRevise` for an actionable route gap. Terminal and exhausted-budget recovery follows current pause policy, not generic resume.
 3. For orchestration, inspect `OrchestrationGet` and provider evidence before cancellation or deletion. Do not replay uncertain dispatches or treat cancellation acknowledgement as proof of worker quiescence.
 4. For an unavailable monitor after process loss, inspect logs, process state, and external side effects. No status means no recovered observation, not successful completion or permission to rerun.

@@ -30,6 +30,17 @@ function bytes(path: string) {
 
 // These model continuity boundaries, not OS death or unattended execution.
 describe("runtime continuity expectations and invariants", () => {
+  it("requires an existing recovery snapshot for byte-preservation checks", () => {
+    const { path, store } = fixture();
+    const entry = store.create({ type: "cron", schedule: "* * * * *" }, "Observe", { recurring: true });
+    const initial = readFileSync(path, "utf8");
+    expect(existsSync(`${path}.prev`)).toBe(false);
+    expect(() => bytes(path)).toThrow(/ENOENT/);
+    expect(store.fire(entry.id)).toBeDefined();
+    expect(existsSync(`${path}.prev`)).toBe(true);
+    expect(bytes(path)).toEqual([readFileSync(path, "utf8"), initial]);
+  });
+
   it.each(["session_switch", "session_shutdown"] as const)("clears ordinary wakes on %s without undoing persisted accounting", async (reason) => {
     const { path, store } = fixture();
     const entry = store.create({ type: "cron", schedule: "* * * * *" }, "Observe", { recurring: true });
@@ -196,7 +207,14 @@ describe("runtime continuity expectations and invariants", () => {
     const peer = new LoopStore(path);
     expect(peer.get(entry.id)).toBeUndefined();
     expect(peer.list()).toEqual([]);
-    expect(JSON.parse(readFileSync(path, "utf8")).loops).toEqual([]);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ nextId: 2, loops: [] });
+  });
+
+  it("documents LoopList fields separately from interactive storage and actions", () => {
+    const guide = readFileSync(new URL("../docs/RUNTIME_CONTINUITY.md", import.meta.url), "utf8");
+    expect(guide).toContain("Resolved storage and the action menu are available through `/loop` → `View loops`");
+    expect(guide).toContain("`LoopList` reports IDs, status, triggers, expiry, and recorded next-fire times");
+    expect(guide).toContain("Workflow rows also include execution/outcome guidance");
   });
 
   it("publishes an operator continuity matrix without new infrastructure promises", () => {
