@@ -18,6 +18,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerLoopCommand } from "./commands/loop-command.js";
+import { sameLoopActivation } from "./loop-activation.js";
 import { resolveDefaultLoopExpiryMs } from "./loop-expiry.js";
 import { atMaxFires } from "./loop-reducer.js";
 import { MonitorManager } from "./monitor-manager.js";
@@ -89,7 +90,7 @@ export default function (pi: ExtensionAPI) {
   triggerSystem = new TriggerSystem(pi, scheduler, store, (entry, origin) => onLoopFire(entry, undefined, origin));
 
   let taskProvider: TaskProviderRuntime | undefined;
-  const activeTaskBacklogWakes = new Set<string>();
+  const activeTaskBacklogWakes = new Map<string, symbol>();
   const hasPendingTasks = () => taskProvider?.hasPendingTasks() ?? Promise.resolve(-1);
   const cleanDoneTasks = () => taskProvider?.cleanDoneTasks() ?? Promise.resolve();
 
@@ -299,7 +300,7 @@ export default function (pi: ExtensionAPI) {
     if (!isCurrentExtensionContext()) return false;
     const expirySource = origin === "monitor" ? "monitor" : "scheduler";
     const retireIfExpired = () => {
-      const expired = store.expireEntry(entry.id, Date.now());
+      const expired = store.expireEntry(entry.id, Date.now(), { createdAt: entry.createdAt, expiresAt: entry.expiresAt });
       if (!expired) return false;
       emitLoopExpired(expired.entry, expired.disposition, expirySource, expired.reason);
       return true;
@@ -316,11 +317,7 @@ export default function (pi: ExtensionAPI) {
     }
     // Creation identity survives transitions/revisions. Never turn an old
     // activation into a new state's fire by rebuilding CAS from the reread.
-    if (current.workflow?.currentState !== entry.workflow?.currentState
-      || current.workflow?.transitionSeq !== entry.workflow?.transitionSeq
-      || current.workflow?.definitionRevision !== entry.workflow?.definitionRevision
-      || current.workflow?.activeExecution?.id !== entry.workflow?.activeExecution?.id
-      || current.workflow?.waitingMonitor?.monitorId !== entry.workflow?.waitingMonitor?.monitorId) return false;
+    if (!sameLoopActivation(current, entry)) return false;
     if (retireIfExpired()) return false;
     debug(`loop:fire #${entry.id}`, { prompt: entry.prompt.slice(0, 50) });
     if (current.workflow?.waitingMonitor) {
@@ -357,9 +354,21 @@ export default function (pi: ExtensionAPI) {
       emitLoopExpired(fireResult.record.entry, fireResult.record.disposition, expirySource, fireResult.record.reason);
       return false;
     }
-    if (fireResult.kind === "ignored" || retireIfExpired()) return false;
+    if (fireResult.kind === "ignored") return false;
+    // Dispatch acceptance records the committed fire, not eventual delivery.
+    // Superseded instructions must be suppressed without replaying its cadence.
+    if (retireIfExpired()) return true;
     const fired = fireResult.entry;
-    if (isTaskBacklog) activeTaskBacklogWakes.add(current.id);
+    const wakeReservation = isTaskBacklog ? Symbol() : undefined;
+    if (wakeReservation) activeTaskBacklogWakes.set(current.id, wakeReservation);
+    const suppressDelivery = () => {
+      // No emitted instruction means no agent_end will release this wake.
+      // A reentrant turn may already have reserved a replacement instead.
+      if (wakeReservation && activeTaskBacklogWakes.get(current.id) === wakeReservation) {
+        activeTaskBacklogWakes.delete(current.id);
+      }
+      return true;
+    };
 
     const firedAt = Date.now();
     const stateLoop = fired.workflow && getActiveWorkflowStateLoop(fired.workflow);
@@ -380,33 +389,24 @@ export default function (pi: ExtensionAPI) {
         activeExecutionId: fired.workflow.activeExecution?.id,
       } : undefined);
       if (!updatedEntry) {
-        if (fireResult.settlement !== "deleted_by_fire_limit") return false;
+        if (fireResult.settlement !== "deleted_by_fire_limit") return suppressDelivery();
       } else {
         firedEntry = updatedEntry;
       }
     }
-    if (retireIfExpired()) {
-      activeTaskBacklogWakes.delete(current.id);
-      return false;
-    }
+    if (retireIfExpired()) return suppressDelivery();
 
     const postFireEntry = store.get(firedEntry.id);
-    if (firedEntry.workflow && postFireEntry?.workflow
-      && (postFireEntry.workflow.currentState !== firedEntry.workflow.currentState
-        || postFireEntry.workflow.transitionSeq !== firedEntry.workflow.transitionSeq
-        || postFireEntry.workflow.activeExecution?.id !== firedEntry.workflow.activeExecution?.id)) {
-      return false;
-    }
+    if (postFireEntry ? !sameLoopActivation(postFireEntry, firedEntry) : fireResult.settlement !== "deleted_by_fire_limit") return suppressDelivery();
     if (postFireEntry?.status !== "active") {
       triggerSystem.remove(firedEntry.id);
       widget.update();
-      if (postFireEntry && postFireEntry.pause?.kind !== "controller_limit") return false;
+      if (postFireEntry && postFireEntry.pause?.kind !== "controller_limit") return suppressDelivery();
     }
 
     if (Date.now() >= firedEntry.expiresAt) {
       retireIfExpired();
-      activeTaskBacklogWakes.delete(current.id);
-      return false;
+      return suppressDelivery();
     }
 
     if (current.autoTask && !current.workflow) {

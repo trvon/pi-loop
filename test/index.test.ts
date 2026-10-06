@@ -9,6 +9,8 @@ import { resolveLoopStorePath, resolveTaskStorePath } from "../src/runtime/scope
 import { CronScheduler } from "../src/scheduler.js";
 import { LoopStore } from "../src/store.js";
 import { TaskStore } from "../src/task-store.js";
+import { TriggerSystem } from "../src/trigger-system.js";
+import type { LoopEntry, LoopFireOrigin } from "../src/types.js";
 import { createCtx, createMockPi, flushAsync } from "./helpers/mock-pi.js";
 
 function readJsonFile(path: string): any {
@@ -277,6 +279,93 @@ describe("workflow runtime wiring", () => {
     } finally {
       await emitExtension("session_shutdown", null, ctx);
       vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(["transition", "revision", "monitor", "complete"] as const)("settles a committed cadence fire without delivering a superseded %s snapshot", async (action) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-06T12:00:00Z"));
+    const root = mkdtempSync(join(tmpdir(), "pi-loop-postcommit-"));
+    const loopPath = join(root, "loops.json");
+    vi.stubEnv("PI_LOOP", loopPath);
+    const { pi, toolMap, emittedEvents, emitExtension } = createMockPi();
+    const ctx = createCtx({ sessionId: "workflow-postcommit-session" });
+    let scheduled: CronScheduler | undefined;
+    const originalAdd = CronScheduler.prototype.add;
+    vi.spyOn(CronScheduler.prototype, "add").mockImplementation(function (this: CronScheduler, entry) {
+      scheduled = this;
+      originalAdd.call(this, entry);
+    });
+    const originalFire = LoopStore.prototype.fireOrExpire;
+    let interposed = false;
+    vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (this: LoopStore, ...args: Parameters<LoopStore["fireOrExpire"]>) {
+      const result = originalFire.apply(this, args);
+      if (interposed || result.kind !== "fired") return result;
+      interposed = true;
+      const peer = new LoopStore(loopPath);
+      const workflow = peer.get(result.entry.id)!.workflow!;
+      const expected = {
+        currentState: workflow.currentState,
+        transitionSeq: workflow.transitionSeq,
+        definitionRevision: workflow.definitionRevision,
+        activeExecutionId: workflow.activeExecution?.id,
+      };
+      expect(result.entry.fireCount).toBe(1);
+      if (action === "transition" || action === "complete") {
+        expect(peer.transitionWorkflow(result.entry.id, { outcome: action === "complete" ? "complete" : "ready" }, expected).applied).toBe(true);
+      } else if (action === "revision") {
+        expect(peer.reviseWorkflow(result.entry.id, {
+          expectedRevision: workflow.definitionRevision,
+          expectedState: workflow.currentState,
+          expectedTransitionSeq: workflow.transitionSeq,
+          reason: "Revise the future plan after the fire committed.",
+          changes: [{ op: "revise_state", stateId: "next", prompt: "Revised future work." }],
+        }, { sessionId: "peer", runtimeId: "peer" }).applied).toBe(true);
+      } else {
+        expect(peer.attachWorkflowMonitor(result.entry.id, "peer-monitor", {
+          stateId: workflow.currentState,
+          transitionSeq: workflow.transitionSeq,
+          definitionRevision: workflow.definitionRevision,
+        })).toBeDefined();
+      }
+      return result;
+    });
+    extension(pi as any);
+    try {
+      await emitExtension("turn_start", null, ctx);
+      await toolMap.get("WorkflowCreate")!.execute!("postcommit-cadence", {
+        goal: "Preserve committed fire accounting.",
+        maxFires: 10,
+        definition: JSON.stringify({
+          version: 1, initialState: "poll",
+          states: {
+            poll: { prompt: "Poll only the current plan.", loop: { schedule: "* * * * *", maxFires: 3 }, on: { ready: "next", complete: "done" } },
+            next: { prompt: "Future work.", loop: { schedule: "0 0 * * *", maxFires: 3 }, on: { done: "done" } },
+            done: { prompt: "Done.", terminal: "completed" },
+          },
+        }),
+      });
+      expect(scheduled).toBeDefined();
+      // Inspect the actual registered runtime callback, not a replacement stub:
+      // settlement acceptance is distinct from notification delivery.
+      const dispatch = vi.spyOn(scheduled as unknown as {
+        onFire: (entry: LoopEntry, origin: LoopFireOrigin) => boolean;
+      }, "onFire");
+      const due = scheduled!.nextFire("1")!;
+      vi.setSystemTime(due);
+      scheduled!.pump(due);
+      expect(interposed).toBe(true);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(dispatch.mock.results[0]?.value).toBe(true);
+      expect(new LoopStore(loopPath).get("1")?.fireCount).toBe(action === "complete" ? undefined : 1);
+      expect(emittedEvents.filter((event) => event.name === "loop:fire")).toEqual([]);
+      scheduled!.pump(due);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(new LoopStore(loopPath).get("1")?.fireCount).toBe(action === "complete" ? undefined : 1);
+    } finally {
+      await emitExtension("session_shutdown", null, ctx);
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -1484,6 +1573,120 @@ describe("native task fallback", () => {
 
     expect(sentMessages).toHaveLength(1);
     expect((sentMessages[0].message as { content: string }).content).toContain("Resume unfinished tasks");
+  });
+
+  it.each(["filter", "pause"] as const)("releases a suppressed backlog reservation after post-commit %s supersession", async (action) => {
+    const { pi, toolMap, emittedEvents, sentMessages, emitExtension } = createMockPi();
+    const ctx = createCtx({ sessionId: "suppressed-backlog-session" });
+    let triggers: TriggerSystem | undefined;
+    const originalAdd = TriggerSystem.prototype.add;
+    const add = vi.spyOn(TriggerSystem.prototype, "add").mockImplementation(function (this: TriggerSystem, entry) {
+      triggers = this;
+      originalAdd.call(this, entry);
+    });
+    const originalFire = LoopStore.prototype.fireOrExpire;
+    let currentStore: LoopStore | undefined;
+    let interposed = false;
+    const fire = vi.spyOn(LoopStore.prototype, "fireOrExpire").mockImplementation(function (this: LoopStore, ...args) {
+      const result = originalFire.apply(this, args);
+      if (interposed || result.kind !== "fired") return result;
+      interposed = true;
+      currentStore = this;
+      if (action === "pause") this.pause(result.entry.id);
+      else {
+        const updated = this.updateMetadata(result.entry.id, {
+          trigger: { type: "event", source: "tasks:created", filter: '{"kind":"replacement"}' },
+          prompt: "Replacement worker",
+        }).entry!;
+        triggers!.add(updated);
+      }
+      return result;
+    });
+    extension(pi as any);
+    try {
+      await emitExtension("turn_start", null, ctx);
+      await vi.advanceTimersByTimeAsync(6100);
+      await toolMap.get("LoopCreate")!.execute!("loop", {
+        trigger: "tasks:created", triggerType: "event",
+        prompt: "Source worker", recurring: true, taskBacklog: true, maxFires: 5,
+      });
+      const seed = new LoopStore(resolveLoopStorePath({ loopScope: "session", cwd }, "suppressed-backlog-session")!);
+      triggers!.add(seed.updateMetadata("1", { trigger: { type: "event", source: "tasks:created", filter: '{"kind":"source"}' } }).entry!);
+      await toolMap.get("TaskCreate")!.execute!("task", { subject: "Unfinished work", description: "Keep the replacement actionable." });
+      expect(emittedEvents.filter((event) => event.name === "loop:fire")).toHaveLength(0);
+      pi.events.emit("tasks:created", { kind: "source" });
+      expect(currentStore!.get("1")?.fireCount).toBe(1);
+      expect(emittedEvents.filter((event) => event.name === "loop:fire")).toHaveLength(0);
+      if (action === "pause") {
+        currentStore!.resume("1");
+        triggers!.add(currentStore!.get("1")!);
+      }
+      // No agent_end: the suppressed instruction never started a turn.
+      pi.events.emit("tasks:created", { kind: action === "pause" ? "source" : "replacement" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(currentStore!.get("1")?.fireCount).toBe(2);
+      expect(emittedEvents.filter((event) => event.name === "loop:fire")).toHaveLength(1);
+      expect(sentMessages).toHaveLength(1);
+    } finally {
+      await emitExtension("session_shutdown", null, ctx);
+      fire.mockRestore();
+      add.mockRestore();
+    }
+  });
+
+  it("preserves a replacement backlog reservation when a suppressed continuation loses ownership", async () => {
+    const { pi, toolMap, emittedEvents, emitExtension } = createMockPi();
+    const ctx = createCtx({ sessionId: "owned-backlog-session" });
+    let triggers: TriggerSystem | undefined;
+    const originalAdd = TriggerSystem.prototype.add;
+    const add = vi.spyOn(TriggerSystem.prototype, "add").mockImplementation(function (this: TriggerSystem, entry) {
+      triggers = this;
+      originalAdd.call(this, entry);
+    });
+    const originalGet = LoopStore.prototype.get;
+    let interposed = false;
+    let currentStore: LoopStore | undefined;
+    let ending: Promise<void> | undefined;
+    const get = vi.spyOn(LoopStore.prototype, "get").mockImplementation(function (this: LoopStore, id) {
+      const entry = originalGet.call(this, id);
+      if (!interposed && entry?.taskBacklog && entry.fireCount === 1) {
+        interposed = true;
+        currentStore = this;
+        const updated = this.updateMetadata(id, {
+          trigger: { type: "event", source: "tasks:created", filter: '{"kind":"replacement"}' },
+        }).entry!;
+        triggers!.add(updated);
+        // This handler releases the original reservation synchronously before
+        // its provider awaits; a reentrant accepted wake now owns the slot.
+        ending = emitExtension("agent_end", null, ctx);
+        pi.events.emit("tasks:created", { kind: "replacement" });
+        return originalGet.call(this, id);
+      }
+      return entry;
+    });
+    extension(pi as any);
+    try {
+      await emitExtension("turn_start", null, ctx);
+      await vi.advanceTimersByTimeAsync(6100);
+      await toolMap.get("LoopCreate")!.execute!("loop", {
+        trigger: "tasks:created", triggerType: "event",
+        prompt: "Own the replacement", recurring: true, taskBacklog: true, maxFires: 5,
+      });
+      const seed = new LoopStore(resolveLoopStorePath({ loopScope: "session", cwd }, "owned-backlog-session")!);
+      triggers!.add(seed.updateMetadata("1", { trigger: { type: "event", source: "tasks:created", filter: '{"kind":"source"}' } }).entry!);
+      await toolMap.get("TaskCreate")!.execute!("task", { subject: "Unfinished work", description: "Keep working." });
+      pi.events.emit("tasks:created", { kind: "source" });
+      expect(interposed).toBe(true);
+      expect(currentStore!.get("1")?.fireCount).toBe(2);
+      expect(emittedEvents.filter((event) => event.name === "loop:fire")).toHaveLength(1);
+      pi.events.emit("tasks:created", { kind: "replacement" });
+      expect(currentStore!.get("1")?.fireCount).toBe(2);
+      await ending;
+    } finally {
+      await emitExtension("session_shutdown", null, ctx);
+      get.mockRestore();
+      add.mockRestore();
+    }
   });
 
   it("coalesces task creation bursts so one worker wake adopts the whole backlog", async () => {
