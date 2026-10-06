@@ -25,6 +25,7 @@
     "dist/",
     "docs/USAGE_GUIDE.md",
     "docs/REFERENCE.md",
+    "docs/RUNTIME_CONTINUITY.md",
     "docs/TESTING.md",
     "docs/CONTROLLER_ROUTING_EVAL.md",
     "docs/HARNESS_REVIEW_CAMPAIGNS.md",

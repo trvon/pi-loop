@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
+import { createModelObservationCollector, evaluateScenario } from "./controller-routing-evaluation.mjs";
 import { sendRpcPrompt } from "./rpc-child-io.mjs";
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -23,7 +24,6 @@ const extensionPath = join(projectDir, "dist", "index.js");
 const scenarioDocument = JSON.parse(readFileSync(join(projectDir, "test", "fixtures", "controller-routing-scenarios.json"), "utf8"));
 const scenarioFilter = new Set((process.env.PI_LOOP_LIVE_ROUTING_SCENARIOS ?? "").split(",").map((id) => id.trim()).filter(Boolean));
 const scenarios = scenarioDocument.scenarios.filter((scenario) => scenarioFilter.size === 0 || scenarioFilter.has(scenario.id));
-const CONTROLLER_TOOLS = new Set(["WorkflowCreate", "TaskCreate", "LoopCreate"]);
 
 if (models.length === 0) throw new Error("No routing models were configured");
 if (scenarios.length === 0) throw new Error("No controller-routing scenarios matched PI_LOOP_LIVE_ROUTING_SCENARIOS");
@@ -35,123 +35,11 @@ function textResult(event) {
     .join("\n");
 }
 
-function hasDirectedCycle(definition) {
-  const states = definition?.states;
-  if (!states || typeof states !== "object") return false;
-  const visiting = new Set();
-  const visited = new Set();
-  function visit(stateId) {
-    if (visiting.has(stateId)) return true;
-    if (visited.has(stateId) || !states[stateId]) return false;
-    visiting.add(stateId);
-    for (const target of Object.values(states[stateId].on ?? {})) {
-      if (typeof target === "string" && visit(target)) return true;
-    }
-    visiting.delete(stateId);
-    visited.add(stateId);
-    return false;
-  }
-  return Object.keys(states).some(visit);
-}
-
-function validateWorkflowArgs(args) {
-  if (typeof args?.goal !== "string" || !args.goal.trim() || typeof args.definition !== "string") return false;
-  let definition;
-  try {
-    definition = JSON.parse(args.definition);
-  } catch {
-    return false;
-  }
-  const states = definition?.states;
-  if (definition?.version !== 1 || typeof definition.initialState !== "string" || !states?.[definition.initialState]) return false;
-  const values = Object.values(states);
-  if (values.length < 3 || values.some((state) => typeof state?.prompt !== "string" || !state.prompt.trim())) return false;
-  const taskCount = values.filter((state) => typeof state?.task?.subject === "string" && typeof state?.task?.description === "string").length;
-  const branchCount = values.filter((state) => Object.keys(state?.on ?? {}).length >= 2).length;
-  const terminalCount = values.filter((state) => state?.terminal === "completed" || state?.terminal === "paused").length;
-  return taskCount >= 2 && branchCount >= 1 && terminalCount >= 1 && hasDirectedCycle(definition);
-}
-
-function validateIndependentTasks(calls) {
-  if (calls.length === 0) return false;
-  const subjects = calls.map((call) => call.args?.subject);
-  return calls.every((call) => typeof call.args?.subject === "string" && call.args.subject.trim()
-      && typeof call.args?.description === "string" && call.args.description.trim().length >= 20)
-    && new Set(subjects).size === calls.length;
-}
-
-function validateBoundedCronLoop(args) {
-  const trigger = String(args?.trigger ?? "").toLowerCase();
-  return args?.maxFires === 12
-    && args?.recurring !== false
-    && (trigger === "10m" || trigger.includes("*/10"))
-    && /health|healthy/.test(String(args?.prompt ?? "").toLowerCase());
-}
-
-function validateIdleLoop(args) {
-  return String(args?.trigger ?? "").toLowerCase() === "idle"
-    && args?.triggerType === "idle"
-    && args?.recurring !== false
-    && /broken.*link|link.*broken/.test(String(args?.prompt ?? "").toLowerCase());
-}
-
-function successfulCall(call, toolResults) {
-  const result = toolResults.get(call.toolCallId);
-  return Boolean(result && !result.isError && result.tone !== "error");
-}
-
-function evaluateScenario(scenario, toolCalls, toolResults, agentRuns, durationMs) {
-  const controllerCalls = toolCalls.filter((call) => CONTROLLER_TOOLS.has(call.name));
-  const expectedCalls = controllerCalls.filter((call) => call.name === scenario.expectedTool);
-  const successfulExpectedCalls = expectedCalls.filter((call) => successfulCall(call, toolResults));
-  const unexpectedCalls = controllerCalls.filter((call) => call.name !== scenario.expectedTool);
-  const exactRoute = successfulExpectedCalls.length === scenario.expectedCount && unexpectedCalls.length === 0;
-  const cleanExecution = exactRoute && successfulCall(expectedCalls.at(-1), toolResults);
-  let semanticArguments = false;
-  if (scenario.argumentCheck === "workflow-rework") {
-    semanticArguments = successfulExpectedCalls.length === 1 && validateWorkflowArgs(successfulExpectedCalls[0]?.args);
-  } else if (scenario.argumentCheck === "independent-tasks") {
-    semanticArguments = successfulExpectedCalls.length === scenario.expectedCount && validateIndependentTasks(successfulExpectedCalls);
-  } else if (scenario.argumentCheck === "bounded-cron-loop") {
-    semanticArguments = successfulExpectedCalls.length === 1 && validateBoundedCronLoop(successfulExpectedCalls[0]?.args);
-  } else if (scenario.argumentCheck === "idle-loop") {
-    semanticArguments = successfulExpectedCalls.length === 1 && validateIdleLoop(successfulExpectedCalls[0]?.args);
-  }
-  const firstTurn = successfulExpectedCalls.length === scenario.expectedCount
-    && controllerCalls.every((call) => call.agentRun === 1);
-
-  const checklist = [
-    { id: "route", critical: true, passed: exactRoute },
-    { id: "execution", critical: true, passed: cleanExecution },
-    { id: "arguments", critical: false, passed: semanticArguments },
-    { id: "single-turn", critical: false, passed: firstTurn },
-  ];
-  const success = checklist.filter((item) => item.critical).every((item) => item.passed);
-  const accuracy = checklist.filter((item) => item.passed).length / checklist.length;
-  return {
-    id: scenario.id,
-    category: scenario.category,
-    holdout: scenario.holdout,
-    success,
-    accuracy,
-    durationMs,
-    toolUses: toolCalls.length,
-    retryCount: expectedCalls.length - successfulExpectedCalls.length,
-    agentRuns,
-    checklist,
-    expected: { tool: scenario.expectedTool, count: scenario.expectedCount },
-    actual: controllerCalls.map((call) => ({ name: call.name, args: call.args })),
-    errors: controllerCalls.flatMap((call) => {
-      const result = toolResults.get(call.toolCallId);
-      return result?.isError || result?.tone === "error" ? [`${call.name}: ${result.text.slice(0, 500)}`] : [];
-    }),
-  };
-}
-
 async function runScenario(model, scenario) {
   const fixtureDir = mkdtempSync(join(tmpdir(), `pi-loop-routing-${scenario.id}-`));
   writeFileSync(join(fixtureDir, "README.md"), "# Isolated controller-routing fixture\n");
   const toolCalls = [];
+  const modelObservations = createModelObservationCollector();
   const toolResults = new Map();
   const traceEvents = [];
   let stderr = "";
@@ -210,6 +98,7 @@ async function runScenario(model, scenario) {
         failure = new Error(`non-JSON RPC output: ${line.slice(0, 200)}`);
         continue;
       }
+      modelObservations.observe(event);
       if (event.type === "agent_start") agentRuns += 1;
       if (event.type === "tool_execution_start") {
         toolCalls.push({ name: event.toolName, args: event.args, toolCallId: event.toolCallId, agentRun: agentRuns });
@@ -258,6 +147,7 @@ async function runScenario(model, scenario) {
     await settled;
     return {
       ...evaluateScenario(scenario, toolCalls, toolResults, agentRuns, Date.now() - startedAt - startupMs),
+      ...modelObservations.snapshot(),
       stderr: stderr.slice(-4_000),
       stdoutBytes,
       assistantText,
@@ -302,9 +192,17 @@ try {
 }
 
 mkdirSync(artifactDir, { recursive: true });
+let piVersion = "unavailable";
+try {
+  piVersion = execFileSync("pi", ["--version"], { encoding: "utf8", timeout: 10_000 }).trim();
+} catch {
+  // Version probing must not discard failed-run evidence when Pi is unavailable.
+}
 const report = {
   status: failure ? "failed" : "passed",
   scenarioVersion: scenarioDocument.version,
+  evaluationVersion: 2,
+  runtime: { node: process.version, pi: piVersion },
   models,
   timeoutMs,
   startupMs,
@@ -317,7 +215,7 @@ writeFileSync(join(artifactDir, "latest.json"), `${JSON.stringify(report, null, 
 for (const entry of modelResults) {
   console.log(`${entry.success ? "PASS" : "FAIL"} ${entry.model} · accuracy ${(entry.averageAccuracy * 100).toFixed(1)}%`);
   for (const result of entry.results) {
-    console.log(`  ${result.success ? "PASS" : "FAIL"} ${result.id} · ${(result.accuracy * 100).toFixed(0)}% · ${result.toolUses} tools · ${result.durationMs}ms`);
+    console.log(`  ${result.success ? "PASS" : "FAIL"} ${result.id} · ${(result.accuracy * 100).toFixed(0)}% · ${result.toolUses} tools · first valid=${result.firstAttemptValid} semantic=${result.firstAttemptSemantic} · ${result.durationMs}ms`);
   }
 }
 console.log(`Artifact: ${join(artifactDir, "latest.json")}`);

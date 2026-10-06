@@ -15,7 +15,7 @@ Do not blur these domains:
 - `/tasks`, task RPC, `TaskClaim`, and `TaskUpdate` never control workflow work.
 - `MonitorManager` owns process-local monitor state; monitor recovery across Pi death is not implemented.
 - `pi-subagents` owns worker execution and global concurrency. pi-loop owns only session-scoped orchestration intent, bounded evidence, local capacity, and recovery decisions.
-- Ordinary pending notifications are memory-only. Orchestration wake intent is durable until acknowledgement and remains at-least-once across a crash. Persisted controllers recover on resume, not while Pi is absent.
+- Ordinary pending notifications are memory-only. Orchestration wake intent survives buffer clearing/restart until valid acknowledgement, unless cancelled or retired by expiry; delivery remains at-least-once across a crash. Persisted controllers recover on resume, not while Pi is absent.
 
 A feature that requires a cross-store workflow/task transaction violates the architecture.
 
