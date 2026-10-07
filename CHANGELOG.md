@@ -6,6 +6,27 @@
 
 * **tasks:** register the native task tools at `session_start` instead of six seconds after startup. A prompt sent inside that window used to go out with the pre-registration tool set, and the next request carried four more tools plus their prompt guidelines, so the request prefix changed once per session and every provider-side prompt cache missed (a full ~22k-token re-prefill on llama-server). The timer stays as a backstop and an external `pi-tasks` that answered the startup ping still wins.
 
+## [0.7.17](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.16...pi-loop-v0.7.17) (2026-10-06)
+
+
+### Features
+
+* add read-only lifecycle inspection ([53da7be](https://github.com/trvon/pi-loop/commit/53da7be5620775d51db40cc65d3997ee12de3df6))
+* expose read-only lifecycle inspection ([67c4d4e](https://github.com/trvon/pi-loop/commit/67c4d4e7944dd3d08b74fa00dc5cd265613426b2))
+
+
+### Bug Fixes
+
+* fence workflow activations and denied fire settlement ([76472e4](https://github.com/trvon/pi-loop/commit/76472e4522eb7f00c0b241a0900152c86b1514ed))
+* **loops:** compare activation and expiry identities ([5edd360](https://github.com/trvon/pi-loop/commit/5edd3603d9e75990063899c17655281ad4ba65e0))
+* **loops:** preserve triggers after denied fires ([bc45ae3](https://github.com/trvon/pi-loop/commit/bc45ae3fded0438665ebf10d8fb1f34baf27199f))
+* **runtime:** settle accepted fires without stale wakes ([2070e6e](https://github.com/trvon/pi-loop/commit/2070e6eff8379c587a53c78f95fd76efdfe46118))
+* **scheduler:** retain owned activation deadlines ([aca5081](https://github.com/trvon/pi-loop/commit/aca508192a2990afdb6d31d3140f84854ffd2365))
+* **triggers:** fence listener and debounce ownership ([edc4f66](https://github.com/trvon/pi-loop/commit/edc4f6616d39665ec18c98fa08c5cc1f1fb736dc))
+* **workflows:** fence transition continuation effects ([41e2c3c](https://github.com/trvon/pi-loop/commit/41e2c3c41057a173619a62f5f69b9517bb1010d9))
+* **workflows:** preserve snapshots on rejected commands ([564d71a](https://github.com/trvon/pi-loop/commit/564d71a6a791acf6c5fa9ecee2acd3822e0cd240))
+* **workflows:** reject superseded activation snapshots ([545a5f8](https://github.com/trvon/pi-loop/commit/545a5f8eaf1bf04a1374ffc34f127aae6ddc235b))
+
 ## [0.7.16](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.15...pi-loop-v0.7.16) (2026-10-05)
 
 
