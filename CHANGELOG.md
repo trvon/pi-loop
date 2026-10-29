@@ -6,6 +6,13 @@
 
 * **tasks:** register the native task tools at `session_start` instead of six seconds after startup. A prompt sent inside that window used to go out with the pre-registration tool set, and the next request carried four more tools plus their prompt guidelines, so the request prefix changed once per session and every provider-side prompt cache missed (a full ~22k-token re-prefill on llama-server). The timer stays as a backstop and an external `pi-tasks` that answered the startup ping still wins.
 
+## [0.7.19](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.18...pi-loop-v0.7.19) (2026-10-29)
+
+
+### Bug Fixes
+
+* **deps:** override undici to 8.12.3 to clear audit advisories ([425a393](https://github.com/trvon/pi-loop/commit/425a393e3acd140e5a1836ba1d9ab1612f2eabda))
+
 ## [0.7.18](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.17...pi-loop-v0.7.18) (2026-10-14)
 
 
