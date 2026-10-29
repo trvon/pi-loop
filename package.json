@@ -52,7 +52,8 @@
     "typebox": "*"
   },
   "overrides": {
-    "postcss": "^8.5.29"
+    "postcss": "^8.5.29",
+    "undici": "^8.12.3"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
