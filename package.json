@@ -52,7 +52,8 @@
     "typebox": "*"
   },
   "overrides": {
-    "postcss": "^8.5.29"
+    "postcss": "^8.5.29",
+    "undici": "^8.12.3"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
@@ -86,8 +87,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
-    "@earendil-works/pi-coding-agent": "1.2.0",
-    "@earendil-works/pi-tui": "1.2.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.4",
     "esbuild": "0.28.2",
