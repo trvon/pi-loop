@@ -161,7 +161,17 @@ PI_LOOP_LIVE_ROUTING_MODELS="openai-codex/gpt-5.6-sol:minimal,anthropic/claude-s
 npm run test:e2e:routing
 ```
 
-Each model/scenario pair runs in a clean temporary Pi process with only `WorkflowCreate`, `TaskCreate`, and `LoopCreate` exposed. Natural-language prompts never name those tools. Critical success requires the exact controller type/count and successful tool validation; payload semantics and first-turn completion contribute to accuracy. Use `PI_LOOP_LIVE_ROUTING_SCENARIOS` for a comma-separated subset. See [controller routing evaluation](./CONTROLLER_ROUTING_EVAL.md) for the fixed baseline/hold-out matrix and judgment rules.
+The RPC harness exposes three creation tools. The native SDK comparison uses the
+same six prompts across direct, `only`/3,000 and `only`/zero arms:
+
+```bash
+PI_LOOP_NATIVE_ROUTING_MODEL="provider/model" npm run test:e2e:routing:native
+```
+
+The native comparison is separate opt-in, keeps Pi credentials in memory, and
+runs 18 sessions. Without its model variable it reports `SKIP`, not a pass. See
+[controller routing evaluation](./CONTROLLER_ROUTING_EVAL.md) for inventories,
+observation boundaries, judgment rules and artifact paths.
 
 Subagent orchestration scenario:
 

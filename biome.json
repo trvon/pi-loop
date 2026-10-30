@@ -37,6 +37,9 @@
 			"src/**/*.ts",
 			"test/**/*.ts",
 			"test/controller-routing-evaluation.test.mjs",
+			"test/native-routing-evaluation.test.mjs",
+			"test/native-routing-observer.test.mjs",
+			"benchmarks/evaluate-native-routing.mjs",
 			"test/e2e/controller-routing-evaluation.mjs",
 			"test/e2e/controller-routing-conformance.mjs",
 			"benchmarks/**/*.ts"
