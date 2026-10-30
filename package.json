@@ -78,6 +78,7 @@
     "bench:compare": "BENCH_BASELINE_IN=.artifacts/benchmarks/baseline.json npm run bench",
     "profile:core": "node -e \"const fs=require('node:fs');fs.mkdirSync('.artifacts/profiles',{recursive:true});fs.rmSync('.artifacts/profiles/core.cpuprofile',{force:true})\" && TZ=UTC node --import tsx --cpu-prof --cpu-prof-interval=1000 --cpu-prof-dir=.artifacts/profiles --cpu-prof-name=core.cpuprofile benchmarks/profile-core.ts",
     "profile:startup": "node --import tsx benchmarks/profile-startup.ts",
+    "profile:tools": "node --import tsx benchmarks/profile-tool-context.ts",
     "profile:fuzz": "TZ=UTC node --import tsx benchmarks/profile-fuzz.ts",
     "hooks:install": "git config core.hooksPath .githooks",
     "typecheck": "npm run typecheck:prod && tsc -p tsconfig.dev.json",
@@ -87,6 +88,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
+    "@earendil-works/pi-ai": "1.4.0",
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
     "@types/node": "^26.6.5",

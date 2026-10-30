@@ -40,6 +40,7 @@ Lint currently reports two established optional-chain warnings; new warnings are
 | Benchmarks | `npm run bench` | Fixed core workloads |
 | CPU profile | `npm run profile:core` | V8 profile plus checksummed metadata |
 | Startup profile | `npm run profile:startup` | Fresh-process CLI timing and separate CPU samples |
+| Tool context | `npm run profile:tools` | Native SDK declarations, instructions, discovery and result sizes |
 | Fuzz profile | `npm run profile:fuzz` | Allowlisted property-worker CPU capture and campaign evidence |
 
 Unit tests use Vitest, fake timers for schedules, in-memory stores for pure behavior, temporary files for persistence/restart, and one shared Pi event-bus mock.
@@ -50,6 +51,25 @@ See [bounded review campaigns](./HARNESS_REVIEW_CAMPAIGNS.md) for the test-only
 coverage/closure reference policy and traceable boundary inventory. Failed or
 skipped mandatory discovery is incomplete, never a clean review. The inventory
 checks references; the normal suite executes the underlying regressions.
+
+## Native code mode
+
+```bash
+npx vitest run test/native-codemode.test.ts
+```
+
+The suite uses the pinned Pi SDK's session and native code-mode extension with a
+scripted provider. It makes no remote model calls and reads no user credentials
+or project context. Stores use memory; SDK files use isolated temporary directories.
+
+Coverage includes absent/inactive code mode, `on` and `only` request declarations,
+first-request native task availability, task claim/completion, zero-inline-budget
+guideline discovery, inactive-tool exclusion, nested validation and permission
+checks, and text business rejections. Each session emits shutdown and is disposed.
+
+These tests establish SDK conformance, not model routing quality, provider cache
+behavior, token savings, or compatibility with untested Pi versions. Tool exposure
+remains `direct`; discovery does not activate tools.
 
 ## Workflow coverage
 
@@ -183,6 +203,53 @@ npm run profile:core
 ```
 
 Core workloads live in `benchmarks/workloads.ts`. `bench:baseline` writes `.artifacts/benchmarks/baseline.json`; `bench:compare` reports throughput changes. Load `.cpuprofile` files in a V8-compatible viewer. Compare only the same machine, Node version, architecture, timezone, and power state.
+
+### Tool context
+
+```bash
+npm run profile:tools
+npm run profile:tools -- --out .artifacts/profiles/tool-context
+npx vitest run test/native-codemode.test.ts test/tool-context-profile.test.ts
+```
+
+The fixed matrix runs code mode absent, registered but inactive, and `on`/`only`
+with Pi's estimated-token inline budgets of 3,000 and zero. Each isolated SDK session sends an initial
+request, a repeated request, and read-only list calls. Active code-mode cases also
+request three controller declarations, a three-hit search, and callable tool names.
+The provider is scripted. Native model helpers and external extensions are disabled;
+no remote model or operator configuration is used.
+
+Each unique run directory contains `report.json` and six request capture files.
+The report records source hashes, SDK versions, registered/active/callable/declared
+tools, per-tool schema/description sizes, effective instructions, transcript sizes,
+and discovery/result traffic. Counts use UTF-16 code units and UTF-8 bytes before
+synthetic workspace paths are replaced in saved captures. JSON metrics include
+serialization overhead. Instructions, declarations and transcript metrics overlap;
+do not sum them. Capture-file checksums cover the saved, normalized files.
+
+Limits: 12 requests per case, 2 MiB per original request, 16 MiB per artifact.
+Exceeding a limit fails without truncation. Case failures retain an incomplete
+report and completed-case artifacts. Temporary SDK workspaces are removed.
+
+This is the native SDK provider boundary, not a provider's HTTP payload. Token
+counts and cache reuse remain `null`; fixture usage zeros are not measurements.
+Disabled cases have no discovery stage, so total traffic is not an equivalent-work
+savings comparison. Read-only profiling does not change exposure or activate tools.
+
+### Context budgets
+
+```bash
+npx vitest run test/tool-copy-budget.test.ts test/tool-context-profile.test.ts
+```
+
+`test/fixtures/tool-context-budget.json` fixes per-tool and aggregate UTF-8 ceilings
+for descriptions, input-schema JSON, schema-description text and declaration JSON.
+Per-tool ceilings add 10%, rounded up to 32 bytes; aggregate ceilings round up to
+100 bytes. Review fixture changes explicitly; tests never rebaseline themselves.
+The older combined description/guideline character budget remains independent.
+Schema-description text walks schema-bearing keywords, not enum/example/default
+instance data or referenced documents. Fields overlap; do not sum them or call them
+tokens. Mutation controls check schema-only inflation and Unicode parameter copy.
 
 ### Startup
 
