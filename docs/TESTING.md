@@ -218,8 +218,9 @@ Core workloads live in `benchmarks/workloads.ts`. `bench:baseline` writes `.arti
 
 ```bash
 npm run profile:tools
-npm run profile:tools -- --out .artifacts/profiles/tool-context
-npx vitest run test/native-codemode.test.ts test/tool-context-profile.test.ts
+npm run profile:tools -- --out .artifacts/profiles/tool-context --context full
+npm run profile:tools -- --out .artifacts/profiles/tool-context-compact --context compact
+npx vitest run test/native-codemode.test.ts test/tool-context-profile.test.ts test/compact-context.test.ts test/tool-context-registration.test.ts
 ```
 
 The fixed matrix runs code mode absent, registered but inactive, and `on`/`only`
@@ -227,7 +228,10 @@ with Pi's estimated-token inline budgets of 3,000 and zero. Each isolated SDK se
 request, a repeated request, and read-only list calls. Active code-mode cases also
 request three controller declarations, a three-hit search, and callable tool names.
 The provider is scripted. Native model helpers and external extensions are disabled;
-no remote model or operator configuration is used.
+no remote model or operator configuration is used. `--context full|compact` selects
+pi-loop metadata explicitly rather than inheriting the operator environment.
+Compact discovery retrieves three original controller contracts through `LoopHelp`;
+full mode uses native declaration discovery. These outputs are not byte-identical.
 
 Each unique run directory contains `report.json` and six request capture files.
 The report records source hashes, SDK versions, registered/active/callable/declared
@@ -245,6 +249,24 @@ This is the native SDK provider boundary, not a provider's HTTP payload. Token
 counts and cache reuse remain `null`; fixture usage zeros are not measurements.
 Disabled cases have no discovery stage, so total traffic is not an equivalent-work
 savings comparison. Read-only profiling does not change exposure or activate tools.
+Compact acceptance includes the extra help declaration and retained prompt section
+in its direct-request budget. Default metadata, all 21 existing schemas, late native
+tasks, inactive/external contract exclusions and native ownership checks have
+separate controls. These are scripted conformance checks, not routing decisions.
+
+One SDK 1.4.0 scripted run measured these initial transcript UTF-8 bytes:
+
+| Code mode | Full metadata | Compact metadata |
+| --- | ---: | ---: |
+| Absent or inactive | 26,269 | 16,721 |
+| `on`, either budget | 29,789 | 20,299 |
+| `only`, 3,000 | 15,487 | 17,328 |
+| `only`, zero | 4,010 | 5,076 |
+
+Compact direct mode is 36.3% smaller. Compact with `only`/zero is 80.7% smaller
+than full/direct, but adds 1,066 bytes over full/`only`/zero for retained guidance.
+At 3,000 the compact inline catalog grows; native selection changes with metadata.
+These are fixture measurements, not operator prompt sizes or provider tokens.
 
 ### Context budgets
 

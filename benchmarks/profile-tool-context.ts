@@ -31,12 +31,12 @@ export const CONTEXT_CASES = [
   { name: "only-zero", mode: "only", inlineBudget: 0 },
 ] as const;
 
-export type ContextCase = (typeof CONTEXT_CASES)[number];
+export type ContextCase = (typeof CONTEXT_CASES)[number] & { contextProfile?: "compact" };
 
-const DISCOVERY_SCRIPT = `// @options: {"max_output_tokens": 12000}
+const discoveryScript = (compact: boolean) => `// @options: {"max_output_tokens": 12000}
 return {
   names: ALL_TOOLS.map(t => t.name),
-  controllers: await Promise.all(["LoopCreate", "TaskCreate", "WorkflowCreate"].map(name => describeTool(name))),
+  controllers: await Promise.all(["LoopCreate", "TaskCreate", "WorkflowCreate"].map(name => ${compact ? "tools.LoopHelp({tool:name})" : "describeTool(name)"})),
   search: await searchTools("workflow task schedule", {limit: 3})
 };`;
 const READ_SCRIPT = `return { loops: await tools.LoopList({}), tasks: await tools.TaskList({}), monitors: await tools.MonitorList({}) };`;
@@ -91,7 +91,7 @@ export async function profileContextCase(spec: ContextCase) {
     const enabled = active.includes("codemode");
     if (enabled) {
       stage = "discovery";
-      const result = await harness.script(DISCOVERY_SCRIPT);
+      const result = await harness.script(discoveryScript(spec.contextProfile === "compact"));
       const data = scriptData(result);
       if (!Array.isArray(data.controllers) || data.controllers.length !== 3 || data.controllers.some(value => typeof value !== "string")) {
         throw new Error("Controller discovery was incomplete");
@@ -99,7 +99,9 @@ export async function profileContextCase(spec: ContextCase) {
       if (!Array.isArray(data.names) || registered.filter(tool => tool.piLoop && tool.callable).some(tool => !(data.names as unknown[]).includes(tool.name))) {
         throw new Error("Discovery omitted a callable pi-loop tool");
       }
-      discovery = { content: jsonSize(result.content), workload: "3 controller declarations, search(limit=3), callable names" };
+      discovery = { content: jsonSize(result.content), workload: spec.contextProfile === "compact"
+        ? "3 original controller contracts via LoopHelp, search(limit=3), callable names"
+        : "3 controller declarations, search(limit=3), callable names" };
     }
 
     stage = "read";
@@ -121,7 +123,8 @@ export async function profileContextCase(spec: ContextCase) {
     }
     if (Object.entries(EMPTY_STATE).some(([key, value]) => observed[key] !== value)) throw new Error("Read-only profile did not observe empty stores");
     if (JSON.stringify(harness.session.getActiveToolNames()) !== JSON.stringify(active)) throw new Error("Profiling changed tool activation");
-    if (harness.calls.some(name => !["codemode", "LoopList", "TaskList", "MonitorList"].includes(name))) throw new Error("Unexpected tool executed during profiling");
+    const allowed = ["codemode", "LoopList", "TaskList", "MonitorList", ...(spec.contextProfile === "compact" ? ["LoopHelp"] : [])];
+    if (harness.calls.some(name => !allowed.includes(name))) throw new Error("Unexpected tool executed during profiling");
     if (captures.length !== (enabled ? 6 : 4)) throw new Error("Unexpected native request count");
 
     const first = captures[0];
@@ -185,7 +188,7 @@ async function writeReport(out: string, metadata: { complete: boolean }) {
 export async function runToolContextProfile(args: string[], runCase = profileContextCase) {
   const options = contextOptions(args);
   if (options.help) {
-    process.stdout.write("Usage: npm run profile:tools -- [--out DIRECTORY]\nFixed six-case native SDK matrix; no model inference or provider token/cache measurements.\n");
+    process.stdout.write("Usage: npm run profile:tools -- [--out DIRECTORY] [--context full|compact]\nFixed six-case native SDK matrix; no model inference or provider token/cache measurements.\n");
     return null;
   }
   const root = fileURLToPath(new URL("..", import.meta.url));
@@ -195,6 +198,7 @@ export async function runToolContextProfile(args: string[], runCase = profileCon
   const cases: Awaited<ReturnType<typeof profileContextCase>>["summary"][] = [];
   const metadata = {
     schemaVersion: 1,
+    contextProfile: options.contextProfile ?? "full",
     complete: false,
     startedAt: new Date().toISOString(),
     node: process.version,
@@ -217,7 +221,7 @@ export async function runToolContextProfile(args: string[], runCase = profileCon
   };
   try {
     for (const spec of CONTEXT_CASES) {
-      const result = await runCase(spec);
+      const result = await runCase({ ...spec, ...(options.contextProfile === "compact" ? { contextProfile: "compact" as const } : {}) });
       const raw = boundedJson(result.captures);
       const file = `${spec.name}.requests.json`;
       await writeFile(join(out, file), raw, { flag: "wx", mode: 0o600 });

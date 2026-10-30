@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTaskProviderRuntime } from "../src/runtime/task-provider-runtime.js";
+import { createToolContextRegistration } from "../src/tools/tool-context.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
 beforeEach(() => {
@@ -10,14 +11,17 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function setup(respondToTaskPing = false, isStaleExtensionContextError: (error: unknown) => boolean = () => false) {
+function setup(respondToTaskPing = false, isStaleExtensionContextError: (error: unknown) => boolean = () => false, contextProfile?: "compact") {
   let sessionId = "session-a";
   let sessionGeneration = 0;
   const mock = createMockPi({ respondToTaskPing });
+  mock.pi.getActiveTools = () => [...mock.toolMap.keys()];
+  const registerTool = contextProfile ? createToolContextRegistration(mock.pi, contextProfile) : undefined;
   const evaluateTaskBacklog = vi.fn(async () => ({ created: false, cleaned: 0 }));
   const onReady = vi.fn(async () => {});
   const runtime = createTaskProviderRuntime({
     pi: mock.pi,
+    registerTool,
     runtimeId: "runtime-a",
     resolveStorePath: () => undefined,
     getSessionId: () => sessionId,
@@ -38,6 +42,38 @@ function setup(respondToTaskPing = false, isStaleExtensionContextError: (error: 
 }
 
 describe("task-provider-runtime", () => {
+  it.each(["session_start", "fallback_timer"] as const)("applies compact registration and recovers late native contracts through %s", async trigger => {
+    const { toolMap, runtime, extensionHandlers } = setup(false, () => false, "compact");
+    const help = toolMap.get("LoopHelp")!;
+    const indexBefore = await help.execute!("before", {});
+    expect(JSON.parse(indexBefore.content[0].text).tools).not.toContain("TaskCreate");
+    if (trigger === "session_start") expect(runtime.registerNativeTools(trigger)).toBe(true);
+    else await vi.advanceTimersByTimeAsync(6_100);
+    const task = toolMap.get("TaskCreate")!;
+    expect(task.promptGuidelines).toBeUndefined();
+    const contract = await help.execute!("after", { tool: "TaskCreate" });
+    expect(JSON.parse(contract.content[0].text).promptGuidelines.join("\n")).toContain("WorkflowCreate");
+    const registrations = toolMap.size;
+    expect(runtime.registerNativeTools("session_start")).toBe(true);
+    expect(toolMap.size).toBe(registrations);
+    expect(runtime.getNativeTaskStore()!.list()).toEqual([]);
+    for (const handler of extensionHandlers.get("session_shutdown") ?? []) await handler(null, {});
+  });
+
+  it("does not capture or replace external task contracts in compact mode", async () => {
+    const { toolMap, runtime, extensionHandlers } = setup(true, () => false, "compact");
+    await Promise.resolve();
+    expect(runtime.registerNativeTools("session_start")).toBe(false);
+    const external = { name: "TaskCreate", description: "External provider contract" };
+    toolMap.set("TaskCreate", external);
+    const help = toolMap.get("LoopHelp")!;
+    const result = await help.execute!("external", { tool: "TaskCreate" });
+    expect(result.content[0].text).toContain("No active pi-loop-owned contract");
+    await vi.advanceTimersByTimeAsync(6_100);
+    expect(toolMap.get("TaskCreate")).toBe(external);
+    for (const handler of extensionHandlers.get("session_shutdown") ?? []) await handler(null, {});
+  });
+
   it("registers native RPC immediately but delays colliding tools", async () => {
     const { pi, toolMap, emittedEvents, runtime, onReady } = setup();
 

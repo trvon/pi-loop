@@ -45,7 +45,7 @@ describe("discovery-aware routing evaluation measurement", () => {
     }
   });
 
-  it("replays valid payloads for all six frozen fixtures across three arms without claiming model decisions", async () => {
+  it("replays six frozen fixtures across three arms and both context profiles without claiming model decisions", async () => {
     const frozen = JSON.parse(await readFile(new URL("./fixtures/controller-routing-scenarios.json", import.meta.url), "utf8"));
     const definition = JSON.stringify({ version: 1, initialState: "investigate", states: {
       investigate: { prompt: "Investigate", task: { subject: "Investigate", description: "Record current behavior" }, on: { ready: "implement" } },
@@ -54,10 +54,10 @@ describe("discovery-aware routing evaluation measurement", () => {
       complete: { prompt: "Report results", terminal: "completed" },
     } });
     let callable;
-    for (const arm of NATIVE_ROUTING_ARMS) for (const entry of frozen.scenarios) {
-      const fixture = await createNativeSession(arm);
+    for (const contextProfile of [undefined, "compact"]) for (const arm of NATIVE_ROUTING_ARMS) for (const entry of frozen.scenarios) {
+      const fixture = await createNativeSession({ ...arm, contextProfile });
       try {
-        const current = fixture.session.getCallableToolNames();
+        const current = fixture.session.getCallableToolNames().filter(name => name !== "LoopHelp");
         callable ??= current;
         expect(current).toEqual(callable);
         let args;
@@ -116,7 +116,7 @@ describe("discovery-aware routing evaluation measurement", () => {
     expect(await runNativeRouting(["--out", dir], {}, dependencies)).toEqual({ status: "skipped" });
     expect(await runNativeRouting(["--help"], {}, dependencies)).toEqual({ status: "help" });
     for (const [args, env] of [
-      [["--unknown"], {}], [["--out"], {}],
+      [["--unknown"], {}], [["--out"], {}], [["--context", "unknown"], {}],
       [["--out", dir], { PI_LOOP_NATIVE_ROUTING_MODEL: "invalid" }],
       [["--out", dir], { PI_LOOP_NATIVE_ROUTING_MODEL: "p/m", PI_LOOP_LIVE_TIMEOUT_MS: "2garbage" }],
       [["--out", dir], { PI_LOOP_NATIVE_ROUTING_MODEL: "p/m", PI_LOOP_LIVE_TIMEOUT_MS: "180001" }],
@@ -136,8 +136,10 @@ describe("discovery-aware routing evaluation measurement", () => {
         return { scenario: entry.id, arm: arm.name, status: "passed", callable: ["TaskCreate"], evaluation: { success: true }, evidence: { complete: true, calls: [] } };
       },
     };
-    const result = await runNativeRouting(["--out", dir], { PI_LOOP_NATIVE_ROUTING_MODEL: "p/m" }, dependencies);
-    expect(result.report).toMatchObject({ complete: false, status: "incomplete", failure: "Error" });
+    const result = await runNativeRouting(["--out", dir, "--context", "compact"], { PI_LOOP_NATIVE_ROUTING_MODEL: "p/m" }, dependencies);
+    expect(result.report).toMatchObject({ complete: false, status: "incomplete", failure: "Error", contextProfile: "compact" });
+    expect(result.report.arms.every(arm => arm.contextProfile === "compact")).toBe(true);
+    expect(result.report.fixture.allowedTools).toContain("LoopHelp");
     expect(result.report.planned).toHaveLength(18);
     expect(result.report.results).toHaveLength(1);
     expect(attempts).toBe(2);

@@ -39,7 +39,7 @@ export async function runNativeRoutingCase(scenario, arm, inference, timeoutMs, 
   let callable;
   let activationUnchanged = false;
   try {
-    fixture = await sessionFactory({ ...arm, inference, allowTools: ALLOWED_TOOLS });
+    fixture = await sessionFactory({ ...arm, inference, allowTools: [...ALLOWED_TOOLS, ...(arm.contextProfile === "compact" ? ["LoopHelp"] : [])] });
     if (fixture.evidenceKind !== "configured-model") throw new Error("Scripted decisions cannot count as model routing");
     active = fixture.session.getActiveToolNames();
     callable = fixture.session.getCallableToolNames();
@@ -67,11 +67,13 @@ export async function runNativeRoutingCase(scenario, arm, inference, timeoutMs, 
 }
 
 export async function runNativeRouting(args = [], env = process.env, dependencies = {}) {
-  const options = contextOptions(args.length ? args : ["--out", ".artifacts/live-native-controller-routing"]);
+  const options = contextOptions(args);
+  if (!args.includes("--out")) options.out = resolve(".artifacts/live-native-controller-routing");
   if (options.help) {
-    process.stdout.write("Usage: npm run test:e2e:routing:native -- [--out DIRECTORY]\nExplicit PI_LOOP_NATIVE_ROUTING_MODEL=provider/model required; 18 fresh sessions, memory Pi credentials, provider-standard auth, thinking off. May incur model charges.\n");
+    process.stdout.write("Usage: npm run test:e2e:routing:native -- [--out DIRECTORY] [--context full|compact]\nExplicit PI_LOOP_NATIVE_ROUTING_MODEL=provider/model required; 18 fresh sessions, memory Pi credentials, provider-standard auth, thinking off. May incur model charges.\n");
     return { status: "help" };
   }
+  const arms = NATIVE_ROUTING_ARMS.map(arm => ({ ...arm, ...(options.contextProfile === "compact" ? { contextProfile: "compact" } : {}) }));
   const requestedModel = env.PI_LOOP_NATIVE_ROUTING_MODEL;
   if (!requestedModel) {
     process.stdout.write("SKIP: set PI_LOOP_NATIVE_ROUTING_MODEL=provider/model to opt into native routing evaluation (18 sessions). No model routing pass recorded.\n");
@@ -98,13 +100,13 @@ export async function runNativeRouting(args = [], env = process.env, dependencie
   const out = await mkdtemp(join(options.out, "run-"));
   const report = {
     schemaVersion: 1, status: "incomplete", complete: false, evidenceKind: "configured-model", requestedModel,
-    arms: NATIVE_ROUTING_ARMS,
+    arms, contextProfile: options.contextProfile ?? "full",
     startedAt: new Date().toISOString(), node: process.version, sdk: VERSION, piAi: PI_AI_VERSION,
     limitations: "One configured model, one pass, seen fixtures. No prompt improvement/convergence, token/cache savings or full-operator-config claim. The inventory differs from the legacy three-controller-only RPC benchmark.",
     source, scenarioVersion: scenarios.version, evaluationVersion: 2,
-    fixture: { thinkingLevel: "off", sdkDefaultTools: true, externalExtensions: false, nativeModelsApi: false, memoryCredentials: true, allowedTools: ALLOWED_TOOLS },
+    fixture: { thinkingLevel: "off", sdkDefaultTools: true, externalExtensions: false, nativeModelsApi: false, memoryCredentials: true, allowedTools: [...ALLOWED_TOOLS, ...(options.contextProfile === "compact" ? ["LoopHelp"] : [])] },
     limits: { sessions: 18, callsPerSession: 64, observationBytesPerSession: 2097152, timeoutMs },
-    planned: NATIVE_ROUTING_ARMS.flatMap(arm => scenarios.scenarios.map(scenario => `${arm.name}/${scenario.id}`)),
+    planned: arms.flatMap(arm => scenarios.scenarios.map(scenario => `${arm.name}/${scenario.id}`)),
     expectedCallable: null, results: [], artifacts: [], failure: null,
   };
   try {
@@ -113,7 +115,7 @@ export async function runNativeRouting(args = [], env = process.env, dependencie
     const model = runtime.getModel(requestedModel.slice(0, separator), requestedModel.slice(separator + 1));
     if (!model) throw new Error("Requested built-in model unavailable; no fallback attempted");
     const runCase = dependencies.runCase ?? runNativeRoutingCase;
-    outer: for (const arm of NATIVE_ROUTING_ARMS) {
+    outer: for (const arm of arms) {
       for (const scenario of scenarios.scenarios) {
         process.stdout.write(`RUN ${arm.name}/${scenario.id}\n`);
         const result = await runCase(scenario, arm, { modelRuntime: runtime, model }, timeoutMs);

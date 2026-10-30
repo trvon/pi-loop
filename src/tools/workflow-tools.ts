@@ -95,6 +95,7 @@ interface TriggerSystemLike {
 
 export interface WorkflowToolsOptions {
   pi: ExtensionAPI;
+  registerTool?: ExtensionAPI["registerTool"];
   getStore: () => WorkflowStoreLike;
   getTriggerSystem: () => TriggerSystemLike;
   getActor: () => WorkflowRuntimeActor | undefined;
@@ -222,8 +223,8 @@ export function formatWorkflowSummary(entry: LoopEntry, heading: string, failure
 }
 
 export function registerWorkflowTools(options: WorkflowToolsOptions): void {
+  const registerTool: ExtensionAPI["registerTool"] = options.registerTool ?? (definition => options.pi.registerTool(definition));
   const {
-    pi,
     getStore,
     getTriggerSystem,
     getActor,
@@ -234,7 +235,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     onDynamicLoopActivated,
   } = options;
 
-  pi.registerTool({
+  registerTool({
     name: "WorkflowCreate",
     label: "WorkflowCreate",
     renderCall: renderToolCall("Workflow", (args) => `create · ${String(toolArg(args, "goal") ?? "workflow").slice(0, 56)}`),
@@ -303,7 +304,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "WorkflowClaim",
     label: "WorkflowClaim",
     renderCall: renderToolCall("Workflow", (args) => `claim · #${String(toolArg(args, "id") ?? "?")}`),
@@ -345,7 +346,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "WorkflowRevise",
     label: "WorkflowRevise",
     renderCall: renderToolCall("Workflow", (args) => `revise · #${String(toolArg(args, "id") ?? "?")} · r${String(toolArg(args, "expectedRevision") ?? "?")}`),
@@ -448,7 +449,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "WorkflowTransition",
     label: "WorkflowTransition",
     renderCall: renderToolCall("Workflow", (args) => `transition · #${String(toolArg(args, "id") ?? "?")} → ${String(toolArg(args, "outcome") ?? "?")}`),

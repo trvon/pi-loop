@@ -40,6 +40,9 @@ describe("tool-context profile expectations", () => {
     expect(contextOptions([])).toEqual({ help: false, out: resolve(".artifacts/profiles/tool-context") });
     expect(contextOptions(["--out", "my profiles"])).toEqual({ help: false, out: resolve("my profiles") });
     expect(contextOptions(["--help"]).help).toBe(true);
+    expect(contextOptions(["--context", "compact"]).contextProfile).toBe("compact");
+    expect(contextOptions(["--context", "full"]).contextProfile).toBe("full");
+    for (const args of [["--context"], ["--context", "unknown"], ["--context", "compact", "--context", "full"]]) expect(() => contextOptions(args)).toThrow();
     for (const args of [["--out"], ["--out", ""], ["--out", " "], ["--out", "--help"], ["--out", "a", "--out", "b"], ["--budget", "-1"], ["--mode", "off"], ["--help", "--out", "a"]]) {
       expect(() => contextOptions(args)).toThrow();
     }

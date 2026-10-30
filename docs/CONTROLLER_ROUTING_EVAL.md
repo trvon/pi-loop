@@ -75,15 +75,18 @@ The bounded report is written to `.artifacts/live-controller-routing/latest.json
 ## Native discovery comparison
 
 ```bash
-PI_LOOP_NATIVE_ROUTING_MODEL="provider/model" npm run test:e2e:routing:native
+PI_LOOP_NATIVE_ROUTING_MODEL="provider/model" npm run test:e2e:routing:native -- --context full
+PI_LOOP_NATIVE_ROUTING_MODEL="provider/model" npm run test:e2e:routing:native -- --context compact
 npm run test:e2e:routing:native -- --help
 ```
 
 This opt-in SDK1.4.0 comparison runs the six frozen prompts in 18 fresh sessions:
 direct tools, native `only` with a 3,000 estimated-token inline budget, and `only`
 with zero.
-Prompts and production guidance stay unchanged. No discovery script or controller
-choice is supplied to the model. The old hold-outs are seen controls.
+The prompts stay fixed. `--context full` keeps default production metadata;
+`--context compact` loads the opt-in production summaries, guide and `LoopHelp`.
+Each invocation runs 18 sessions. Compare both runs with the same model. No discovery
+script or controller choice is supplied to the model. The old hold-outs are seen controls.
 
 Use a bundled model ID without a thinking suffix. Thinking is `off`. Pi credentials
 stay in memory; providers retain their standard environment/ambient authentication.
@@ -94,8 +97,8 @@ reports `SKIP`; unavailable models and provider errors are incomplete, not passe
 No fallback or authentication repair is attempted.
 
 All arms keep the same underlying SDK-default/pi-loop inventory. Fixture permission
-checks allow only the three creation tools and `codemode`; other tool executions
-are blocked. Inventory remains active, so this is not the three-tool RPC baseline.
+checks allow the three creation tools and `codemode`, plus read-only `LoopHelp`
+in compact mode; other tool executions are blocked. Inventory remains active, so this is not the three-tool RPC baseline.
 Memory stores and disabled scheduling prevent fixture work from becoming operator
 work. Sessions emit shutdown, dispose and remove their temporary workspaces.
 
@@ -117,7 +120,8 @@ Each unique `.artifacts/live-native-controller-routing/run-*/` directory contain
 report and checksummed per-case evidence. `--out DIRECTORY` changes the artifact
 root. Reports identify source, SDK, requested/observed model metadata, inventories,
 execution counts and incomplete evidence. Durations include setup and cleanup;
-execution counts include outer/nested tools, not discovery helper lookups.
+execution counts include outer/nested tools and compact `LoopHelp` calls, not native
+discovery helper lookups.
 Exit status is nonzero for failed or
 incomplete configured runs. Scripted unit replays establish observer/scorer
 conformance, not model routing, empirical convergence or token/cache savings.

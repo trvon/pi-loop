@@ -28,15 +28,22 @@ export function boundedJson(value: unknown, limit = MAX_ARTIFACT_BYTES): string 
 export function contextOptions(args: string[]) {
   let out = resolve(".artifacts/profiles/tool-context");
   let supplied = false;
+  let contextProfile: "full" | "compact" | undefined;
   if (args.length === 1 && args[0] === "--help") return { help: true, out };
   for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--context" && contextProfile === undefined) {
+      const value = args[++i];
+      if (value !== "full" && value !== "compact") throw new Error("--context requires full or compact");
+      contextProfile = value;
+      continue;
+    }
     if (args[i] !== "--out" || supplied) throw new Error(`Unknown or duplicate option: ${args[i]}`);
     const value = args[++i];
     if (!value?.trim() || value.startsWith("--")) throw new Error("--out requires a directory");
     out = resolve(value);
     supplied = true;
   }
-  return { help: false, out };
+  return { help: false, out, ...(contextProfile ? { contextProfile } : {}) };
 }
 
 function schemaDescriptions(schema: unknown): string[] {

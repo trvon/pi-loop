@@ -25,6 +25,7 @@ export async function createNativeSession(options: {
   mode?: "on" | "only";
   inactive?: boolean;
   inlineBudget?: number;
+  contextProfile?: "compact";
   block?: string;
   onRequest?: (context: TranscriptContext, workspace: string) => void;
   inference?: { modelRuntime: ModelRuntime; model: NonNullable<ReturnType<ModelRuntime["getModel"]>> };
@@ -116,9 +117,10 @@ export async function createNativeSession(options: {
       extensionFactories: [
         (pi) => {
           // Capture memory scope synchronously; never retain or replace the caller's environment.
-          const previous = { PI_LOOP: process.env.PI_LOOP, PI_LOOP_SCOPE: process.env.PI_LOOP_SCOPE };
+          const previous = { PI_LOOP: process.env.PI_LOOP, PI_LOOP_SCOPE: process.env.PI_LOOP_SCOPE, PI_LOOP_CONTEXT: process.env.PI_LOOP_CONTEXT };
           process.env.PI_LOOP = "off";
           process.env.PI_LOOP_SCOPE = "memory";
+          process.env.PI_LOOP_CONTEXT = options.contextProfile ?? "full";
           try { piLoop(pi); }
           finally {
             for (const [name, value] of Object.entries(previous)) {
