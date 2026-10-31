@@ -4,5 +4,5 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["src/**/*.ts", "test/property/**/*.ts", "benchmarks/**/*.ts", "test/startup-profiling.test.ts", "test/fuzz-profiling.test.ts"]
+  "include": ["src/**/*.ts", "test/property/**/*.ts", "benchmarks/**/*.ts", "test/startup-profiling.test.ts", "test/fuzz-profiling.test.ts", "test/native-codemode.test.ts", "test/tool-context-profile.test.ts", "test/tool-copy-budget.test.ts", "test/native-tool-observer.test.ts", "test/compact-context.test.ts", "test/tool-context-registration.test.ts", "test/task-provider-runtime.test.ts"]
 }

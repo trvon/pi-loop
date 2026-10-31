@@ -39,6 +39,46 @@ File-backed stores use PID locks, unique temporary snapshots, fsync, atomic snap
 
 Project scope shares durable state but does not yet elect one scheduler owner across concurrent Pi runtimes. Workflow execution leases prevent duplicate phase work; they are separate from the planned project scheduler fence. Subagent orchestration rejects memory, project, disabled, and custom-path stores; it supports only default file-backed session scope. See [runtime continuity](./RUNTIME_CONTINUITY.md) for the retention/delivery matrix and safe recovery.
 
+## Compact context
+
+```bash
+PI_LOOP_CONTEXT=compact pi
+```
+
+The extension reads `PI_LOOP_CONTEXT` at load time. Only `compact` opts in;
+unset or other values keep full metadata. Restart or reload after changing it.
+Storage scope, validation constraints, execution, permissions and existing tool
+activation/exposure stay unchanged. External `pi-tasks` metadata is not rewritten.
+
+Compact mode removes parameter-schema descriptions and replaces verbose tool
+copy with short summaries. One stable prompt section retains controller choice,
+ownership, progress and pause rules. `LoopHelp({})` lists available original
+contracts; `LoopHelp({tool:"WorkflowCreate"})` returns the original description,
+parameter schema and guidelines. Lookup filters inactive and non-owned tools.
+It never executes, registers or activates the requested tool. Keep `LoopHelp`
+active for contract lookup.
+
+Native Pi code mode is optional. On Pi 1.4.0, add these settings to a configuration
+you choose; pi-loop does not write settings or enable code mode:
+
+```json
+{
+  "defaultTools": ["+codemode"],
+  "codemode": { "mode": "only", "inlineBudget": 0 }
+}
+```
+
+Merge the settings with your existing tool selection. Native `only` affects the
+whole tool loadout, not just pi-loop. It retains callability while omitting direct
+declarations. The compact controller guide survives a zero inline budget; scripts
+retrieve contracts through `tools.LoopHelp({tool:"WorkflowCreate"})`.
+
+The tradeoff is deferred documentation: lookup adds tool results and possibly model
+round trips. The retained guide also adds bytes compared with unmodified native
+`only`/zero. Scripted byte and validation tests do not establish routing quality,
+provider-token savings, latency or cache reuse. See [testing](./TESTING.md#tool-context)
+and [routing evaluation](./CONTROLLER_ROUTING_EVAL.md#native-discovery-comparison).
+
 ## Loop model
 
 `LoopEntry.status` is `active` or `paused`. New pauses persist optional provenance as `pause:{kind,at,reason?}`. Kinds distinguish `administrative`, `controller_limit`, `semantic_terminal`, and `orchestration_settlement`; older paused snapshots may remain unattributed. Resume clears the record. Triggers are:

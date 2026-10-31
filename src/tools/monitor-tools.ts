@@ -38,6 +38,7 @@ interface TriggerSystemLike {
 
 export interface MonitorToolsOptions {
   pi: ExtensionAPI;
+  registerTool?: ExtensionAPI["registerTool"];
   getStore: () => LoopStoreLike;
   getMonitorManager: () => MonitorManagerLike;
   getTriggerSystem: () => TriggerSystemLike;
@@ -70,8 +71,8 @@ function formatActivity(monitor: MonitorEntry): string | undefined {
 }
 
 export function registerMonitorTools(options: MonitorToolsOptions): void {
+  const registerTool: ExtensionAPI["registerTool"] = options.registerTool ?? (definition => options.pi.registerTool(definition));
   const {
-    pi,
     getStore,
     getMonitorManager,
     getTriggerSystem,
@@ -81,7 +82,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     handleWorkflowMonitorWait,
   } = options;
 
-  pi.registerTool({ name: "MonitorCreate", label: "MonitorCreate",
+  registerTool({ name: "MonitorCreate", label: "MonitorCreate",
   renderCall: renderToolCall("Monitor", (args) => `start · ${String(toolArg(args, "description") ?? toolArg(args, "command") ?? "background command").slice(0, 56)}`),
   renderResult: renderToolResult, description: `Run a long command in the background while the agent continues. Use MonitorList for status/output; do not poll with shell sleep loops.\n\nThe timeout measures inactivity, not total runtime: output or structured progress renews it. Stale-monitor wakes require an unexpired callback. Pass onDone for a completion wake, or workflowId to pause a workflow until terminal. Commands may emit JSONL progress as {"progress":{...}}; otherwise use MonitorUpdate.`, promptGuidelines: ["Use MonitorCreate for builds, CI checks, experiments, and other commands that need not block the turn.", "Use onDone for terminal wakes; timeout alerts require an unexpired callback.", "For an active workflow, use workflowId instead of onDone and await its completion wake."], parameters: Type.Object({
     command: Type.String({ description: "Shell command to run in background" }),
@@ -239,7 +240,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     ));
   }, });
 
-  pi.registerTool({
+  registerTool({
     name: "MonitorList",
     label: "MonitorList",
     renderCall: renderToolCall("Monitor", () => "status"),
@@ -287,7 +288,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "MonitorUpdate",
     label: "MonitorUpdate",
     renderCall: renderToolCall("Monitor", (args) => `update · #${String(toolArg(args, "monitorId") ?? "?")}`),
@@ -317,7 +318,7 @@ export function registerMonitorTools(options: MonitorToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "MonitorStop",
     label: "MonitorStop",
     renderCall: renderToolCall("Monitor", (args) => `stop · #${String(toolArg(args, "monitorId") ?? "?")}`),
