@@ -97,6 +97,26 @@ describe("tool-context profile expectations", () => {
     expect(original.messages[0]).toMatchObject({ role: "system", content: `Work in ${workspace}; preserve other text.` });
   });
 
+  it.each([String.raw`C:\temp\pi-loop-codemode-fixture`, String.raw`\\server\share\pi-loop-codemode-fixture`])("normalizes native and SDK slash workspace spellings without changing raw counts (%s)", (workspace) => {
+    const slash = workspace.replaceAll("\\", "/");
+    const unrelated = "D:/unrelated/keep-this";
+    const original = context(`${workspace}\n${slash}\n${unrelated}`);
+    const before = structuredClone(original);
+    const captured = captureRequest(original, workspace, "initial");
+    expect(captured.messages[0]).toMatchObject({ content: `<fixture-workspace>\n<fixture-workspace>\n${unrelated}` });
+    expect(captured.metrics.transcript).toEqual(textSize(JSON.stringify(original.messages)));
+    expect(captured.metrics.instructions).toEqual(textSize(`${workspace}\n${slash}\n${unrelated}`));
+    expect(original).toEqual(before);
+  });
+
+  it("does not reinterpret literal backslashes in a POSIX workspace", () => {
+    const workspace = String.raw`/tmp/literal\name`;
+    const original = context(`${workspace}\n/tmp/literal/name`);
+    expect(captureRequest(original, workspace, "initial").messages[0]).toMatchObject({
+      content: "<fixture-workspace>\n/tmp/literal/name",
+    });
+  });
+
   it("fails closed at exact artifact, capture, and request-count limits without dropping data", () => {
     expect(boundedJson(0, 2)).toBe("0\n");
     expect(() => boundedJson(0, 1)).toThrow(/nothing was truncated/);

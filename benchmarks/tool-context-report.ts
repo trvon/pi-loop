@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { resolve, win32 } from "node:path";
 import { getCurrentSystemPrompt, getCurrentTools, type Tool, type TranscriptContext } from "@earendil-works/pi-ai";
 
 export const MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
@@ -85,10 +85,14 @@ export function captureRequest(context: TranscriptContext, workspace: string, st
   const instructions = getCurrentSystemPrompt(context.messages);
   const declarations = JSON.stringify(tools);
   const results = context.messages.filter(message => message.role === "toolResult");
+  // The SDK renders Windows cwd with forward slashes; retain POSIX literal backslashes.
+  const windowsRoot = win32.parse(workspace).root;
+  const windowsAbsolute = windowsRoot.length > 2 && (windowsRoot[1] === ":" || windowsRoot.startsWith("\\\\"));
+  const workspaceForms = [...new Set([workspace, ...(windowsAbsolute ? [workspace.replaceAll("\\", "/")] : [])])];
   let messages: TranscriptContext["messages"];
   try {
     messages = JSON.parse(raw, (_key, value: unknown) =>
-      typeof value === "string" ? value.replaceAll(workspace, "<fixture-workspace>") : value);
+      typeof value === "string" ? workspaceForms.reduce((text, path) => text.replaceAll(path, "<fixture-workspace>"), value) : value);
   } catch (cause) {
     throw new Error("Unable to snapshot native request", { cause });
   }
