@@ -43,7 +43,7 @@ Lint currently reports two established optional-chain warnings; new warnings are
 | Tool context | `npm run profile:tools` | Native SDK declarations, instructions, discovery and result sizes |
 | Fuzz profile | `npm run profile:fuzz` | Allowlisted property-worker CPU capture and campaign evidence |
 
-Unit tests use Vitest, fake timers for schedules, in-memory stores for pure behavior, temporary files for persistence/restart, and one shared Pi event-bus mock.
+Unit tests use Vitest, fake timers for schedules, in-memory stores for pure behavior, temporary files for persistence/restart, and one shared Pi event-bus mock. Vitest pins `PI_LOOP_CONTEXT=full`; compact-profile tests opt in explicitly rather than inheriting the caller's shell.
 
 ## Harness review campaigns
 
@@ -65,7 +65,9 @@ or project context. Stores use memory; SDK files use isolated temporary director
 Coverage includes absent/inactive code mode, `on` and `only` request declarations,
 first-request native task availability, task claim/completion, zero-inline-budget
 guideline discovery, inactive-tool exclusion, nested validation and permission
-checks, and text business rejections. Each session emits shutdown and is disposed.
+checks, and text business rejections. Fixture prompts fence automatic wake runs before
+provider requests, retain cancellation counts, and wait for settlement. Each session
+emits shutdown and is disposed.
 
 These tests establish SDK conformance, not model routing quality, provider cache
 behavior, token savings, or compatibility with untested Pi versions. Tool exposure

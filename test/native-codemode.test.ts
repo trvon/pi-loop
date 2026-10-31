@@ -27,6 +27,58 @@ function scriptValue(result: { isError: boolean; content: Array<{ type: string; 
 }
 
 describe("native Pi code-mode conformance", () => {
+  it.each((["idle", "workflow"] as const).flatMap(kind =>
+    (["direct", "on", "only"] as const).flatMap(mode =>
+      (["full", "compact"] as const).map(profile => ({ kind, mode, profile })))))("fences automatic $kind wakes in $mode/$profile before provider requests", async ({ kind, mode, profile }) => {
+    const harness = await createHarness({
+      ...(mode === "direct" ? {} : { mode, inlineBudget: 0 }),
+      ...(profile === "compact" ? { contextProfile: "compact" } : {}),
+    });
+    const name = kind === "idle" ? "LoopCreate" : "WorkflowCreate";
+    const args: Parameters<typeof harness.call>[1] = kind === "idle"
+      ? { trigger: "idle", triggerType: "idle", prompt: "Fixture goal", maxFires: 2 }
+      : { goal: "Fixture workflow", definition: JSON.stringify({ version: 1, initialState: "work", states: {
+        work: { prompt: "Work", on: { done: "complete" } },
+        complete: { prompt: "Report", terminal: "completed" },
+      } }) };
+    const result = mode === "direct" ? await harness.call(name, args)
+      : await harness.script(`return await tools.${name}(${JSON.stringify(args)});`);
+    await harness.session.waitForIdle();
+    expect(result.isError, resultText(result)).toBe(false);
+    expect(harness.requests).toHaveLength(2);
+    const evidence = harness.observations.snapshot();
+    expect(evidence.complete).toBe(true);
+    expect(evidence.calls.filter(call => call.name === name)).toHaveLength(1);
+    expect(evidence.calls.every(call => call.agentRun === 1)).toBe(true);
+    expect(evidence.agentRuns).toBe(2);
+    expect(harness.automaticRunsAborted).toBe(1);
+    const list = mode === "direct" ? await harness.call("LoopList", {}) : await harness.script("return await tools.LoopList({});");
+    expect(resultText(list)).toContain("#1");
+    expect(harness.requests).toHaveLength(4);
+  });
+
+  it("keeps an explicitly requested cron creation and follow-up intact", async () => {
+    const harness = await createHarness();
+    const result = await harness.call("LoopCreate", { trigger: "1h", prompt: "Fixture cron", maxFires: 1 });
+    await harness.session.waitForIdle();
+    expect(result.isError).toBe(false);
+    expect(harness.requests).toHaveLength(2);
+    expect(harness.observations.snapshot()).toMatchObject({ complete: true, agentRuns: 1 });
+    expect(harness.automaticRunsAborted).toBe(0);
+  });
+
+  it.each([1, 2])("propagates requested provider failure at request %s even when a wake is fenced", async (failedRequest) => {
+    let requests = 0;
+    const harness = await createHarness({ onRequest: () => {
+      if (++requests === failedRequest) throw new Error("Requested provider failure");
+    } });
+    const prompt = failedRequest === 1 ? harness.prompt()
+      : harness.call("LoopCreate", { trigger: "idle", triggerType: "idle", prompt: "Fixture goal", maxFires: 2 });
+    await expect(prompt).rejects.toThrow("Requested provider failure");
+    expect(harness.automaticRunsAborted).toBe(failedRequest - 1);
+    expect(harness.observations.snapshot().agentRuns).toBe(failedRequest);
+  });
+
   it.each([false, true])("keeps direct tools available with absent/inactive codemode (registered=%s)", async (registered) => {
     const harness = await createHarness(registered ? { mode: "only", inactive: true } : {});
     expect(harness.session.getAllTools().some((tool) => tool.name === "codemode")).toBe(registered);

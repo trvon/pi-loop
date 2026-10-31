@@ -63,6 +63,7 @@ export async function runNativeRoutingCase(scenario, arm, inference, timeoutMs, 
   return {
     scenario: scenario.id, arm: arm.name, evidenceKind: "configured-model", failure,
     ...scored, ...models.snapshot(), active, callable, activationUnchanged, evidence,
+    automaticRunsAborted: fixture?.automaticRunsAborted ?? 0,
   };
 }
 
@@ -104,7 +105,7 @@ export async function runNativeRouting(args = [], env = process.env, dependencie
     startedAt: new Date().toISOString(), node: process.version, sdk: VERSION, piAi: PI_AI_VERSION,
     limitations: "One configured model, one pass, seen fixtures. No prompt improvement/convergence, token/cache savings or full-operator-config claim. The inventory differs from the legacy three-controller-only RPC benchmark.",
     source, scenarioVersion: scenarios.version, evaluationVersion: 2,
-    fixture: { thinkingLevel: "off", sdkDefaultTools: true, externalExtensions: false, nativeModelsApi: false, memoryCredentials: true, allowedTools: [...ALLOWED_TOOLS, ...(options.contextProfile === "compact" ? ["LoopHelp"] : [])] },
+    fixture: { automaticRuns: "aborted at agent_start before provider inference", thinkingLevel: "off", sdkDefaultTools: true, externalExtensions: false, nativeModelsApi: false, memoryCredentials: true, allowedTools: [...ALLOWED_TOOLS, ...(options.contextProfile === "compact" ? ["LoopHelp"] : [])] },
     limits: { sessions: 18, callsPerSession: 64, observationBytesPerSession: 2097152, timeoutMs },
     planned: arms.flatMap(arm => scenarios.scenarios.map(scenario => `${arm.name}/${scenario.id}`)),
     expectedCallable: null, results: [], artifacts: [], failure: null,

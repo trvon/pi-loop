@@ -99,8 +99,12 @@ No fallback or authentication repair is attempted.
 All arms keep the same underlying SDK-default/pi-loop inventory. Fixture permission
 checks allow the three creation tools and `codemode`, plus read-only `LoopHelp`
 in compact mode; other tool executions are blocked. Inventory remains active, so this is not the three-tool RPC baseline.
-Memory stores and disabled scheduling prevent fixture work from becoming operator
-work. Sessions emit shutdown, dispose and remove their temporary workspaces.
+Stores use memory. Each explicit fixture prompt permits one agent run; automatic
+continuations, including controller wakes, are aborted at the public `agent_start`
+hook before provider inference. Scheduling itself is not disabled. Evidence retains
+all run attempts; `automaticRunsAborted` distinguishes fenced attempts from the
+requested run. Sessions settle before inspection, then shut down and remove their
+temporary workspaces.
 
 The observer pairs SDK `tool_execution_start`/`tool_execution_end` events by call ID,
 including nested parent IDs, raw start arguments and finalized results. Unlike
@@ -111,8 +115,9 @@ fields apply; script text and script-returned success claims are not evidence.
 
 Limits are 64 execution starts and 2 MiB of retained tool data per session, with a
 120-second prompt deadline (`PI_LOOP_LIVE_TIMEOUT_MS`, maximum 180,000 ms).
-Overflow, unmatched events, extension errors, interrupted execution and cleanup
-failures are incomplete. Sandbox calls that never reach the SDK are not observed
+Overflow, unmatched events, extension errors, unexpected interruptions and cleanup
+failures are incomplete. Deliberately fenced automatic runs do not replace or excuse
+an unsuccessful requested run. Sandbox calls that never reach the SDK are not observed
 controller attempts. Incomplete cases stop the matrix; remaining planned cases are
 listed. The runner never retries a case or falls back to another model.
 
