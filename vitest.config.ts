@@ -3,6 +3,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
+    // Default-profile assertions must not inherit an operator's compact opt-in.
+    env: { PI_LOOP_CONTEXT: "full" },
     ...(process.env.PI_LOOP_FUZZ_PROFILE_DIR ? { setupFiles: ["./benchmarks/fuzz-profile-setup.ts"] } : {}),
     include: ["test/**/*.test.{ts,mjs}"],
     exclude: ["node_modules", "dist"],

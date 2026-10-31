@@ -105,6 +105,10 @@ export async function createNativeSession(options: {
 
     const calls: string[] = [];
     const observations = createToolObserver();
+    let agentRuns = 0;
+    let allowedAgentRun = 0;
+    let automaticRunsAborted = 0;
+    let requestedAssistant: { run: number; message: AssistantMessage } | undefined;
     const loader = new DefaultResourceLoader({
       cwd,
       agentDir: cwd,
@@ -128,7 +132,17 @@ export async function createNativeSession(options: {
               else process.env[name] = value;
             }
           }
-          pi.on("agent_start", () => { observations.agentStart(); });
+          pi.on("agent_start", (_event, ctx) => {
+            observations.agentStart();
+            // Controller wakes remain real; fence unsolicited runs before provider inference.
+            if (++agentRuns > allowedAgentRun) {
+              automaticRunsAborted++;
+              ctx.abort();
+            }
+          });
+          pi.on("turn_end", event => {
+            if (agentRuns === allowedAgentRun && event.message.role === "assistant") requestedAssistant = { run: agentRuns, message: event.message };
+          });
           pi.on("tool_execution_start", event => { observations.start(event); });
           pi.on("tool_execution_end", event => { observations.end(event); });
           pi.on("tool_call", (event) => {
@@ -165,12 +179,12 @@ export async function createNativeSession(options: {
     let sequence = 0;
 
     async function prompt(text = "Execute the scripted conformance fixture.") {
+      allowedAgentRun = agentRuns + 1;
       await boundSession.prompt(text);
+      await boundSession.waitForIdle();
       if (errors.length) throw new Error(errors.join("\n"));
-      let assistant: AssistantMessage | undefined;
-      for (const message of boundSession.messages) {
-        if (message.role === "assistant") assistant = message;
-      }
+      // An intentionally aborted wake must not mask the requested run's actual outcome.
+      const assistant = requestedAssistant?.run === allowedAgentRun ? requestedAssistant.message : undefined;
       if (assistant?.role !== "assistant" || assistant.stopReason !== "stop") {
         throw new Error(assistant?.role === "assistant" ? assistant.errorMessage ?? "Fixture did not settle" : "Missing fixture response");
       }
@@ -202,6 +216,7 @@ export async function createNativeSession(options: {
       requests,
       calls,
       observations,
+      get automaticRunsAborted() { return automaticRunsAborted; },
       call,
       callMany,
       prompt,
