@@ -40,9 +40,10 @@ Lint currently reports two established optional-chain warnings; new warnings are
 | Benchmarks | `npm run bench` | Fixed core workloads |
 | CPU profile | `npm run profile:core` | V8 profile plus checksummed metadata |
 | Startup profile | `npm run profile:startup` | Fresh-process CLI timing and separate CPU samples |
+| Tool context | `npm run profile:tools` | Native SDK declarations, instructions, discovery and result sizes |
 | Fuzz profile | `npm run profile:fuzz` | Allowlisted property-worker CPU capture and campaign evidence |
 
-Unit tests use Vitest, fake timers for schedules, in-memory stores for pure behavior, temporary files for persistence/restart, and one shared Pi event-bus mock.
+Unit tests use Vitest, fake timers for schedules, in-memory stores for pure behavior, temporary files for persistence/restart, and one shared Pi event-bus mock. Vitest pins `PI_LOOP_CONTEXT=full`; compact-profile tests opt in explicitly rather than inheriting the caller's shell.
 
 ## Harness review campaigns
 
@@ -50,6 +51,27 @@ See [bounded review campaigns](./HARNESS_REVIEW_CAMPAIGNS.md) for the test-only
 coverage/closure reference policy and traceable boundary inventory. Failed or
 skipped mandatory discovery is incomplete, never a clean review. The inventory
 checks references; the normal suite executes the underlying regressions.
+
+## Native code mode
+
+```bash
+npx vitest run test/native-codemode.test.ts
+```
+
+The suite uses the pinned Pi SDK's session and native code-mode extension with a
+scripted provider. It makes no remote model calls and reads no user credentials
+or project context. Stores use memory; SDK files use isolated temporary directories.
+
+Coverage includes absent/inactive code mode, `on` and `only` request declarations,
+first-request native task availability, task claim/completion, zero-inline-budget
+guideline discovery, inactive-tool exclusion, nested validation and permission
+checks, and text business rejections. Fixture prompts fence automatic wake runs before
+provider requests, retain cancellation counts, and wait for settlement. Each session
+emits shutdown and is disposed.
+
+These tests establish SDK conformance, not model routing quality, provider cache
+behavior, token savings, or compatibility with untested Pi versions. Tool exposure
+remains `direct`; discovery does not activate tools.
 
 ## Workflow coverage
 
@@ -141,7 +163,17 @@ PI_LOOP_LIVE_ROUTING_MODELS="openai-codex/gpt-5.6-sol:minimal,anthropic/claude-s
 npm run test:e2e:routing
 ```
 
-Each model/scenario pair runs in a clean temporary Pi process with only `WorkflowCreate`, `TaskCreate`, and `LoopCreate` exposed. Natural-language prompts never name those tools. Critical success requires the exact controller type/count and successful tool validation; payload semantics and first-turn completion contribute to accuracy. Use `PI_LOOP_LIVE_ROUTING_SCENARIOS` for a comma-separated subset. See [controller routing evaluation](./CONTROLLER_ROUTING_EVAL.md) for the fixed baseline/hold-out matrix and judgment rules.
+The RPC harness exposes three creation tools. The native SDK comparison uses the
+same six prompts across direct, `only`/3,000 and `only`/zero arms:
+
+```bash
+PI_LOOP_NATIVE_ROUTING_MODEL="provider/model" npm run test:e2e:routing:native
+```
+
+The native comparison is separate opt-in, keeps Pi credentials in memory, and
+runs 18 sessions. Without its model variable it reports `SKIP`, not a pass. See
+[controller routing evaluation](./CONTROLLER_ROUTING_EVAL.md) for inventories,
+observation boundaries, judgment rules and artifact paths.
 
 Subagent orchestration scenario:
 
@@ -183,6 +215,75 @@ npm run profile:core
 ```
 
 Core workloads live in `benchmarks/workloads.ts`. `bench:baseline` writes `.artifacts/benchmarks/baseline.json`; `bench:compare` reports throughput changes. Load `.cpuprofile` files in a V8-compatible viewer. Compare only the same machine, Node version, architecture, timezone, and power state.
+
+### Tool context
+
+```bash
+npm run profile:tools
+npm run profile:tools -- --out .artifacts/profiles/tool-context --context full
+npm run profile:tools -- --out .artifacts/profiles/tool-context-compact --context compact
+npx vitest run test/native-codemode.test.ts test/tool-context-profile.test.ts test/compact-context.test.ts test/tool-context-registration.test.ts
+```
+
+The fixed matrix runs code mode absent, registered but inactive, and `on`/`only`
+with Pi's estimated-token inline budgets of 3,000 and zero. Each isolated SDK session sends an initial
+request, a repeated request, and read-only list calls. Active code-mode cases also
+request three controller declarations, a three-hit search, and callable tool names.
+The provider is scripted. Native model helpers and external extensions are disabled;
+no remote model or operator configuration is used. `--context full|compact` selects
+pi-loop metadata explicitly rather than inheriting the operator environment.
+Compact discovery retrieves three original controller contracts through `LoopHelp`;
+full mode uses native declaration discovery. These outputs are not byte-identical.
+
+Each unique run directory contains `report.json` and six request capture files.
+The report records source hashes, SDK versions, registered/active/callable/declared
+tools, per-tool schema/description sizes, effective instructions, transcript sizes,
+and discovery/result traffic. Counts use UTF-16 code units and UTF-8 bytes before
+synthetic workspace paths are replaced in saved captures. JSON metrics include
+serialization overhead. Instructions, declarations and transcript metrics overlap;
+do not sum them. Capture-file checksums cover the saved, normalized files.
+
+Limits: 12 requests per case, 2 MiB per original request, 16 MiB per artifact.
+Exceeding a limit fails without truncation. Case failures retain an incomplete
+report and completed-case artifacts. Temporary SDK workspaces are removed.
+
+This is the native SDK provider boundary, not a provider's HTTP payload. Token
+counts and cache reuse remain `null`; fixture usage zeros are not measurements.
+Disabled cases have no discovery stage, so total traffic is not an equivalent-work
+savings comparison. Read-only profiling does not change exposure or activate tools.
+Compact acceptance includes the extra help declaration and retained prompt section
+in its direct-request budget. Default metadata, all 21 existing schemas, late native
+tasks, inactive/external contract exclusions and native ownership checks have
+separate controls. These are scripted conformance checks, not routing decisions.
+
+One SDK 1.4.0 scripted run measured these initial transcript UTF-8 bytes:
+
+| Code mode | Full metadata | Compact metadata |
+| --- | ---: | ---: |
+| Absent or inactive | 26,269 | 16,721 |
+| `on`, either budget | 29,789 | 20,299 |
+| `only`, 3,000 | 15,487 | 17,328 |
+| `only`, zero | 4,010 | 5,076 |
+
+Compact direct mode is 36.3% smaller. Compact with `only`/zero is 80.7% smaller
+than full/direct, but adds 1,066 bytes over full/`only`/zero for retained guidance.
+At 3,000 the compact inline catalog grows; native selection changes with metadata.
+These are fixture measurements, not operator prompt sizes or provider tokens.
+
+### Context budgets
+
+```bash
+npx vitest run test/tool-copy-budget.test.ts test/tool-context-profile.test.ts
+```
+
+`test/fixtures/tool-context-budget.json` fixes per-tool and aggregate UTF-8 ceilings
+for descriptions, input-schema JSON, schema-description text and declaration JSON.
+Per-tool ceilings add 10%, rounded up to 32 bytes; aggregate ceilings round up to
+100 bytes. Review fixture changes explicitly; tests never rebaseline themselves.
+The older combined description/guideline character budget remains independent.
+Schema-description text walks schema-bearing keywords, not enum/example/default
+instance data or referenced documents. Fields overlap; do not sum them or call them
+tokens. Mutation controls check schema-only inflation and Unicode parameter copy.
 
 ### Startup
 

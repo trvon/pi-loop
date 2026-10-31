@@ -72,6 +72,65 @@ npm run test:e2e:routing
 
 The bounded report is written to `.artifacts/live-controller-routing/latest.json`. Missing model configuration produces `SKIP`, not a false pass.
 
+## Native discovery comparison
+
+```bash
+PI_LOOP_NATIVE_ROUTING_MODEL="provider/model" npm run test:e2e:routing:native -- --context full
+PI_LOOP_NATIVE_ROUTING_MODEL="provider/model" npm run test:e2e:routing:native -- --context compact
+npm run test:e2e:routing:native -- --help
+```
+
+This opt-in SDK1.4.0 comparison runs the six frozen prompts in 18 fresh sessions:
+direct tools, native `only` with a 3,000 estimated-token inline budget, and `only`
+with zero.
+The prompts stay fixed. `--context full` keeps default production metadata;
+`--context compact` loads the opt-in production summaries, guide and `LoopHelp`.
+Each invocation runs 18 sessions. Compare both runs with the same model. No discovery
+script or controller choice is supplied to the model. The old hold-outs are seen controls.
+
+Use a bundled model ID without a thinking suffix. Thinking is `off`. Pi credentials
+stay in memory; providers retain their standard environment/ambient authentication.
+Pi's stored OAuth, operator model configuration and external extensions are not loaded. Catalog
+network refresh and native model helpers are disabled. Setting the model variable
+opts into model requests and possible provider charges. Missing configuration
+reports `SKIP`; unavailable models and provider errors are incomplete, not passes.
+No fallback or authentication repair is attempted.
+
+All arms keep the same underlying SDK-default/pi-loop inventory. Fixture permission
+checks allow the three creation tools and `codemode`, plus read-only `LoopHelp`
+in compact mode; other tool executions are blocked. Inventory remains active, so this is not the three-tool RPC baseline.
+Stores use memory. Each explicit fixture prompt permits one agent run; automatic
+continuations, including controller wakes, are aborted at the public `agent_start`
+hook before provider inference. Scheduling itself is not disabled. Evidence retains
+all run attempts; `automaticRunsAborted` distinguishes fenced attempts from the
+requested run. Sessions settle before inspection, then shut down and remove their
+temporary workspaces.
+
+The observer pairs SDK `tool_execution_start`/`tool_execution_end` events by call ID,
+including nested parent IDs, raw start arguments and finalized results. Unlike
+`tool_call`/`tool_result` hooks, these include ordinary schema/permission failures.
+Nested results need not appear in script output. Successful nested creation remains
+recorded if the outer script later fails. The same four-item scorer and first-attempt
+fields apply; script text and script-returned success claims are not evidence.
+
+Limits are 64 execution starts and 2 MiB of retained tool data per session, with a
+120-second prompt deadline (`PI_LOOP_LIVE_TIMEOUT_MS`, maximum 180,000 ms).
+Overflow, unmatched events, extension errors, unexpected interruptions and cleanup
+failures are incomplete. Deliberately fenced automatic runs do not replace or excuse
+an unsuccessful requested run. Sandbox calls that never reach the SDK are not observed
+controller attempts. Incomplete cases stop the matrix; remaining planned cases are
+listed. The runner never retries a case or falls back to another model.
+
+Each unique `.artifacts/live-native-controller-routing/run-*/` directory contains a
+report and checksummed per-case evidence. `--out DIRECTORY` changes the artifact
+root. Reports identify source, SDK, requested/observed model metadata, inventories,
+execution counts and incomplete evidence. Durations include setup and cleanup;
+execution counts include outer/nested tools and compact `LoopHelp` calls, not native
+discovery helper lookups.
+Exit status is nonzero for failed or
+incomplete configured runs. Scripted unit replays establish observer/scorer
+conformance, not model routing, empirical convergence or token/cache savings.
+
 ## Prompt-tuning baseline
 
 Before adding the live harness, fresh clean-slate executors ran the three baseline scenarios and three unseen hold-outs with fixed checklists. Default, Haiku, and Sonnet executor classes all selected the intended controller with 100% routing accuracy and zero routing-judgment retries. The phased-loop executor noted that overriding the word “loop” was inferred from the semantic classifier rather than stated literally, but it still routed correctly.

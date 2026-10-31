@@ -41,6 +41,7 @@ import { LoopStore } from "./store.js";
 import { registerLoopTools } from "./tools/loop-tools.js";
 import { registerMonitorTools } from "./tools/monitor-tools.js";
 import { registerSubagentOrchestrationTools } from "./tools/subagent-orchestration-tools.js";
+import { createToolContextRegistration } from "./tools/tool-context.js";
 import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
 import type { LoopEntry, LoopExpiryDisposition, LoopExpiryReason, LoopExpirySource, LoopFireOrigin, MonitorEntry, Trigger } from "./types.js";
@@ -53,6 +54,7 @@ function debug(...args: unknown[]) {
 }
 
 export default function (pi: ExtensionAPI) {
+  const registerTool = createToolContextRegistration(pi);
   const runtimeId = randomUUID();
   const runtimeProbeEvent = `pi-loop:runtime-probe:${runtimeId}`;
   const piLoopEnv = process.env.PI_LOOP;
@@ -207,6 +209,7 @@ export default function (pi: ExtensionAPI) {
 
   taskProvider = createTaskProviderRuntime({
     pi,
+    registerTool,
     runtimeId,
     resolveStorePath: () => resolveTaskStorePath(getScopeOptions(), _sessionId),
     getSessionId: () => _sessionId,
@@ -532,6 +535,7 @@ export default function (pi: ExtensionAPI) {
 
   registerLoopTools({
     pi,
+    registerTool,
     getStore: () => store,
     getTriggerSystem: () => triggerSystem,
     getScheduler: () => scheduler,
@@ -549,6 +553,7 @@ export default function (pi: ExtensionAPI) {
 
   registerSubagentOrchestrationTools({
     pi,
+    registerTool,
     getStore: () => store,
     getScope: () => loopScope,
     getPiLoopEnv: () => piLoopEnv,
@@ -559,6 +564,7 @@ export default function (pi: ExtensionAPI) {
 
   registerWorkflowTools({
     pi,
+    registerTool,
     getStore: () => store,
     getTriggerSystem: () => triggerSystem,
     updateWidget: () => {
@@ -584,6 +590,7 @@ export default function (pi: ExtensionAPI) {
 
   registerMonitorTools({
     pi,
+    registerTool,
     getStore: () => store,
     getMonitorManager: () => monitorManager,
     getTriggerSystem: () => triggerSystem,

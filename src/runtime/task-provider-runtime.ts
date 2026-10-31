@@ -13,6 +13,7 @@ export interface TaskProviderSummary {
 
 export interface TaskProviderRuntimeOptions {
   pi: ExtensionAPI;
+  registerTool?: ExtensionAPI["registerTool"];
   runtimeId: string;
   resolveStorePath: () => string | undefined;
   getSessionId: () => string | undefined;
@@ -148,6 +149,7 @@ export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): 
       });
       registerNativeTaskTools({
         pi,
+        registerTool: options.registerTool,
         getTaskStore: () => getOrCreateNativeTaskStore() ?? taskStore,
         evaluateTaskBacklog,
         getTaskOwner: () => ({

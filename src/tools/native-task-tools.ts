@@ -17,6 +17,7 @@ import { displayRows, textResult } from "./tool-result.js";
 
 export interface NativeTaskToolsOptions {
   pi: ExtensionAPI;
+  registerTool?: ExtensionAPI["registerTool"];
   getTaskStore: () => TaskStore;
   evaluateTaskBacklog: (taskStore: TaskStore, pendingCount: number) => Promise<TaskBacklogResult>;
   getTaskOwner: () => { sessionId: string; runtimeId: string };
@@ -30,6 +31,7 @@ function backlogSuffix(backlog: TaskBacklogResult): string {
 }
 
 export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
+  const registerTool: ExtensionAPI["registerTool"] = options.registerTool ?? (definition => options.pi.registerTool(definition));
   const { pi, getTaskStore, evaluateTaskBacklog, getTaskOwner, updateWidget } = options;
   const mutationContext = (): TaskMutationContext => ({
     pi,
@@ -38,7 +40,7 @@ export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
     updateWidget,
   });
 
-  pi.registerTool({
+  registerTool({
     name: "TaskCreate",
     label: "TaskCreate",
     renderCall: renderToolCall("Task", (args) => `create · ${String(toolArg(args, "subject") ?? "task").slice(0, 56)}`),
@@ -73,7 +75,7 @@ export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "TaskList",
     label: "TaskList",
     renderCall: renderToolCall("Task", () => "status"),
@@ -120,7 +122,7 @@ export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "TaskGet",
     label: "TaskGet",
     renderCall: renderToolCall("Task", (args) => `get · #${String(toolArg(args, "id") ?? "?")}`),
@@ -169,7 +171,7 @@ Use when TaskList's excerpt is truncated or you need the complete goal-state and
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "TaskClaim",
     label: "TaskClaim",
     renderCall: renderToolCall("Task", (args) => `claim · #${String(toolArg(args, "id") ?? "?")}`),
@@ -222,7 +224,7 @@ A live claim owned by another runtime fails closed. Expired claims may be taken 
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "TaskHeartbeat",
     label: "TaskHeartbeat",
     renderCall: renderToolCall("Task", (args) => `heartbeat · #${String(toolArg(args, "id") ?? "?")}`),
@@ -257,7 +259,7 @@ A live claim owned by another runtime fails closed. Expired claims may be taken 
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "TaskUpdate",
     label: "TaskUpdate",
     renderCall: renderToolCall("Task", (args) => `update · #${String(toolArg(args, "id") ?? "?")}`),
@@ -317,7 +319,7 @@ Parameters: id, status, subject, description, claimId`,
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "TaskDelete",
     label: "TaskDelete",
     renderCall: renderToolCall("Task", (args) => `delete · #${String(toolArg(args, "id") ?? "?")}`),
