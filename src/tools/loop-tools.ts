@@ -59,6 +59,7 @@ interface MonitorManagerLike {
 
 export interface LoopToolsOptions {
   pi: ExtensionAPI;
+  registerTool?: ExtensionAPI["registerTool"];
   getStore: () => LoopStoreLike;
   getTriggerSystem: () => TriggerSystemLike;
   getScheduler: () => SchedulerLike;
@@ -209,8 +210,8 @@ function stopDynamicLoop(
 }
 
 export function registerLoopTools(options: LoopToolsOptions): void {
+  const registerTool: ExtensionAPI["registerTool"] = options.registerTool ?? (definition => options.pi.registerTool(definition));
   const {
-    pi,
     getStore,
     getTriggerSystem,
     getScheduler,
@@ -222,7 +223,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
     cancelOrchestration,
   } = options;
 
-  pi.registerTool({
+  registerTool({
     name: "LoopCreate",
     label: "LoopCreate",
     renderCall: renderToolCall("Loop", (args) => `create · ${String(toolArg(args, "prompt") ?? "scheduled work").slice(0, 56)}`),
@@ -382,7 +383,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "LoopList",
     label: "LoopList",
     renderCall: renderToolCall("Loop", () => "status"),
@@ -454,7 +455,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "LoopUpdate",
     label: "LoopUpdate",
     renderCall: renderToolCall("Loop", (args) => `update · #${String(toolArg(args, "id") ?? "?")} · ${String(toolArg(args, "status") ?? "continue")}`),
@@ -525,7 +526,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "LoopDelete",
     label: "LoopDelete",
     renderCall: renderToolCall("Loop", (args) => `${String(toolArg(args, "action") ?? "delete")} · #${String(toolArg(args, "id") ?? "?")}`),

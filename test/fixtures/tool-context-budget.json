@@ -1,0 +1,269 @@
+{
+  "units": "UTF-8 bytes; compact JSON for schemas/declarations; joined description text includes newline separators",
+  "baselineSource": "SDK 1.4.0 isolated native fixture; 21 pi-loop tools; source 57b4cff753bbf5e0040bd2d598a0f9546b1a23eeb99f33c49b07a2a10741ecec",
+  "policy": "Fixed reviewable ceilings, not automatic rebaselining. Per-tool 10% headroom rounded up to 32 bytes (minimum 32); totals approximately 10% rounded up to 100 bytes. Overlapping fields must not be summed.",
+  "baseline": {
+    "LoopCreate": {
+      "description": 326,
+      "parameters": 1390,
+      "parameterDescriptions": 732,
+      "declaration": 1768
+    },
+    "LoopList": {
+      "description": 79,
+      "parameters": 33,
+      "parameterDescriptions": 0,
+      "declaration": 162
+    },
+    "LoopUpdate": {
+      "description": 347,
+      "parameters": 637,
+      "parameterDescriptions": 227,
+      "declaration": 1042
+    },
+    "LoopDelete": {
+      "description": 279,
+      "parameters": 238,
+      "parameterDescriptions": 60,
+      "declaration": 569
+    },
+    "OrchestrationCreate": {
+      "description": 55,
+      "parameters": 1084,
+      "parameterDescriptions": 369,
+      "declaration": 1200
+    },
+    "OrchestrationGet": {
+      "description": 30,
+      "parameters": 176,
+      "parameterDescriptions": 43,
+      "declaration": 264
+    },
+    "WorkflowCreate": {
+      "description": 240,
+      "parameters": 497,
+      "parameterDescriptions": 226,
+      "declaration": 793
+    },
+    "WorkflowClaim": {
+      "description": 112,
+      "parameters": 226,
+      "parameterDescriptions": 58,
+      "declaration": 393
+    },
+    "WorkflowRevise": {
+      "description": 95,
+      "parameters": 3300,
+      "parameterDescriptions": 221,
+      "declaration": 3451
+    },
+    "WorkflowTransition": {
+      "description": 137,
+      "parameters": 939,
+      "parameterDescriptions": 215,
+      "declaration": 1136
+    },
+    "MonitorCreate": {
+      "description": 449,
+      "parameters": 748,
+      "parameterDescriptions": 391,
+      "declaration": 1256
+    },
+    "MonitorList": {
+      "description": 112,
+      "parameters": 33,
+      "parameterDescriptions": 0,
+      "declaration": 198
+    },
+    "MonitorUpdate": {
+      "description": 220,
+      "parameters": 361,
+      "parameterDescriptions": 80,
+      "declaration": 636
+    },
+    "MonitorStop": {
+      "description": 132,
+      "parameters": 122,
+      "parameterDescriptions": 18,
+      "declaration": 309
+    },
+    "TaskCreate": {
+      "description": 175,
+      "parameters": 243,
+      "parameterDescriptions": 81,
+      "declaration": 470
+    },
+    "TaskList": {
+      "description": 74,
+      "parameters": 33,
+      "parameterDescriptions": 0,
+      "declaration": 157
+    },
+    "TaskGet": {
+      "description": 268,
+      "parameters": 105,
+      "parameterDescriptions": 15,
+      "declaration": 424
+    },
+    "TaskClaim": {
+      "description": 299,
+      "parameters": 224,
+      "parameterDescriptions": 42,
+      "declaration": 576
+    },
+    "TaskHeartbeat": {
+      "description": 95,
+      "parameters": 311,
+      "parameterDescriptions": 75,
+      "declaration": 461
+    },
+    "TaskUpdate": {
+      "description": 349,
+      "parameters": 437,
+      "parameterDescriptions": 114,
+      "declaration": 841
+    },
+    "TaskDelete": {
+      "description": 43,
+      "parameters": 200,
+      "parameterDescriptions": 66,
+      "declaration": 295
+    }
+  },
+  "limits": {
+    "total": {
+      "description": 4400,
+      "parameters": 12500,
+      "parameterDescriptions": 3400,
+      "declaration": 18100
+    },
+    "tools": {
+      "LoopCreate": {
+        "description": 384,
+        "parameters": 1536,
+        "parameterDescriptions": 832,
+        "declaration": 1952
+      },
+      "LoopList": {
+        "description": 96,
+        "parameters": 64,
+        "parameterDescriptions": 32,
+        "declaration": 192
+      },
+      "LoopUpdate": {
+        "description": 384,
+        "parameters": 704,
+        "parameterDescriptions": 256,
+        "declaration": 1152
+      },
+      "LoopDelete": {
+        "description": 320,
+        "parameters": 288,
+        "parameterDescriptions": 96,
+        "declaration": 640
+      },
+      "OrchestrationCreate": {
+        "description": 64,
+        "parameters": 1216,
+        "parameterDescriptions": 416,
+        "declaration": 1344
+      },
+      "OrchestrationGet": {
+        "description": 64,
+        "parameters": 224,
+        "parameterDescriptions": 64,
+        "declaration": 320
+      },
+      "WorkflowCreate": {
+        "description": 288,
+        "parameters": 576,
+        "parameterDescriptions": 256,
+        "declaration": 896
+      },
+      "WorkflowClaim": {
+        "description": 128,
+        "parameters": 256,
+        "parameterDescriptions": 64,
+        "declaration": 448
+      },
+      "WorkflowRevise": {
+        "description": 128,
+        "parameters": 3648,
+        "parameterDescriptions": 256,
+        "declaration": 3808
+      },
+      "WorkflowTransition": {
+        "description": 160,
+        "parameters": 1056,
+        "parameterDescriptions": 256,
+        "declaration": 1280
+      },
+      "MonitorCreate": {
+        "description": 512,
+        "parameters": 832,
+        "parameterDescriptions": 448,
+        "declaration": 1408
+      },
+      "MonitorList": {
+        "description": 128,
+        "parameters": 64,
+        "parameterDescriptions": 32,
+        "declaration": 224
+      },
+      "MonitorUpdate": {
+        "description": 256,
+        "parameters": 416,
+        "parameterDescriptions": 96,
+        "declaration": 704
+      },
+      "MonitorStop": {
+        "description": 160,
+        "parameters": 160,
+        "parameterDescriptions": 32,
+        "declaration": 352
+      },
+      "TaskCreate": {
+        "description": 224,
+        "parameters": 288,
+        "parameterDescriptions": 96,
+        "declaration": 544
+      },
+      "TaskList": {
+        "description": 96,
+        "parameters": 64,
+        "parameterDescriptions": 32,
+        "declaration": 192
+      },
+      "TaskGet": {
+        "description": 320,
+        "parameters": 128,
+        "parameterDescriptions": 32,
+        "declaration": 480
+      },
+      "TaskClaim": {
+        "description": 352,
+        "parameters": 256,
+        "parameterDescriptions": 64,
+        "declaration": 640
+      },
+      "TaskHeartbeat": {
+        "description": 128,
+        "parameters": 352,
+        "parameterDescriptions": 96,
+        "declaration": 512
+      },
+      "TaskUpdate": {
+        "description": 384,
+        "parameters": 512,
+        "parameterDescriptions": 128,
+        "declaration": 928
+      },
+      "TaskDelete": {
+        "description": 64,
+        "parameters": 224,
+        "parameterDescriptions": 96,
+        "declaration": 352
+      }
+    }
+  }
+}

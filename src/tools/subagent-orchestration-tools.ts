@@ -17,6 +17,7 @@ const MAX_SERIALIZED_INPUT_BYTES = 65_536;
 
 interface OrchestrationToolsOptions {
   pi: ExtensionAPI;
+  registerTool?: ExtensionAPI["registerTool"];
   getStore: () => LoopStore;
   getScope: () => LoopScope;
   getPiLoopEnv: () => string | undefined;
@@ -88,9 +89,10 @@ function definitionFrom(params: CreateParams): OrchestrationDefinitionInput {
 }
 
 export function registerSubagentOrchestrationTools(options: OrchestrationToolsOptions): void {
-  const { pi, getStore, getScope, getPiLoopEnv, getActor, probeSubagents, updateWidget } = options;
+  const registerTool: ExtensionAPI["registerTool"] = options.registerTool ?? (definition => options.pi.registerTool(definition));
+  const { getStore, getScope, getPiLoopEnv, getActor, probeSubagents, updateWidget } = options;
 
-  pi.registerTool({
+  registerTool({
     name: "OrchestrationCreate",
     label: "OrchestrationCreate",
     renderCall: renderToolCall("Orchestration", (args) => `create · ${String(toolArg(args, "goal") ?? "batch").slice(0, 56)}`),
@@ -161,7 +163,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
     },
   });
 
-  pi.registerTool({
+  registerTool({
     name: "OrchestrationGet",
     label: "OrchestrationGet",
     renderCall: renderToolCall("Orchestration", (args) => `inspect · #${String(toolArg(args, "id") ?? "?")}`),

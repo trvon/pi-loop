@@ -76,6 +76,17 @@ Choose one owner: workflows for one goal with ordered phases/outcomes/rework/han
 
 See the [usage guide](./docs/USAGE_GUIDE.md) for operator workflows and the [reference](./docs/REFERENCE.md) for authority, persistence, mutation, RPC, and recovery boundaries.
 
+## Low-context mode
+
+```bash
+PI_LOOP_CONTEXT=compact pi
+```
+
+Compact mode shortens tool metadata and retains controller/ownership guidance.
+`LoopHelp` retrieves original contracts without executing or activating tools.
+Default behavior is unchanged. See [compact context](./docs/REFERENCE.md#compact-context)
+for native code-mode settings and measurement limits.
+
 ## Development
 
 ```bash
