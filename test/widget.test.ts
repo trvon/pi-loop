@@ -353,6 +353,29 @@ describe("LoopWidget status rendering", () => {
     expect(latestStatusCall()).toEqual(["loops", "□ 3 tasks | next: Write README updates"]);
   });
 
+  // Hardening: pi re-renders on every setStatus call, including unchanged text.
+  it("skips repainting unchanged status text but repaints after a change or rebind", () => {
+    store.create({ type: "cron", schedule: "*/5 * * * *" }, "check", { recurring: true });
+    widget.update();
+    widget.update();
+    widget.update();
+    expect(setStatus).toHaveBeenCalledTimes(1);
+
+    store.create({ type: "cron", schedule: "*/5 * * * *" }, "check again", { recurring: true });
+    widget.update();
+    expect(setStatus).toHaveBeenCalledTimes(2);
+    expect(latestStatusCall()?.[1]).toBe("↻ 2 loops");
+
+    const rebound = vi.fn();
+    widget.setUICtx({ setStatus: rebound, setWidget: vi.fn() } as any);
+    widget.update();
+    expect(rebound).toHaveBeenCalledWith("loops", "↻ 2 loops");
+
+    widget.setStore(store);
+    widget.update();
+    expect(rebound).toHaveBeenCalledTimes(2);
+  });
+
   it("clears status after active content disappears", () => {
     monitorManager._add({
       id: "x", command: "true", status: "running", startedAt: Date.now(), outputLines: 0,

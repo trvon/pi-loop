@@ -14,6 +14,9 @@ export class LoopWidget {
   private uiCtx: ExtensionUIContext | undefined;
   private taskSummaryProvider: (() => TaskSummary) | undefined;
   private activityRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  // pi requests a full render on every setStatus, so identical text is skipped.
+  // `null` means "nothing painted yet" and is distinct from a cleared status.
+  private lastStatus: string | undefined | null = null;
 
   constructor(
     private store: LoopStore,
@@ -21,12 +24,15 @@ export class LoopWidget {
   ) {}
 
   setUICtx(ctx: ExtensionUIContext) {
+    // Hooks rebind the same UI every turn; only a different UI needs a repaint.
+    if (ctx !== this.uiCtx) this.lastStatus = null;
     this.uiCtx = ctx;
   }
 
   setStore(store: LoopStore) {
     this.clearActivityRefresh();
     this.store = store;
+    this.lastStatus = null;
   }
 
   setTaskSummaryProvider(provider: (() => TaskSummary) | undefined) {
@@ -36,7 +42,11 @@ export class LoopWidget {
   update() {
     if (!this.uiCtx) return;
     this.clearActivityRefresh();
-    this.uiCtx.setStatus("loops", this.computeStatus());
+    const status = this.computeStatus();
+    if (status !== this.lastStatus) {
+      this.uiCtx.setStatus("loops", status);
+      this.lastStatus = status;
+    }
     this.scheduleActivityRefresh();
   }
 
@@ -81,6 +91,7 @@ export class LoopWidget {
   dispose() {
     this.clearActivityRefresh();
     this.uiCtx?.setStatus("loops", undefined);
+    this.lastStatus = null;
   }
 
   private scheduleActivityRefresh() {
