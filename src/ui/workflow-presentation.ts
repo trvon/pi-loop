@@ -149,13 +149,15 @@ export function workflowDisplayDetails({
     ...workflowTimingLines(entry, now),
     `State: ${workflow.currentState} · revision ${workflow.definitionRevision} · transition ${workflow.transitionSeq}`,
     `Attempt: ${workflowAttemptLabel(entry)}`,
-    ...formatWorkflowGraphWarnings(workflow),
-    state?.prompt ? `Instruction: ${state.prompt}` : undefined,
-    workflow.activeExecution ? `Work: ${workflow.activeExecution.subject} (${workflow.activeExecution.id})` : undefined,
+    // The renderer caps expanded output, so short actionable rows precede
+    // free-form prose that can wrap past the cap.
     `Lease: ${workflowLeaseLabel(entry, now)}`,
     availability.available.length > 0 ? `Outcomes: ${availability.available.join(", ")}` : undefined,
     availability.unavailable.length > 0 ? `Unavailable: ${availability.unavailable.map((item) => item.outcome).join(", ")}` : undefined,
     workflow.waitingMonitor ? `Waiting: monitor #${workflow.waitingMonitor.monitorId}` : undefined,
+    ...formatWorkflowGraphWarnings(workflow),
+    workflow.activeExecution ? `Work: ${workflow.activeExecution.subject} (${workflow.activeExecution.id})` : undefined,
+    state?.prompt ? `Instruction: ${state.prompt}` : undefined,
     workflow.lastTransition ? formatLastTransitionLines(workflow.lastTransition).join("\n") : undefined,
     ...extra,
   ].filter((line): line is string => line !== undefined);

@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { Text } from "@earendil-works/pi-tui";
+import { describe, expect, it, vi } from "vitest";
 import type { LoopEntry, WorkflowExecutionRecord } from "../src/types.js";
 import {
   deriveWorkflowActivity,
   formatCompactWorkflowDuration,
+  workflowDisplayDetails,
   workflowLeaseLabel,
 } from "../src/ui/workflow-presentation.js";
+import { PANEL_NOW, panelWorkflow } from "./helpers/progress-panel-fixtures.js";
 
 const NOW = 10_000;
 
@@ -162,5 +165,30 @@ describe("workflow activity presentation", () => {
     expect(formatCompactWorkflowDuration(59_400)).toBe("59s");
     expect(formatCompactWorkflowDuration(90_000)).toBe("2m");
     expect(formatCompactWorkflowDuration(5_400_000)).toBe("2h");
+  });
+
+  // Feature expectation: the renderer shows 12 visual lines, so actionable rows must precede long prose.
+  it("keeps lease and outcomes inside the visible card when the instruction is long", () => {
+    const entry = panelWorkflow();
+    entry.prompt = "Ship the migration ".repeat(8);
+    entry.workflow!.definition.states.implement!.prompt = "Follow every step carefully. ".repeat(40);
+    vi.useFakeTimers();
+    vi.setSystemTime(PANEL_NOW);
+    let details: ReturnType<typeof workflowDisplayDetails>;
+    try {
+      details = workflowDisplayDetails({ entry, action: "inspect", tone: "info", summary: "Workflow #3" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const rows = details.expanded ?? [];
+    const visibleRows = new Text(rows.join("\n"), 0, 0).render(80).slice(0, 12).join("\n");
+
+    expect(visibleRows).toContain("Lease: active until");
+    expect(visibleRows).toContain("Outcomes: pass, retry");
+    expect(visibleRows).toContain("State: implement");
+    // Nothing is dropped from the full card; only the order changes.
+    expect(rows.some((row) => row.startsWith("Instruction: Follow every step"))).toBe(true);
+    expect(rows.some((row) => row.startsWith("Goal: Ship the migration"))).toBe(true);
+    expect(rows.findIndex((row) => row.startsWith("Lease:"))).toBeLessThan(rows.findIndex((row) => row.startsWith("Instruction:")));
   });
 });
