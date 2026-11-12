@@ -3,6 +3,7 @@ import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { TaskEntry } from "../task-types.js";
 import type { LoopEntry } from "../types.js";
 import { getWorkflowOutcomeAvailability } from "../workflow-reducer.js";
+import { activeCardGlyphs } from "./card-style.js";
 import { orchestrationStatusLabel } from "./orchestration-presentation.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration, workflowAttemptLabel } from "./workflow-presentation.js";
 
@@ -39,7 +40,7 @@ const MAX_ORCHESTRATION_ROWS = 2;
 
 // Subjects, goals, and state names are model- or user-authored. Control and
 // escape bytes must never reach the terminal from a persistent overlay.
-function plain(text: string): string {
+export function plainPanelText(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
@@ -99,7 +100,7 @@ function isPanelOrchestration(entry: LoopEntry): boolean {
   return entry.orchestration !== undefined && (entry.status === "active" || entry.status === "paused");
 }
 
-const ACTIVITY_TONE = {
+export const ACTIVITY_TONE = {
   claimed: "accent",
   waiting: "muted",
   paused: "warning",
@@ -107,12 +108,12 @@ const ACTIVITY_TONE = {
   stopped: "dim",
 } as const satisfies Record<string, PanelTone>;
 
-/** A window of at most MAX_STATE_ROWS state names that always contains the current state. */
-function stateWindow(names: string[], current: string): { names: string[]; before: number; after: number } {
-  if (names.length <= MAX_STATE_ROWS) return { names, before: 0, after: 0 };
+/** A window of at most `size` state names that always contains the current state. */
+export function stateWindow(names: string[], current: string, size = MAX_STATE_ROWS): { names: string[]; before: number; after: number } {
+  if (names.length <= size) return { names, before: 0, after: 0 };
   const index = Math.max(0, names.indexOf(current));
-  const start = Math.min(Math.max(0, index - 2), names.length - MAX_STATE_ROWS);
-  const end = start + MAX_STATE_ROWS;
+  const start = Math.min(Math.max(0, index - 2), names.length - size);
+  const end = start + size;
   return { names: names.slice(start, end), before: start, after: names.length - end };
 }
 
@@ -120,18 +121,18 @@ function workflowLines(entry: LoopEntry, now: number): PanelLine[] {
   const workflow = entry.workflow;
   if (!workflow) return [];
   const activity = deriveWorkflowActivity(entry, now);
-  const lines: PanelLine[] = [[seg("◆ ", "accent"), seg(`#${entry.id} `, "dim"), seg(plain(entry.prompt))]];
+  const lines: PanelLine[] = [[seg("◆ ", "accent"), seg(`#${entry.id} `, "dim"), seg(plainPanelText(entry.prompt))]];
   const window = stateWindow(Object.keys(workflow.definition.states), workflow.currentState);
   if (window.before > 0) lines.push([seg(`  ⋮ ${window.before} earlier`, "dim")]);
   for (const name of window.names) {
-    const label = plain(name);
+    const label = plainPanelText(name);
     if (name === workflow.currentState) {
       const state = workflow.definition.states[name];
       const attempt = state?.maxAttempts !== undefined || (workflow.attemptsByState[name] ?? 1) > 1
         ? ` · try ${workflowAttemptLabel(entry)}`
         : "";
       lines.push([seg("  ▶ ", ACTIVITY_TONE[activity.status]), seg(label, "accent"), seg(attempt, "dim")]);
-      const waiting = workflow.waitingMonitor ? ` monitor #${plain(workflow.waitingMonitor.monitorId)}` : "";
+      const waiting = workflow.waitingMonitor ? ` monitor #${plainPanelText(workflow.waitingMonitor.monitorId)}` : "";
       lines.push([seg(
         `    ${activity.status}${waiting} ${formatCompactWorkflowDuration(activity.activityMs)}`,
         ACTIVITY_TONE[activity.status],
@@ -144,7 +145,7 @@ function workflowLines(entry: LoopEntry, now: number): PanelLine[] {
   }
   if (window.after > 0) lines.push([seg(`  ⋮ ${window.after} later`, "dim")]);
   const outcomes = getWorkflowOutcomeAvailability(workflow).available;
-  if (outcomes.length > 0) lines.push([seg("  → ", "dim"), seg(outcomes.map(plain).join(", "), "muted")]);
+  if (outcomes.length > 0) lines.push([seg("  → ", "dim"), seg(outcomes.map(plainPanelText).join(", "), "muted")]);
   return lines;
 }
 
@@ -184,10 +185,10 @@ function taskLines(tasks: readonly TaskEntry[], now: number): PanelLine[] {
         seg("  ◼ ", stale ? "warning" : "accent"),
         seg(`#${task.id} `, "dim"),
         seg(stale ? `stale claim ${age} ` : `${age} `, stale ? "warning" : "dim"),
-        seg(plain(task.subject)),
+        seg(plainPanelText(task.subject)),
       ]);
     } else {
-      lines.push([seg("  ◻ ", "dim"), seg(`#${task.id} `, "dim"), seg(plain(task.subject), "muted")]);
+      lines.push([seg("  ◻ ", "dim"), seg(`#${task.id} `, "dim"), seg(plainPanelText(task.subject), "muted")]);
     }
   }
   if (ordered.length > MAX_TASK_ROWS) lines.push([seg(`  … ${ordered.length - MAX_TASK_ROWS} more`, "dim")]);
@@ -228,4 +229,31 @@ export function layoutProgressPanel(input: ProgressPanelInput, width: number, ma
     ? [...lines.slice(0, maxRows - 1), [seg(`… ${lines.length - maxRows + 1} more rows`, "dim")]]
     : lines;
   return bounded.map((line) => fitPanelLine(line, width));
+}
+
+const CARD_TASKS = 3;
+const CARD_SUBJECT_WIDTH = 20;
+
+/** One dense line of open standalone tasks for the collapsed TaskList card. */
+export function taskCardPreview(tasks: readonly TaskEntry[], now: number): PanelLine[] {
+  const open = [
+    ...tasks.filter((task) => task.status === "in_progress"),
+    ...tasks.filter((task) => task.status === "pending"),
+  ];
+  if (open.length === 0) return [];
+  const glyphs = activeCardGlyphs();
+  const line: PanelLine = [seg("  ", "dim")];
+  open.slice(0, CARD_TASKS).forEach((task, index) => {
+    if (index > 0) line.push(seg(glyphs.field, "dim"));
+    const active = task.status === "in_progress";
+    const stale = active && task.claim !== undefined && task.claim.leaseExpiresAt <= now;
+    line.push(
+      seg(active ? glyphs.taskActive : glyphs.taskPending, stale ? "warning" : active ? "accent" : "dim"),
+      seg(`#${task.id} `, "dim"),
+      seg(stale ? "STALE " : "", "warning"),
+      seg(clipPanelText(plainPanelText(task.subject), CARD_SUBJECT_WIDTH, glyphs.ellipsis), active ? "text" : "muted"),
+    );
+  });
+  if (open.length > CARD_TASKS) line.push(seg(`${glyphs.field}+${open.length - CARD_TASKS}`, "dim"));
+  return [line];
 }

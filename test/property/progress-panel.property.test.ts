@@ -3,8 +3,10 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { TaskEntry } from "../../src/task-types.js";
 import type { LoopEntry } from "../../src/types.js";
+import { setGlyphTier } from "../../src/ui/card-style.js";
 import { layoutProgressPanel, panelLineText } from "../../src/ui/progress-panel.js";
 import { ProgressPanelOverlay, renderProgressPanel } from "../../src/ui/progress-panel-overlay.js";
+import { workflowCardPreview } from "../../src/ui/workflow-presentation.js";
 import { PANEL_NOW, panelOrchestration, panelTask, panelWorkflow } from "../helpers/progress-panel-fixtures.js";
 import { propertyOptions } from "./config.js";
 
@@ -145,6 +147,31 @@ describe("progress panel properties", () => {
         expect(open.size).toBe(0);
       }),
       propertyOptions(150),
+    );
+  });
+
+  it("gives every glyph tier one escape-free line carrying the same fields", () => {
+    fc.assert(
+      fc.property(workflow, timestamp, (entry, now) => {
+        const before = JSON.stringify(entry);
+        // Letters and digits only: glyphs and separators are presentation, not information.
+        const fields = (line: string) => line.replace(/[^\p{L}\p{N}]+/gu, "");
+        let reference: string | undefined;
+        try {
+          for (const tier of ["unicode", "nerd", "ascii"] as const) {
+            setGlyphTier(tier);
+            const lines = workflowCardPreview(entry, now).map(panelLineText);
+            expect(lines).toHaveLength(1);
+            expect(lines[0]).not.toMatch(CONTROL);
+            reference ??= fields(lines[0] ?? "");
+            expect(fields(lines[0] ?? "")).toBe(reference);
+          }
+        } finally {
+          setGlyphTier("unicode");
+        }
+        expect(JSON.stringify(entry)).toBe(before);
+      }),
+      propertyOptions(300),
     );
   });
 });

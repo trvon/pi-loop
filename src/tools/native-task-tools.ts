@@ -12,6 +12,7 @@ import {
 } from "../runtime/task-mutations.js";
 import { TaskStore } from "../task-store.js";
 import type { TaskStatus } from "../task-types.js";
+import { taskCardPreview } from "../ui/progress-panel.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { displayRows, textResult } from "./tool-result.js";
 
@@ -118,6 +119,7 @@ export function registerNativeTaskTools(options: NativeTaskToolsOptions): void {
         tone: "info",
         summary: `${tasks.length} task${tasks.length === 1 ? "" : "s"} · ${statuses.pending} pending · ${statuses.in_progress} active`,
         expanded: displayRows(expanded),
+        preview: taskCardPreview(tasks, Date.now()),
       }));
     },
   });

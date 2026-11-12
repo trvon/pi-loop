@@ -3,6 +3,7 @@ import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
+import type { PanelLine } from "../ui/progress-panel.js";
 
 /** Plain-text tool result in the shape pi's registerTool expects. */
 type ToolDisplayKind = "loop" | "workflow" | "orchestration" | "task" | "monitor";
@@ -15,6 +16,8 @@ export interface ToolDisplayDetails {
   summary: string;
   expanded?: string[];
   expandable?: boolean;
+  /** Toned lines shown under the summary even while collapsed; UI-only, never model-facing. */
+  preview?: PanelLine[];
 }
 
 export function displayRows(rows: string[], limit = 8): string[] {

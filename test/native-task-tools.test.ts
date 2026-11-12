@@ -73,6 +73,30 @@ describe("TaskList", () => {
     expect(out).toContain("[in_progress]");
   });
 
+  // Feature expectation: the collapsed TaskList card previews open work without adding model-facing text.
+  it("previews open tasks on one line, in-progress first, and never changes the text result", async () => {
+    const { taskStore, result } = setup();
+    for (const subject of ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"]) taskStore.create(subject, "d");
+    taskStore.start("3");
+    taskStore.complete("2");
+    const withoutPreview = (await result("TaskList", {})).content[0].text;
+
+    const output = await result("TaskList", {});
+    const preview = (output.details as { preview: Array<Array<{ text: string }>> }).preview
+      .map((line) => line.map((segment) => segment.text).join(""));
+
+    expect(preview).toEqual(["  ■#3 gamma │ □#1 alpha │ □#4 delta │ +2"]);
+    expect(output.content[0].text).toBe(withoutPreview);
+    expect(output.content[0].text).not.toContain("■");
+  });
+
+  it("has no preview when every task is finished", async () => {
+    const { taskStore, result } = setup();
+    taskStore.create("only", "d");
+    taskStore.complete("1");
+    expect((await result("TaskList", {})).details).toMatchObject({ preview: [] });
+  });
+
   it("keeps a 200-task display result compact while preserving the full text result", async () => {
     const { taskStore, result } = setup();
     for (let index = 0; index < 200; index++) taskStore.create(`task ${index + 1}`, "d");

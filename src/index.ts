@@ -45,6 +45,7 @@ import { createToolContextRegistration } from "./tools/tool-context.js";
 import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
 import type { LoopEntry, LoopExpiryDisposition, LoopExpiryReason, LoopExpirySource, LoopFireOrigin, MonitorEntry, Trigger } from "./types.js";
+import { detectGlyphTier, setGlyphTier } from "./ui/card-style.js";
 import { resolveProgressPanelMode } from "./ui/progress-panel-overlay.js";
 import { LoopWidget } from "./ui/widget.js";
 import { atWorkflowStateFireLimit, getActiveWorkflowStateLoop, isTerminalWorkflowRun } from "./workflow-reducer.js";
@@ -75,6 +76,7 @@ export default function (pi: ExtensionAPI) {
   const monitorWorkflowAdmissionProvider = createMonitorWorkflowAdmissionProvider((id) => monitorManager.get(id));
   let scheduler: CronScheduler;
   let triggerSystem: TriggerSystem;
+  setGlyphTier(detectGlyphTier());
   const widget = new LoopWidget(store, monitorManager, resolveProgressPanelMode(process.env.PI_LOOP_PANEL));
   // Repaint the status bar when a monitor finishes/prunes on its own (no tool
   // call), so stale monitors don't linger in the count between turns.

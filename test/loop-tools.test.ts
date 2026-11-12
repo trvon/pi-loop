@@ -622,6 +622,25 @@ describe("Workflow tools", () => {
     expect(h.triggerSystem.remove).toHaveBeenCalledWith("1");
   });
 
+  // Feature expectation: collapsed workflow cards show the state trail; model-facing text is unchanged.
+  it("previews the state trail on workflow and LoopList cards without changing model text", async () => {
+    const flat = (details: unknown) => ((details as { preview?: Array<Array<{ text: string }>> }).preview ?? [])
+      .map((line) => line.map((segment) => segment.text).join(""));
+    const created = await h.result("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
+    expect(flat(created.details)).toHaveLength(1);
+    expect(flat(created.details)[0]).toMatch(/^ {2}\[investigate\] ▸ .* │ CLAIMED \d+s │ /);
+    expect(created.content[0].text).not.toContain("CLAIMED");
+
+    const single = await h.result("LoopList", {});
+    expect(flat(single.details)).toEqual(flat(created.details));
+    expect(single.content[0].text).not.toContain("CLAIMED");
+
+    await h.result("WorkflowCreate", { goal: "Second run", definition: taskDefinition });
+    const several = flat((await h.result("LoopList", {})).details);
+    expect(several).toHaveLength(1);
+    expect(several[0]).toMatch(/^ {2}#1 \[investigate\] CLAIMED \d+s │ #2 \[investigate\] CLAIMED \d+s$/);
+  });
+
   it("renders workflow lifecycle results as compact expandable rows", async () => {
     const createResult = await h.result("WorkflowCreate", { goal: "Fix the regression", definition: taskDefinition });
     expect(createResult.details).toMatchObject({

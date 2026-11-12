@@ -39,6 +39,53 @@ describe("Pi tool renderer", () => {
     ]);
   });
 
+  // Feature expectations: cards show bounded structure without expanding.
+  it("shows a bounded, width-safe preview under the summary while collapsed", () => {
+    const preview = Array.from({ length: 7 }, (_, index) => [
+      { text: "  ✓ ", tone: "success" as const },
+      { text: `state-${index} ${"x".repeat(60)}`, tone: "muted" as const },
+    ]);
+    const result = {
+      content: [{ type: "text" as const, text: "model text" }],
+      details: { kind: "workflow" as const, action: "claim", tone: "success" as const, summary: "Workflow #1 claimed", expanded: ["Lease: live"], expandable: true, preview },
+    };
+    const lines = renderToolResult(result, { expanded: false, isPartial: false }, theme).render(40);
+
+    expect(lines[0]).toContain("✓ Workflow #1 claimed");
+    // Collapsed cards stay at two lines: summary plus one dense preview.
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("✓ state-0");
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+
+    const expanded = renderToolResult(result, { expanded: true, isPartial: false }, theme).render(40).map((line) => line.trimEnd());
+    expect(expanded[1]).toBe(lines[1]?.trimEnd());
+    expect(expanded).toContain("Lease: live");
+  });
+
+  it("omits the preview while partial and tolerates malformed preview metadata", () => {
+    const base = { kind: "task" as const, action: "list", tone: "info" as const, summary: "2 tasks" };
+    const preview = [[{ text: "  ◻ #1 a", tone: "muted" as const }]];
+    const partial = renderToolResult({ content: [], details: { ...base, preview } } as any, { expanded: false, isPartial: true }, theme).render(40);
+    expect(partial).toHaveLength(1);
+    for (const malformed of [null, "x", [null], [[{ text: 5, tone: "nope" }]], [[{ tone: "dim" }]]]) {
+      const lines = renderToolResult({ content: [], details: { ...base, preview: malformed } } as any, { expanded: false, isPartial: false }, theme).render(40);
+      expect(lines[0]).toContain("2 tasks");
+      expect(lines.length).toBeLessThanOrEqual(2);
+    }
+  });
+
+  it("styles expanded labels apart from their values", () => {
+    const marking = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => text } as any;
+    const result = {
+      content: [{ type: "text" as const, text: "" }],
+      details: { kind: "workflow" as const, action: "get", tone: "info" as const, summary: "Workflow #1", expanded: ["Lease: unowned", "… 3 more", "free text: not a label"], expandable: true },
+    };
+    const lines = renderToolResult(result, { expanded: true, isPartial: false }, marking).render(200).map((line) => line.trimEnd());
+    expect(lines[1]).toBe("<muted>Lease:</muted> unowned");
+    expect(lines[2]).toBe("<dim>… 3 more</dim>");
+    expect(lines[3]).toBe("<dim>free text: not a label</dim>");
+  });
+
   it("keeps meaningful progress identity while a result is partial", () => {
     const component = renderToolResult({
       content: [{ type: "text", text: "starting monitor" }],

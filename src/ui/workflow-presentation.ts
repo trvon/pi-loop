@@ -3,6 +3,79 @@ import { displayRows, type ToolDisplayDetails, type ToolDisplayTone } from "../t
 import type { LoopEntry } from "../types.js";
 import { formatWorkflowGraphWarnings } from "../workflow-graph.js";
 import { getWorkflowOutcomeAvailability, type WorkflowOutcomeAvailability } from "../workflow-reducer.js";
+import { activeCardGlyphs } from "./card-style.js";
+import { ACTIVITY_TONE, type PanelLine, type PanelSegment, plainPanelText, stateWindow } from "./progress-panel.js";
+
+const CARD_STATE_WINDOW = 5;
+const LIST_PREVIEW_WORKFLOWS = 3;
+// Same status word as the summary line, so the two never disagree. Only our own
+// words are upper-cased; an identifier is information, not style.
+function activityTag(entry: LoopEntry, activity: WorkflowActivity): string {
+  const workflow = entry.workflow;
+  const monitor = workflow?.waitingMonitor ? ` MONITOR #${plainPanelText(workflow.waitingMonitor.monitorId)}` : "";
+  // Idle current work without a live lease is waiting on WorkflowClaim.
+  const unclaimed = activity.status === "idle" && workflow?.activeExecution?.status === "active" ? " (unclaimed)" : "";
+  return `${activity.status.toUpperCase()}${monitor} ${formatCompactWorkflowDuration(activity.activityMs)}${unclaimed}`;
+}
+
+/**
+ * One dense line for the collapsed tool card: the state trail, derived
+ * activity, attempt, and available outcomes. Presentation only; "claimed" is a
+ * live lease, not observed execution. Glyphs follow the active card style.
+ */
+export function workflowCardPreview(entry: LoopEntry, now = Date.now()): PanelLine[] {
+  const workflow = entry.workflow;
+  if (!workflow) return [];
+  const glyphs = activeCardGlyphs();
+  const activity = deriveWorkflowActivity(entry, now);
+  const tone = ACTIVITY_TONE[activity.status];
+  const window = stateWindow(Object.keys(workflow.definition.states), workflow.currentState, CARD_STATE_WINDOW);
+  const hop: PanelSegment = { text: glyphs.hop, tone: "dim" };
+  const field: PanelSegment = { text: glyphs.field, tone: "dim" };
+  const line: PanelLine = [{ text: "  ", tone: "dim" }];
+  if (window.before > 0) line.push({ text: glyphs.ellipsis, tone: "dim" }, hop);
+  window.names.forEach((name, index) => {
+    if (index > 0) line.push(hop);
+    const label = plainPanelText(name);
+    if (name === workflow.currentState) line.push({ text: `${glyphs.currentOpen}${label}${glyphs.currentClose}`, tone: "accent" });
+    // Visited is marked explicitly: rework can revisit a state left of one already done.
+    else if ((workflow.attemptsByState[name] ?? 0) > 0) line.push({ text: `${glyphs.visited}${label}`, tone: "success" });
+    else line.push({ text: label, tone: "dim" });
+  });
+  if (window.after > 0) line.push(hop, { text: glyphs.ellipsis, tone: "dim" });
+
+  line.push(field, { text: activityTag(entry, activity), tone });
+  const state = workflow.definition.states[workflow.currentState];
+  if (state && !state.terminal) line.push(field, { text: `try ${workflowAttemptLabel(entry)}`, tone: "muted" });
+  const outcomes = getWorkflowOutcomeAvailability(workflow).available;
+  if (outcomes.length > 0) {
+    line.push(field, { text: `${glyphs.next}${outcomes.map(plainPanelText).join(glyphs.outcomeJoin)}`, tone: "muted" });
+  }
+  return [line];
+}
+
+/** Collapsed LoopList preview: the full trail for one workflow, a one-line roster for several. */
+export function workflowListPreview(entries: readonly LoopEntry[], now = Date.now()): PanelLine[] {
+  const workflows = entries.filter((entry) => entry.workflow !== undefined);
+  const only = workflows[0];
+  if (workflows.length === 0) return [];
+  if (workflows.length === 1 && only) return workflowCardPreview(only, now);
+  const glyphs = activeCardGlyphs();
+  const line: PanelLine = [{ text: "  ", tone: "dim" }];
+  workflows.slice(0, LIST_PREVIEW_WORKFLOWS).forEach((entry, index) => {
+    const activity = deriveWorkflowActivity(entry, now);
+    if (index > 0) line.push({ text: glyphs.field, tone: "dim" });
+    line.push(
+      { text: `#${entry.id} `, tone: "dim" },
+      { text: `${glyphs.currentOpen}${plainPanelText(entry.workflow?.currentState ?? "?")}${glyphs.currentClose}`, tone: "accent" },
+      { text: ` ${activityTag(entry, activity)}`, tone: ACTIVITY_TONE[activity.status] },
+    );
+  });
+  if (workflows.length > LIST_PREVIEW_WORKFLOWS) {
+    line.push({ text: `${glyphs.field}+${workflows.length - LIST_PREVIEW_WORKFLOWS}`, tone: "dim" });
+  }
+  return [line];
+}
 
 export type WorkflowActivityStatus = "claimed" | "waiting" | "paused" | "idle" | "stopped";
 
@@ -161,7 +234,7 @@ export function workflowDisplayDetails({
     workflow.lastTransition ? formatLastTransitionLines(workflow.lastTransition).join("\n") : undefined,
     ...extra,
   ].filter((line): line is string => line !== undefined);
-  return { kind: "workflow", action, tone, summary: timedSummary, expanded: displayRows(lines, 15) };
+  return { kind: "workflow", action, tone, summary: timedSummary, expanded: displayRows(lines, 15), preview: workflowCardPreview(entry, now) };
 }
 
 export function formatWorkflowInspection(entry: LoopEntry): string {
