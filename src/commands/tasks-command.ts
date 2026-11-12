@@ -110,8 +110,17 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
     const action = await ui.select(`#${task.id}: ${task.subject}\n\n${task.description}${claimNote}`, actions);
     if (!action || action === "< Back") return viewNativeTasks(ui);
 
+    // The menu can stay open for minutes: decide token versus override from the
+    // claim as it is now, not as it was when the menu was drawn.
+    const current = taskStore.get(task.id);
+    const expiredNow = current?.claim !== undefined && current.claim.leaseExpiresAt <= Date.now();
+    if (action === RELEASE_ACTION && !expiredNow) {
+      ui.notify(`Task #${task.id} unchanged: its claim is no longer expired`, "warning");
+      return viewNativeTasks(ui);
+    }
+
     let claimId: string | undefined;
-    if (claimExpired) {
+    if (expiredNow) {
       const confirmed = await ui.confirm(
         `Override expired claim on task #${task.id}?`,
         "The owner's lease has expired. This releases the claim as the operator; a live claim is never overridden.",
@@ -132,7 +141,7 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
         ui.notify(`Task #${task.id} released to pending`, "info");
         return viewNativeTasks(ui);
       }
-    } else if (task.claim) {
+    } else if (current?.claim) {
       claimId = await ui.input("Claim token required");
       if (!claimId) {
         ui.notify(`Task #${task.id} unchanged: claim token required`, "warning");
