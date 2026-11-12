@@ -313,6 +313,7 @@ Requests include `requestId`; replies arrive on `<channel>:reply:<requestId>` as
 | `PI_LOOP` | Store path override; use `off` to disable persistence | derived from scope |
 | `PI_LOOP_SCOPE` | `memory`, `session`, or `project` | `session` |
 | `PI_LOOP_EXPIRES_IN` | Default lifetime for newly created loops (`30s`, `12h`, `14d`) | `7d` |
+| `PI_LOOP_PANEL` | `off` hides the progress side panel; `/loop panel` toggles it per process | `auto` |
 | `PI_LOOP_DEBUG` | Debug logging to stderr | unset |
 
 Scope behavior:
@@ -326,5 +327,7 @@ Session files live under `.pi/loops/` and `.pi/tasks/`. Keep `session` as the no
 ## Status line and limits
 
 The TUI status line summarizes ordinary loops, workflows, orchestrations, running monitors, and native tasks. A single workflow shows its derived activity duration, current state and state age, and total wall-clock age; paused workflows remain visible. Use `LoopList`, `OrchestrationGet`, `MonitorList`, and `/tasks` for detail. Ordinary active-loop `age` is wall-clock time since creation; paused ordinary loops omit age and show available pause provenance. The status clears when no work is active.
+
+On terminals at least 110 columns wide, a narrow progress panel docks at the top-right while a workflow, orchestration, or native task is in progress. It never takes keyboard focus and disappears when nothing is in progress. Each workflow is a vertical state trail (`✓` visited, `▶` current with derived activity and attempt, `○` not yet entered) followed by its available outcomes; workflows that are paused or unclaimed are listed first. Native tasks show `done/total`, in-progress work first, and flag a claim whose lease has expired. The panel is presentation only: it reads the same LoopStore and TaskStore snapshots as the status line and never claims work, resumes a controller, or schedules a wake. Task rows come only from standalone tasks and workflow rows only from LoopStore. Durations refresh on state changes and the existing 30-second heartbeat. Because it overlays the transcript's right edge, hide it with `/loop panel off` (or `/loop panel` to toggle), or start pi with `PI_LOOP_PANEL=off`.
 
 The runtime allows at most 25 active loops and 25 running monitors. Each orchestration batch allows up to 32 work items, 8 local workers, and 3 attempts per item.

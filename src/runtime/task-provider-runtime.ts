@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerTasksCommand } from "../commands/tasks-command.js";
 import { TaskStore } from "../task-store.js";
+import type { TaskEntry } from "../task-types.js";
 import { registerNativeTaskTools } from "../tools/native-task-tools.js";
 import { registerNativeTaskRpc } from "./native-task-rpc.js";
 import type { TaskBacklogResult } from "./task-mutations.js";
@@ -34,6 +35,8 @@ export interface TaskProviderRuntime {
   cleanDoneTasks: ReturnType<typeof createTaskRuntimeBridge>["cleanDoneTasks"];
   isReady(): boolean;
   summary(): TaskProviderSummary;
+  /** Read-only native task snapshot; empty while an external provider owns tasks. */
+  listNativeTasks(): readonly TaskEntry[];
   getNativeTaskStore(): TaskStore | undefined;
   /**
    * Register the native task tools and `/tasks` now unless an external provider
@@ -204,7 +207,13 @@ export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): 
     return { count, focusText };
   }
 
+  function listNativeTasks(): readonly TaskEntry[] {
+    if (tasksAvailable || !nativeTaskStore) return [];
+    return getOrCreateNativeTaskStore()?.list() ?? [];
+  }
+
   return {
+    listNativeTasks,
     autoCreateTask: bridge.autoCreateTask,
     hasPendingTasks: bridge.hasPendingTasks,
     cleanDoneTasks: bridge.cleanDoneTasks,

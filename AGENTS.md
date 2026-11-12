@@ -37,7 +37,7 @@ src/runtime/                 session, notification, backlog, orchestration, task
 src/tools/                   model-facing tool definitions
 src/commands/                /loop and /tasks
 src/rpc/                     vendored cross-extension RPC
-src/ui/                      status and tool rendering
+src/ui/                      status, read-only progress panel, and tool rendering
 test/                        unit, integration, property, and live harnesses
 ```
 

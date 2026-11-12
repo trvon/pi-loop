@@ -41,6 +41,55 @@ describe("registerLoopCommand", () => {
     expect(h.command.description).toContain("dynamic goal loop");
   });
 
+  // Feature expectations: /loop panel toggles presentation only.
+  describe("panel toggle", () => {
+    function panelSetup(initial: "auto" | "off" = "auto") {
+      let mode = initial;
+      const setPanelMode = vi.fn((next: "auto" | "off") => { mode = next; });
+      const harness = setup({ getPanelMode: () => mode, setPanelMode });
+      return { harness, setPanelMode, mode: () => mode };
+    }
+
+    it("toggles, and accepts explicit on/off", async () => {
+      const p = panelSetup();
+      const ctx = createCtx();
+      await p.harness.command.handler!("panel", ctx);
+      expect(p.mode()).toBe("off");
+      await p.harness.command.handler!("panel", ctx);
+      expect(p.mode()).toBe("auto");
+      await p.harness.command.handler!("panel off", ctx);
+      await p.harness.command.handler!("  PANEL   On ", ctx);
+      expect(p.setPanelMode.mock.calls.map((call) => call[0])).toEqual(["off", "auto", "off", "auto"]);
+      expect(ctx.notifications.at(-1)?.message).toContain("Progress panel on");
+    });
+
+    it("never creates a loop, schedules a trigger, or changes mode for panel input", async () => {
+      const p = panelSetup();
+      const ctx = createCtx();
+      await p.harness.command.handler!("panel sideways", ctx);
+      await p.harness.command.handler!("panel", ctx);
+      expect(p.setPanelMode).toHaveBeenCalledTimes(1);
+      expect(p.harness.store.list()).toEqual([]);
+      expect(p.harness.triggerSystem.add).not.toHaveBeenCalled();
+      expect(p.harness.onDynamicLoopActivated).not.toHaveBeenCalled();
+      expect(ctx.notifications[0]).toEqual({ message: "Use /loop panel, /loop panel on, or /loop panel off.", level: "warning" });
+    });
+
+    it("reports an unavailable panel without creating a goal loop", async () => {
+      const ctx = createCtx();
+      await h.command.handler!("panel", ctx);
+      expect(h.store.list()).toEqual([]);
+      expect(ctx.notifications).toEqual([{ message: "The progress panel is unavailable in this runtime.", level: "warning" }]);
+    });
+
+    it("still treats goals that merely start with the word as dynamic loops (control)", async () => {
+      const p = panelSetup();
+      await p.harness.command.handler!("panelize the dashboard", createCtx());
+      expect(p.harness.store.list()).toHaveLength(1);
+      expect(p.setPanelMode).not.toHaveBeenCalled();
+    });
+  });
+
   it("creates a cron loop from an interval + prompt argument string", async () => {
     const ctx = createCtx();
     await h.command.handler!("5m check the deploy", ctx);

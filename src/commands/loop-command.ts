@@ -10,6 +10,7 @@ import type { OrchestrationCancellation } from "../runtime/subagent-orchestratio
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
 import { canResumeFromInspection, formatLoopLifecycle } from "../ui/lifecycle-presentation.js";
 import { formatOrchestrationInspection, orchestrationCancellationMessage, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
+import type { ProgressPanelMode } from "../ui/progress-panel-overlay.js";
 import { formatWorkflowInspection, workflowActivityLabel } from "../ui/workflow-presentation.js";
 
 interface LoopStoreLike {
@@ -44,10 +45,13 @@ export interface LoopCommandOptions {
   maybeBootstrapTaskLoop?: (entry: LoopEntry) => Promise<boolean>;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
   cancelOrchestration?: (id: string, action: "pause" | "delete") => Promise<OrchestrationCancellation>;
+  getPanelMode?: () => ProgressPanelMode;
+  setPanelMode?: (mode: ProgressPanelMode) => void;
 }
 
 type LoopCommandRoute =
   | { type: "menu" }
+  | { type: "panel"; mode?: ProgressPanelMode; invalid?: string }
   | { type: "event"; source: string; prompt: string }
   | { type: "cron"; interval: string; prompt: string; notifyEvery: boolean }
   | { type: "invalid-cron"; interval: string }
@@ -65,6 +69,16 @@ function extractExpiryOverride(input: string): { args: string; expiresIn?: strin
 function parseLoopCommandRoute(input: string): LoopCommandRoute {
   const trimmed = input.trim();
   if (!trimmed) return { type: "menu" };
+
+  // Reserved before goal parsing so "/loop panel" never creates a dynamic loop.
+  const panelMatch = trimmed.match(/^panel(?:\s+(\S.*))?$/i);
+  if (panelMatch) {
+    const arg = panelMatch[1]?.trim().toLowerCase();
+    if (arg === undefined) return { type: "panel" };
+    if (arg === "on" || arg === "auto") return { type: "panel", mode: "auto" };
+    if (arg === "off") return { type: "panel", mode: "off" };
+    return { type: "panel", invalid: arg };
+  }
 
   const eventMatch = trimmed.match(/^(?:event|when)\s+(\S+)\s+(.+)$/i);
   if (eventMatch?.[1] && eventMatch[2]) {
@@ -252,7 +266,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
   }
 
   pi.registerCommand("loop", {
-    description: "Create a loop. Prefix with --expires-in <duration> to override its lifetime; then use [interval] [prompt], event <source> <prompt>, or <goal> for a dynamic goal loop.",
+    description: "Create a loop, or toggle the progress side panel with `panel [on|off]`. Prefix with --expires-in <duration> to override its lifetime; then use [interval] [prompt], event <source> <prompt>, or <goal> for a dynamic goal loop.",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const ui = ctx.ui;
       const expiry = extractExpiryOverride(args);
@@ -275,6 +289,26 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
         if (choice.startsWith("Create event")) return eventLoop(ui, undefined, undefined, expiry.expiresIn);
         if (choice.startsWith("View loops")) return viewLoops(ui);
         return settings(ui);
+      }
+
+      if (route.type === "panel") {
+        if (route.invalid !== undefined) {
+          ui.notify("Use /loop panel, /loop panel on, or /loop panel off.", "warning");
+          return;
+        }
+        if (!options.getPanelMode || !options.setPanelMode) {
+          ui.notify("The progress panel is unavailable in this runtime.", "warning");
+          return;
+        }
+        const mode = route.mode ?? (options.getPanelMode() === "off" ? "auto" : "off");
+        options.setPanelMode(mode);
+        ui.notify(
+          mode === "off"
+            ? "Progress panel hidden. /loop panel on shows it again."
+            : "Progress panel on: shown on wide terminals while a workflow, orchestration, or task is in progress.",
+          "info",
+        );
+        return;
       }
 
       if (route.type === "event") return eventLoop(ui, route.prompt, route.source, expiry.expiresIn);
