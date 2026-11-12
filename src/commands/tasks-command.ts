@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "
 import {
   createTask,
   deleteTask,
+  releaseExpiredTaskClaim,
   type TaskBacklogResult,
   type TaskMutationContext,
   taskMutationRejectionMessage,
@@ -9,6 +10,16 @@ import {
 } from "../runtime/task-mutations.js";
 import { TaskStore } from "../task-store.js";
 
+
+const RELEASE_ACTION = "* Release to pending";
+
+function formatAge(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000);
+  if (minutes < 1) return "under 1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}
 
 export interface TasksCommandOptions {
   pi: ExtensionAPI;
@@ -76,6 +87,7 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
     const task = taskStore.get(taskId);
     if (!task) return viewNativeTasks(ui);
 
+    const claimExpired = task.claim !== undefined && task.claim.leaseExpiresAt <= Date.now();
     const actions = ["x Delete"];
     if (task.status === "pending") {
       actions.unshift("x Close without completing");
@@ -84,18 +96,48 @@ export function registerTasksCommand(options: TasksCommandOptions): void {
     } else if (task.status === "in_progress") {
       actions.unshift("x Close without completing");
       actions.unshift("ok Complete");
+      if (claimExpired) actions.unshift(RELEASE_ACTION);
     } else {
       actions.unshift("* Reopen");
     }
     actions.push("< Back");
 
-    const action = await ui.select(`#${task.id}: ${task.subject}\n\n${task.description}`, actions);
+    const claimNote = !task.claim
+      ? ""
+      : claimExpired
+        ? `\n\nClaim lease expired ${formatAge(Date.now() - task.claim.leaseExpiresAt)} ago; the owner is presumed gone.`
+        : "\n\nClaimed by a live owner; changes need its claim token.";
+    const action = await ui.select(`#${task.id}: ${task.subject}\n\n${task.description}${claimNote}`, actions);
     if (!action || action === "< Back") return viewNativeTasks(ui);
 
-    const claimId = task.claim ? await ui.input("Claim token required") : undefined;
-    if (task.claim && !claimId) {
-      ui.notify(`Task #${task.id} unchanged: claim token required`, "warning");
-      return viewNativeTasks(ui);
+    let claimId: string | undefined;
+    if (claimExpired) {
+      const confirmed = await ui.confirm(
+        `Override expired claim on task #${task.id}?`,
+        "The owner's lease has expired. This releases the claim as the operator; a live claim is never overridden.",
+      );
+      if (!confirmed) {
+        ui.notify(`Task #${task.id} unchanged: expired-claim override declined`, "warning");
+        return viewNativeTasks(ui);
+      }
+      const released = await releaseExpiredTaskClaim(mutationContext(taskStore), {
+        id: task.id,
+        toPending: action === RELEASE_ACTION,
+      });
+      if (!released.applied) {
+        ui.notify(`Task #${task.id} unchanged: ${taskMutationRejectionMessage(task.id, released)}`, "warning");
+        return viewNativeTasks(ui);
+      }
+      if (action === RELEASE_ACTION) {
+        ui.notify(`Task #${task.id} released to pending`, "info");
+        return viewNativeTasks(ui);
+      }
+    } else if (task.claim) {
+      claimId = await ui.input("Claim token required");
+      if (!claimId) {
+        ui.notify(`Task #${task.id} unchanged: claim token required`, "warning");
+        return viewNativeTasks(ui);
+      }
     }
 
     let changed = false;

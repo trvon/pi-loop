@@ -248,6 +248,109 @@ describe("registerTasksCommand", () => {
     expect(ui.notify).toHaveBeenCalledWith("Task #1 unchanged: claim token required", "warning");
   });
 
+  // Reproduced bug: an expired claim left /tasks with no action that could succeed.
+  function expiredClaimHarness(action: string, confirmed: boolean) {
+    const h = setup();
+    h.taskStore.create("subject", "desc");
+    h.taskStore.claim("1", {
+      claimId: "claim-1",
+      ownerSessionId: "session-a",
+      ownerRuntimeId: "runtime-a",
+      leaseMs: 1_000,
+      now: Date.now() - 60_000,
+    });
+    let taskVisits = 0;
+    const ui = {
+      select: vi.fn(async (title: string) => {
+        if (title === "Tasks") return taskVisits++ === 0 ? "> #1 [in_progress] subject" : "< Back";
+        if (title.startsWith("#1")) return action;
+        return "< Back";
+      }),
+      input: vi.fn(async () => ""),
+      confirm: vi.fn(async () => confirmed),
+      notify: vi.fn(),
+    };
+    return { h, ui };
+  }
+
+  it("lets the operator delete a task whose claim lease expired without a token", async () => {
+    const { h, ui } = expiredClaimHarness("x Delete", true);
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(h.taskStore.get("1")).toBeUndefined();
+    expect(h.emittedEvents.some((event) => event.name === "tasks:deleted")).toBe(true);
+    expect(ui.input).not.toHaveBeenCalled();
+    expect(ui.confirm).toHaveBeenCalledTimes(1);
+    expect(ui.notify).toHaveBeenCalledWith("Task #1 deleted", "info");
+  });
+
+  it("lets the operator complete a task whose claim lease expired", async () => {
+    const { h, ui } = expiredClaimHarness("ok Complete", true);
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(h.taskStore.get("1")?.status).toBe("completed");
+    expect(h.taskStore.get("1")?.claim).toBeUndefined();
+    expect(ui.input).not.toHaveBeenCalled();
+  });
+
+  it("releases an expired claim back to pending so another worker can take it", async () => {
+    const { h, ui } = expiredClaimHarness("* Release to pending", true);
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(h.taskStore.get("1")).toMatchObject({ status: "pending", claim: undefined });
+    expect(h.emittedEvents.some((event) => event.name === "tasks:updated" && event.payload.previousStatus === "in_progress")).toBe(true);
+    expect(ui.notify).toHaveBeenCalledWith("Task #1 released to pending", "info");
+  });
+
+  it("leaves an expired claim untouched when the operator declines the override", async () => {
+    const { h, ui } = expiredClaimHarness("x Delete", false);
+    const before = structuredClone(h.taskStore.get("1"));
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(h.taskStore.get("1")).toEqual(before);
+    expect(h.emittedEvents.some((event) => event.name === "tasks:deleted")).toBe(false);
+    expect(ui.notify).toHaveBeenCalledWith("Task #1 unchanged: expired-claim override declined", "warning");
+  });
+
+  it("never releases a live claim through the operator recovery path", () => {
+    const h = setup();
+    h.taskStore.create("subject", "desc");
+    h.taskStore.claim("1", { claimId: "claim-1", ownerSessionId: "s", ownerRuntimeId: "r", leaseMs: 60_000 });
+    const before = structuredClone(h.taskStore.get("1"));
+
+    expect(h.taskStore.releaseExpiredClaim("1", { toPending: true })).toBeUndefined();
+    expect(h.taskStore.releaseExpiredClaim("missing")).toBeUndefined();
+    expect(h.taskStore.get("1")).toEqual(before);
+  });
+
+  it("does not offer release or an override prompt for a live claim", async () => {
+    const h = setup();
+    h.taskStore.create("subject", "desc");
+    h.taskStore.claim("1", { claimId: "claim-1", ownerSessionId: "s", ownerRuntimeId: "r", leaseMs: 60_000 });
+    let taskVisits = 0;
+    let offered: string[] = [];
+    const ui = {
+      select: vi.fn(async (title: string, choices: string[]) => {
+        if (title === "Tasks") return taskVisits++ === 0 ? "> #1 [in_progress] subject" : "< Back";
+        offered = choices;
+        return "ok Complete";
+      }),
+      input: vi.fn(async () => "wrong-token"),
+      confirm: vi.fn(async () => true),
+      notify: vi.fn(),
+    };
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(offered).not.toContain("* Release to pending");
+    expect(ui.confirm).not.toHaveBeenCalled();
+    expect(h.taskStore.get("1")).toMatchObject({ status: "in_progress", claim: { claimId: "claim-1" } });
+  });
+
   it("selecting a task and choosing Delete removes it and emits tasks:deleted", async () => {
     const h = setup();
     h.taskStore.create("subject", "desc");

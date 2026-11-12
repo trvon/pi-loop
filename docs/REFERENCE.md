@@ -147,7 +147,7 @@ Revision and transition race through the same LoopStore lock. Revision-first mak
 
 ## Standalone tasks
 
-Native task statuses are `pending`, `in_progress`, `completed`, and `closed`. `TaskClaim` starts or resumes unfinished work and returns a renewable bearer claim ID. `TaskHeartbeat` renews it. Subject/description edits, terminal updates, and deletion of live claimed work require that ID. Missing, wrong, or expired bearers reject before mutation; expired claims may be taken over.
+Native task statuses are `pending`, `in_progress`, `completed`, and `closed`. `TaskClaim` starts or resumes unfinished work and returns a renewable bearer claim ID. `TaskHeartbeat` renews it. Subject/description edits, terminal updates, and deletion of live claimed work require that ID. Missing, wrong, or expired bearers reject before mutation; expired claims may be taken over. In `/tasks`, the operator may release a claim only after its lease has expired (confirmation required): the task can then be completed, closed, deleted, or returned to `pending`. A live claim is never overridden and still requires its token.
 
 Standalone tasks are independently completable backlog items. Related work that advances one evolving goal through ordered phases, conditional outcomes, rework, or durable handoff belongs in a workflow instead. Task prerequisites are description conventions, not first-class graph fields. Backlog workers use `TaskGet` to follow them, and unfinished handoffs persist material progress and next action through `TaskUpdate`.
 
