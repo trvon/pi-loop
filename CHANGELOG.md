@@ -6,6 +6,33 @@
 
 * **tasks:** register the native task tools at `session_start` instead of six seconds after startup. A prompt sent inside that window used to go out with the pre-registration tool set, and the next request carried four more tools plus their prompt guidelines, so the request prefix changed once per session and every provider-side prompt cache missed (a full ~22k-token re-prefill on llama-server). The timer stays as a backstop and an external `pi-tasks` that answered the startup ping still wins.
 
+## [0.7.20](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.19...pi-loop-v0.7.20) (2026-11-12)
+
+
+### Features
+
+* **ui:** add a vertical progress panel for in-progress work ([4771a09](https://github.com/trvon/pi-loop/commit/4771a09827667f7cdcb5f718b055abfdba6f60dd))
+* **ui:** compact two-line tool cards with a state-trail preview ([31c59f1](https://github.com/trvon/pi-loop/commit/31c59f1bbfd7af9dd9de67f8328f8aa287a0eaf6))
+* **ui:** compact two-line tool cards with a state-trail preview ([7a022a9](https://github.com/trvon/pi-loop/commit/7a022a9b07e307533e3f50a03fa7557a3d598775))
+* **ui:** keep lease and outcomes inside the visible workflow card ([8e4146f](https://github.com/trvon/pi-loop/commit/8e4146f5b9b3056e7c0dbb94320712a6559f0021))
+
+
+### Bug Fixes
+
+* **tasks:** let the operator recover tasks with an expired claim ([e8bbf61](https://github.com/trvon/pi-loop/commit/e8bbf615ec0b51ce0bf5ed200a405a6e52f07812))
+* **tasks:** re-evaluate the claim after the operator chooses an action ([fa000a7](https://github.com/trvon/pi-loop/commit/fa000a7b05f24cad7d6ef1e13d50b4ccdfe9274e))
+* **ui:** always show the current state and its attempt in the panel trail ([08fb76e](https://github.com/trvon/pi-loop/commit/08fb76e3081b6b011a5186f4ab5616b546ae2c57))
+* **ui:** bracket a dangling current state in the card preview ([d211d49](https://github.com/trvon/pi-loop/commit/d211d49eb7502e22260d41015459bf4767f2fb1c))
+* **ui:** carry workflow durations into the next unit ([e0e3fc9](https://github.com/trvon/pi-loop/commit/e0e3fc985a765974bfbf4fbcb2c0d03375d186b3))
+* **ui:** reject card previews longer than the one-line contract ([29bf753](https://github.com/trvon/pi-loop/commit/29bf75303d1668b7df498739f661392853565dc4))
+* **ui:** reject malformed card previews whole and keep long goals below actionable rows ([de0180e](https://github.com/trvon/pi-loop/commit/de0180ebd1fd93a41798936d5235084b4c802b72))
+* **ui:** repaint the panel when native tasks load and when task leases expire ([8a97c32](https://github.com/trvon/pi-loop/commit/8a97c324d700e438c0d8038bd5a8550d04505632))
+
+
+### Performance Improvements
+
+* **ui:** skip repainting unchanged status text ([e27ea99](https://github.com/trvon/pi-loop/commit/e27ea9929119ac892ec1e70aa74ad7512b4866c9))
+
 ## [0.7.19](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.18...pi-loop-v0.7.19) (2026-10-31)
 
 
