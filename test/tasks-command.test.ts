@@ -316,6 +316,73 @@ describe("registerTasksCommand", () => {
     expect(ui.notify).toHaveBeenCalledWith("Task #1 unchanged: expired-claim override declined", "warning");
   });
 
+  // Review finding: claim state was sampled before the menu, so a lease that
+  // expired while the operator was choosing stayed on the token path.
+  it("re-evaluates the claim after the operator chooses, so a lease that expires mid-menu is recoverable", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      const h = setup();
+      h.taskStore.create("subject", "desc");
+      h.taskStore.claim("1", { claimId: "claim-1", ownerSessionId: "s", ownerRuntimeId: "r", leaseMs: 60_000 });
+      let taskVisits = 0;
+      const ui = {
+        select: vi.fn(async (title: string) => {
+          if (title === "Tasks") return taskVisits++ === 0 ? "> #1 [in_progress] subject" : "< Back";
+          vi.advanceTimersByTime(120_000);
+          return "ok Complete";
+        }),
+        input: vi.fn(async () => ""),
+        confirm: vi.fn(async () => true),
+        notify: vi.fn(),
+      };
+
+      await h.command.handler!("", { ui } as any);
+
+      expect(ui.input).not.toHaveBeenCalled();
+      expect(ui.confirm).toHaveBeenCalledTimes(1);
+      expect(h.taskStore.get("1")).toMatchObject({ status: "completed", claim: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not release a claim that a worker renewed while the operator was choosing", async () => {
+    const { h, ui } = expiredClaimHarness("* Release to pending", true);
+    const select = ui.select.getMockImplementation()!;
+    ui.select.mockImplementation(async (title: string) => {
+      if (title.startsWith("#1")) h.taskStore.claim("1", { claimId: "claim-2", ownerSessionId: "b", ownerRuntimeId: "b", leaseMs: 60_000 });
+      return select(title);
+    });
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(ui.confirm).not.toHaveBeenCalled();
+    expect(h.taskStore.get("1")).toMatchObject({ status: "in_progress", claim: { claimId: "claim-2" } });
+    expect(ui.notify).toHaveBeenCalledWith("Task #1 unchanged: its claim is no longer expired", "warning");
+  });
+
+  it("reports a task deleted elsewhere while the operator was choosing", async () => {
+    const h = setup();
+    h.taskStore.create("subject", "desc");
+    let taskVisits = 0;
+    const ui = {
+      select: vi.fn(async (title: string) => {
+        if (title === "Tasks") return taskVisits++ === 0 ? "* #1 [pending] subject" : "< Back";
+        h.taskStore.delete("1");
+        return "ok Complete";
+      }),
+      input: vi.fn(async () => ""),
+      confirm: vi.fn(async () => true),
+      notify: vi.fn(),
+    };
+
+    await h.command.handler!("", { ui } as any);
+
+    expect(ui.notify).toHaveBeenCalledWith("Task #1 unchanged: Task #1 not found", "warning");
+    expect(h.emittedEvents.some((event) => event.name === "tasks:completed")).toBe(false);
+  });
+
   it("never releases a live claim through the operator recovery path", () => {
     const h = setup();
     h.taskStore.create("subject", "desc");
