@@ -64,19 +64,23 @@ function toneAppearance(tone: ToolDisplayDetails["tone"]): { color: "success" | 
   }
 }
 
+const CONTROL_BYTES = /[\u0000-\u001f\u007f-\u009f]/g;
+
+function isPreview(preview: unknown): preview is PanelLine[] {
+  return Array.isArray(preview) && preview.every((line) =>
+    Array.isArray(line) && line.every((segment) =>
+      typeof segment?.text === "string" && PREVIEW_TONES.has(segment.tone)));
+}
+
 // Details are persisted with the session, so a preview from an older or foreign
-// version is validated instead of trusted.
+// version is untrusted: any malformed line or segment rejects the whole preview
+// (summary alone), and control bytes never reach the terminal.
 function stylePreview(preview: unknown, theme: Theme): string[] {
-  if (!Array.isArray(preview)) return [];
+  if (!isPreview(preview)) return [];
   const lines: string[] = [];
   for (const line of preview.slice(0, MAX_PREVIEW_LINES)) {
-    if (!Array.isArray(line)) continue;
-    let text = "";
-    for (const segment of line as PanelLine) {
-      if (typeof segment?.text !== "string" || !PREVIEW_TONES.has(segment.tone)) continue;
-      text += theme.fg(segment.tone, segment.text.replace(/[\r\n]+/g, " "));
-    }
-    if (text.trim()) lines.push(text);
+    const text = line.map((segment) => theme.fg(segment.tone, segment.text.replace(CONTROL_BYTES, " "))).join("");
+    if (line.some((segment) => segment.text.trim())) lines.push(text);
   }
   return lines;
 }

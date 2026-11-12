@@ -67,11 +67,35 @@ describe("Pi tool renderer", () => {
     const preview = [[{ text: "  ◻ #1 a", tone: "muted" as const }]];
     const partial = renderToolResult({ content: [], details: { ...base, preview } } as any, { expanded: false, isPartial: true }, theme).render(40);
     expect(partial).toHaveLength(1);
-    for (const malformed of [null, "x", [null], [[{ text: 5, tone: "nope" }]], [[{ tone: "dim" }]]]) {
+    const ok = { text: "ok-segment", tone: "muted" };
+    // Review finding: partially valid metadata must not render its valid part.
+    const malformedPreviews = [
+      null,
+      "x",
+      [null],
+      [[{ text: 5, tone: "nope" }]],
+      [[{ tone: "dim" }]],
+      [[ok, { text: 5, tone: "bad" }]],
+      [[ok], "not-a-line"],
+      [[ok, null]],
+      [[ok, { text: "fine", tone: "blink" }]],
+    ];
+    for (const malformed of malformedPreviews) {
       const lines = renderToolResult({ content: [], details: { ...base, preview: malformed } } as any, { expanded: false, isPartial: false }, theme).render(40);
+      expect(lines).toHaveLength(1);
       expect(lines[0]).toContain("2 tasks");
-      expect(lines.length).toBeLessThanOrEqual(2);
     }
+  });
+
+  // Review finding: only CR/LF were removed, so persisted text could emit an escape sequence.
+  it("strips every terminal control byte from persisted preview text", () => {
+    const base = { kind: "task" as const, action: "list", tone: "info" as const, summary: "2 tasks" };
+    const preview = [[{ text: "  ok ", tone: "muted" }, { text: "\u001b[31mred\u0007\u009b2J\ttab\r\nline", tone: "text" }]];
+    const lines = renderToolResult({ content: [], details: { ...base, preview } } as any, { expanded: false, isPartial: false }, theme).render(80);
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("  ok ");
+    expect(lines[1]).toContain("[31mred");
+    expect(lines[1]).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
 
   it("styles expanded labels apart from their values", () => {

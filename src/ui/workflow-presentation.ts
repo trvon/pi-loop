@@ -218,18 +218,18 @@ export function workflowDisplayDetails({
   const activity = deriveWorkflowActivity(entry, now);
   const timedSummary = `${summary} · ${activity.status} ${formatCompactWorkflowDuration(activity.activityMs)} · age ${formatCompactWorkflowDuration(activity.workflowAgeMs)}`;
   const lines = [
-    `Goal: ${entry.prompt}`,
     ...workflowTimingLines(entry, now),
     `State: ${workflow.currentState} · revision ${workflow.definitionRevision} · transition ${workflow.transitionSeq}`,
     `Attempt: ${workflowAttemptLabel(entry)}`,
-    // The renderer caps expanded output, so short actionable rows precede
-    // free-form prose that can wrap past the cap.
+    // The renderer caps expanded output, so short actionable rows precede the
+    // free-form prose (goal, instruction) that can wrap past the cap.
     `Lease: ${workflowLeaseLabel(entry, now)}`,
     availability.available.length > 0 ? `Outcomes: ${availability.available.join(", ")}` : undefined,
     availability.unavailable.length > 0 ? `Unavailable: ${availability.unavailable.map((item) => item.outcome).join(", ")}` : undefined,
     workflow.waitingMonitor ? `Waiting: monitor #${workflow.waitingMonitor.monitorId}` : undefined,
     ...formatWorkflowGraphWarnings(workflow),
     workflow.activeExecution ? `Work: ${workflow.activeExecution.subject} (${workflow.activeExecution.id})` : undefined,
+    `Goal: ${entry.prompt}`,
     state?.prompt ? `Instruction: ${state.prompt}` : undefined,
     workflow.lastTransition ? formatLastTransitionLines(workflow.lastTransition).join("\n") : undefined,
     ...extra,

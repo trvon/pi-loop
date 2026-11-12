@@ -174,7 +174,8 @@ describe("workflow activity presentation", () => {
   // Feature expectation: the renderer shows 12 visual lines, so actionable rows must precede long prose.
   it("keeps lease and outcomes inside the visible card when the instruction is long", () => {
     const entry = panelWorkflow();
-    entry.prompt = "Ship the migration ".repeat(8);
+    // Review finding: a long goal alone could consume the visible lines.
+    entry.prompt = "Ship the migration ".repeat(80);
     entry.workflow!.definition.states.implement!.prompt = "Follow every step carefully. ".repeat(40);
     vi.useFakeTimers();
     vi.setSystemTime(PANEL_NOW);
