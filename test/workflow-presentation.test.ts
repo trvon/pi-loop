@@ -1,10 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { Text } from "@earendil-works/pi-tui";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LoopEntry, WorkflowExecutionRecord } from "../src/types.js";
+import { setGlyphTier } from "../src/ui/card-style.js";
+import { panelLineText } from "../src/ui/progress-panel.js";
 import {
   deriveWorkflowActivity,
   formatCompactWorkflowDuration,
+  workflowCardPreview,
+  workflowDisplayDetails,
   workflowLeaseLabel,
+  workflowListPreview,
 } from "../src/ui/workflow-presentation.js";
+import { PANEL_NOW, panelWorkflow } from "./helpers/progress-panel-fixtures.js";
 
 const NOW = 10_000;
 
@@ -162,5 +169,101 @@ describe("workflow activity presentation", () => {
     expect(formatCompactWorkflowDuration(59_400)).toBe("59s");
     expect(formatCompactWorkflowDuration(90_000)).toBe("2m");
     expect(formatCompactWorkflowDuration(5_400_000)).toBe("2h");
+  });
+
+  // Feature expectation: the renderer shows 12 visual lines, so actionable rows must precede long prose.
+  it("keeps lease and outcomes inside the visible card when the instruction is long", () => {
+    const entry = panelWorkflow();
+    // Review finding: a long goal alone could consume the visible lines.
+    entry.prompt = "Ship the migration ".repeat(80);
+    entry.workflow!.definition.states.implement!.prompt = "Follow every step carefully. ".repeat(40);
+    vi.useFakeTimers();
+    vi.setSystemTime(PANEL_NOW);
+    let details: ReturnType<typeof workflowDisplayDetails>;
+    try {
+      details = workflowDisplayDetails({ entry, action: "inspect", tone: "info", summary: "Workflow #3" });
+    } finally {
+      vi.useRealTimers();
+    }
+    const rows = details.expanded ?? [];
+    const visibleRows = new Text(rows.join("\n"), 0, 0).render(80).slice(0, 12).join("\n");
+
+    expect(visibleRows).toContain("Lease: active until");
+    expect(visibleRows).toContain("Outcomes: pass, retry");
+    expect(visibleRows).toContain("State: implement");
+    // Nothing is dropped from the full card; only the order changes.
+    expect(rows.some((row) => row.startsWith("Instruction: Follow every step"))).toBe(true);
+    expect(rows.some((row) => row.startsWith("Goal: Ship the migration"))).toBe(true);
+    expect(rows.findIndex((row) => row.startsWith("Lease:"))).toBeLessThan(rows.findIndex((row) => row.startsWith("Instruction:")));
+  });
+
+  // Feature expectations: one dense preview line in portable glyphs.
+  describe("card preview", () => {
+    const preview = (entry: LoopEntry) => workflowCardPreview(entry, PANEL_NOW).map(panelLineText);
+    afterEach(() => setGlyphTier("unicode"));
+
+    it("shows trail, activity, attempt, and outcomes on one line", () => {
+      expect(preview(panelWorkflow())).toEqual([
+        "  ✓plan ▸ [implement] ▸ review ▸ done │ CLAIMED 4m │ try 1/3 │ » pass|retry",
+      ]);
+    });
+
+    it("keeps the same fields and the bracketed current state in every glyph tier", () => {
+      setGlyphTier("ascii");
+      expect(preview(panelWorkflow())).toEqual(["  +plan > [implement] > review > done | CLAIMED 4m | try 1/3 | >> pass|retry"]);
+      setGlyphTier("nerd");
+      const nerd = preview(panelWorkflow())[0] ?? "";
+      for (const field of ["plan", "[implement]", "review", "done", " │ CLAIMED 4m │ ", "try 1/3", "pass|retry"]) expect(nerd).toContain(field);
+    });
+
+    // Minimized from the generated tier-equivalence property: upper-casing the whole tag rewrote the monitor ID.
+    it("never changes the case of a monitor identifier", () => {
+      expect(preview(panelWorkflow({ waitingMonitor: "ᾀb" }))[0]).toContain(" │ WAITING MONITOR #ᾀb 2m │ ");
+    });
+
+    it("uses the summary's status word and flags work that still needs a claim", () => {
+      expect(preview(panelWorkflow({ lease: "none" }))[0]).toContain(" │ IDLE 5m (unclaimed) │ ");
+      expect(preview(panelWorkflow({ lease: "expired" }))[0]).toContain(" │ IDLE 1m (unclaimed) │ ");
+      expect(preview(panelWorkflow({ status: "paused" }))[0]).toContain(" │ PAUSED 2m │ ");
+      const entry = panelWorkflow({ lease: "none" });
+      const details = workflowDisplayDetails({ entry, action: "transition", tone: "success", summary: "Workflow #3 advanced" });
+      expect(details.summary).toContain(" · idle ");
+    });
+
+    it("marks revisited states and windows long definitions around the current state", () => {
+      const rework = panelWorkflow({ visited: ["plan", "review"] });
+      expect(preview(rework)[0]).toContain("✓plan ▸ [implement] ▸ ✓review ▸ done");
+      const states = Array.from({ length: 12 }, (_, index) => `s${index}`);
+      expect(preview(panelWorkflow({ states, current: "s7" }))[0]).toContain("… ▸ ✓s5 ▸ ✓s6 ▸ [s7] ▸ s8 ▸ s9 ▸ …");
+      const hostile = preview(panelWorkflow({ states: ["a\u001b[31m", "b\nc", "done"], current: "b\nc" })).join("\n");
+      expect(hostile).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    });
+
+    // Same defect as the panel trail: a current state missing from the definition was not drawn.
+    it("still brackets the current state when the definition does not contain it", () => {
+      const entry = panelWorkflow();
+      entry.workflow!.currentState = "orphaned";
+      expect(preview(entry)[0]).toContain("  [orphaned] ▸ ✓plan ▸ ");
+    });
+
+    it("gives several workflows a one-line roster and a single workflow its trail", () => {
+      const one = panelWorkflow({ id: "1" });
+      expect(workflowListPreview([one], PANEL_NOW)).toEqual(workflowCardPreview(one, PANEL_NOW));
+      const many = [1, 2, 3, 4, 5].map((id) => panelWorkflow({ id: String(id), lease: id === 2 ? "none" : "live" }));
+      expect(workflowListPreview(many, PANEL_NOW).map(panelLineText)).toEqual([
+        "  #1 [implement] CLAIMED 4m │ #2 [implement] IDLE 5m (unclaimed) │ #3 [implement] CLAIMED 4m │ +2",
+      ]);
+      expect(workflowListPreview([{ ...one, workflow: undefined }], PANEL_NOW)).toEqual([]);
+    });
+
+    it("is attached to workflow tool cards, read-only, and empty without a workflow", () => {
+      const entry = panelWorkflow();
+      const details = workflowDisplayDetails({ entry, action: "claim", tone: "success", summary: "Workflow #3 claimed" });
+      expect(details.preview?.map(panelLineText)[0]).toContain("[implement]");
+      const before = JSON.stringify(entry);
+      workflowCardPreview(entry, PANEL_NOW);
+      expect(JSON.stringify(entry)).toBe(before);
+      expect(workflowCardPreview({ ...entry, workflow: undefined }, PANEL_NOW)).toEqual([]);
+    });
   });
 });

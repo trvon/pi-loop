@@ -223,6 +223,28 @@ export async function deleteTask(
   return { applied: true, entry: existing, backlog };
 }
 
+/**
+ * Human-in-the-loop recovery: only an expired lease can be released, and the
+ * follow-up mutation still runs the ordinary claim checks, so a worker that
+ * reclaims in between wins and the operator action fails closed.
+ */
+export async function releaseExpiredTaskClaim(
+  ctx: TaskMutationContext,
+  params: { id: string; toPending?: boolean },
+): Promise<TaskMutationOutcome> {
+  const previous = ctx.taskStore.get(params.id);
+  if (!previous) return { applied: false, code: "not_found" };
+  const entry = ctx.taskStore.releaseExpiredClaim(params.id, { toPending: params.toPending });
+  if (!entry) {
+    const current = ctx.taskStore.get(params.id);
+    if (!current) return { applied: false, code: "not_found" };
+    return { applied: false, code: current.claim ? "claim_required" : "mutation_conflict", entry: current };
+  }
+  emitNativeTaskEvent(ctx.pi, "tasks:updated", entry, previous.status);
+  const backlog = await settle(ctx);
+  return { applied: true, entry, backlog };
+}
+
 export async function cleanTasks(ctx: TaskMutationContext): Promise<number> {
   const pruned = ctx.taskStore.pruneCompleted();
   await settle(ctx);

@@ -3,6 +3,79 @@ import { displayRows, type ToolDisplayDetails, type ToolDisplayTone } from "../t
 import type { LoopEntry } from "../types.js";
 import { formatWorkflowGraphWarnings } from "../workflow-graph.js";
 import { getWorkflowOutcomeAvailability, type WorkflowOutcomeAvailability } from "../workflow-reducer.js";
+import { activeCardGlyphs } from "./card-style.js";
+import { ACTIVITY_TONE, type PanelLine, type PanelSegment, plainPanelText, stateWindow, trailStateNames } from "./progress-panel.js";
+
+const CARD_STATE_WINDOW = 5;
+const LIST_PREVIEW_WORKFLOWS = 3;
+// Same status word as the summary line, so the two never disagree. Only our own
+// words are upper-cased; an identifier is information, not style.
+function activityTag(entry: LoopEntry, activity: WorkflowActivity): string {
+  const workflow = entry.workflow;
+  const monitor = workflow?.waitingMonitor ? ` MONITOR #${plainPanelText(workflow.waitingMonitor.monitorId)}` : "";
+  // Idle current work without a live lease is waiting on WorkflowClaim.
+  const unclaimed = activity.status === "idle" && workflow?.activeExecution?.status === "active" ? " (unclaimed)" : "";
+  return `${activity.status.toUpperCase()}${monitor} ${formatCompactWorkflowDuration(activity.activityMs)}${unclaimed}`;
+}
+
+/**
+ * One dense line for the collapsed tool card: the state trail, derived
+ * activity, attempt, and available outcomes. Presentation only; "claimed" is a
+ * live lease, not observed execution. Glyphs follow the active card style.
+ */
+export function workflowCardPreview(entry: LoopEntry, now = Date.now()): PanelLine[] {
+  const workflow = entry.workflow;
+  if (!workflow) return [];
+  const glyphs = activeCardGlyphs();
+  const activity = deriveWorkflowActivity(entry, now);
+  const tone = ACTIVITY_TONE[activity.status];
+  const window = stateWindow(trailStateNames(workflow), workflow.currentState, CARD_STATE_WINDOW);
+  const hop: PanelSegment = { text: glyphs.hop, tone: "dim" };
+  const field: PanelSegment = { text: glyphs.field, tone: "dim" };
+  const line: PanelLine = [{ text: "  ", tone: "dim" }];
+  if (window.before > 0) line.push({ text: glyphs.ellipsis, tone: "dim" }, hop);
+  window.names.forEach((name, index) => {
+    if (index > 0) line.push(hop);
+    const label = plainPanelText(name);
+    if (name === workflow.currentState) line.push({ text: `${glyphs.currentOpen}${label}${glyphs.currentClose}`, tone: "accent" });
+    // Visited is marked explicitly: rework can revisit a state left of one already done.
+    else if ((workflow.attemptsByState[name] ?? 0) > 0) line.push({ text: `${glyphs.visited}${label}`, tone: "success" });
+    else line.push({ text: label, tone: "dim" });
+  });
+  if (window.after > 0) line.push(hop, { text: glyphs.ellipsis, tone: "dim" });
+
+  line.push(field, { text: activityTag(entry, activity), tone });
+  const state = workflow.definition.states[workflow.currentState];
+  if (state && !state.terminal) line.push(field, { text: `try ${workflowAttemptLabel(entry)}`, tone: "muted" });
+  const outcomes = getWorkflowOutcomeAvailability(workflow).available;
+  if (outcomes.length > 0) {
+    line.push(field, { text: `${glyphs.next}${outcomes.map(plainPanelText).join(glyphs.outcomeJoin)}`, tone: "muted" });
+  }
+  return [line];
+}
+
+/** Collapsed LoopList preview: the full trail for one workflow, a one-line roster for several. */
+export function workflowListPreview(entries: readonly LoopEntry[], now = Date.now()): PanelLine[] {
+  const workflows = entries.filter((entry) => entry.workflow !== undefined);
+  const only = workflows[0];
+  if (workflows.length === 0) return [];
+  if (workflows.length === 1 && only) return workflowCardPreview(only, now);
+  const glyphs = activeCardGlyphs();
+  const line: PanelLine = [{ text: "  ", tone: "dim" }];
+  workflows.slice(0, LIST_PREVIEW_WORKFLOWS).forEach((entry, index) => {
+    const activity = deriveWorkflowActivity(entry, now);
+    if (index > 0) line.push({ text: glyphs.field, tone: "dim" });
+    line.push(
+      { text: `#${entry.id} `, tone: "dim" },
+      { text: `${glyphs.currentOpen}${plainPanelText(entry.workflow?.currentState ?? "?")}${glyphs.currentClose}`, tone: "accent" },
+      { text: ` ${activityTag(entry, activity)}`, tone: ACTIVITY_TONE[activity.status] },
+    );
+  });
+  if (workflows.length > LIST_PREVIEW_WORKFLOWS) {
+    line.push({ text: `${glyphs.field}+${workflows.length - LIST_PREVIEW_WORKFLOWS}`, tone: "dim" });
+  }
+  return [line];
+}
 
 export type WorkflowActivityStatus = "claimed" | "waiting" | "paused" | "idle" | "stopped";
 
@@ -25,11 +98,17 @@ function boundedAge(end: number, start: number): number {
   return Math.max(0, end - start);
 }
 
+// Rounds to the nearest unit, but carries into the next unit instead of
+// printing an overflowed label such as "60s", "60m", or "168h".
 export function formatCompactWorkflowDuration(ms: number): string {
   const bounded = Math.max(0, ms);
-  if (bounded < 60_000) return `${Math.round(bounded / 1_000)}s`;
-  if (bounded < 3_600_000) return `${Math.round(bounded / 60_000)}m`;
-  return `${Math.round(bounded / 3_600_000)}h`;
+  const seconds = Math.round(bounded / 1_000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(bounded / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(bounded / 3_600_000);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(bounded / 86_400_000)}d`;
 }
 
 export function deriveWorkflowActivity(entry: LoopEntry, now = Date.now()): WorkflowActivity {
@@ -139,21 +218,23 @@ export function workflowDisplayDetails({
   const activity = deriveWorkflowActivity(entry, now);
   const timedSummary = `${summary} · ${activity.status} ${formatCompactWorkflowDuration(activity.activityMs)} · age ${formatCompactWorkflowDuration(activity.workflowAgeMs)}`;
   const lines = [
-    `Goal: ${entry.prompt}`,
     ...workflowTimingLines(entry, now),
     `State: ${workflow.currentState} · revision ${workflow.definitionRevision} · transition ${workflow.transitionSeq}`,
     `Attempt: ${workflowAttemptLabel(entry)}`,
-    ...formatWorkflowGraphWarnings(workflow),
-    state?.prompt ? `Instruction: ${state.prompt}` : undefined,
-    workflow.activeExecution ? `Work: ${workflow.activeExecution.subject} (${workflow.activeExecution.id})` : undefined,
+    // The renderer caps expanded output, so short actionable rows precede the
+    // free-form prose (goal, instruction) that can wrap past the cap.
     `Lease: ${workflowLeaseLabel(entry, now)}`,
     availability.available.length > 0 ? `Outcomes: ${availability.available.join(", ")}` : undefined,
     availability.unavailable.length > 0 ? `Unavailable: ${availability.unavailable.map((item) => item.outcome).join(", ")}` : undefined,
     workflow.waitingMonitor ? `Waiting: monitor #${workflow.waitingMonitor.monitorId}` : undefined,
+    ...formatWorkflowGraphWarnings(workflow),
+    workflow.activeExecution ? `Work: ${workflow.activeExecution.subject} (${workflow.activeExecution.id})` : undefined,
+    `Goal: ${entry.prompt}`,
+    state?.prompt ? `Instruction: ${state.prompt}` : undefined,
     workflow.lastTransition ? formatLastTransitionLines(workflow.lastTransition).join("\n") : undefined,
     ...extra,
   ].filter((line): line is string => line !== undefined);
-  return { kind: "workflow", action, tone, summary: timedSummary, expanded: displayRows(lines, 15) };
+  return { kind: "workflow", action, tone, summary: timedSummary, expanded: displayRows(lines, 15), preview: workflowCardPreview(entry, now) };
 }
 
 export function formatWorkflowInspection(entry: LoopEntry): string {

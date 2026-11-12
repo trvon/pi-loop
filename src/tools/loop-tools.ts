@@ -7,7 +7,7 @@ import type { OrchestrationCancellation } from "../runtime/subagent-orchestratio
 import type { LoopEntry, Trigger } from "../types.js";
 import { orchestrationCancellationMessage, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
-import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "../ui/workflow-presentation.js";
+import { deriveWorkflowActivity, formatCompactWorkflowDuration, workflowListPreview } from "../ui/workflow-presentation.js";
 import { getActiveWorkflowStateLoop } from "../workflow-reducer.js";
 import { displayRows, textResult } from "./tool-result.js";
 import { formatWorkflowSummary } from "./workflow-tools.js";
@@ -451,6 +451,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
         tone: "info",
         summary: `${kinds.join(" · ")} · ${loops.filter((entry) => entry.status === "active").length} active`,
         expanded: displayRows(lines, workflowCount > 0 ? 16 : 8),
+        preview: workflowListPreview(loops, now),
       }));
     },
   });

@@ -8,8 +8,10 @@ import { isValidCronExpression, parseInterval } from "../loop-parse.js";
 import type { LoopStorageScope } from "../runtime/scope.js";
 import type { OrchestrationCancellation } from "../runtime/subagent-orchestration-runtime.js";
 import type { DynamicLoopState, LoopEntry, Trigger } from "../types.js";
+import { cardGlyphs, type GlyphTier, getGlyphTier, parseGlyphTier, setGlyphTier } from "../ui/card-style.js";
 import { canResumeFromInspection, formatLoopLifecycle } from "../ui/lifecycle-presentation.js";
 import { formatOrchestrationInspection, orchestrationCancellationMessage, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
+import type { ProgressPanelMode } from "../ui/progress-panel-overlay.js";
 import { formatWorkflowInspection, workflowActivityLabel } from "../ui/workflow-presentation.js";
 
 interface LoopStoreLike {
@@ -44,10 +46,14 @@ export interface LoopCommandOptions {
   maybeBootstrapTaskLoop?: (entry: LoopEntry) => Promise<boolean>;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
   cancelOrchestration?: (id: string, action: "pause" | "delete") => Promise<OrchestrationCancellation>;
+  getPanelMode?: () => ProgressPanelMode;
+  setPanelMode?: (mode: ProgressPanelMode) => void;
 }
 
 type LoopCommandRoute =
   | { type: "menu" }
+  | { type: "panel"; mode?: ProgressPanelMode; invalid?: string }
+  | { type: "glyphs"; tier?: GlyphTier }
   | { type: "event"; source: string; prompt: string }
   | { type: "cron"; interval: string; prompt: string; notifyEvery: boolean }
   | { type: "invalid-cron"; interval: string }
@@ -66,10 +72,24 @@ function parseLoopCommandRoute(input: string): LoopCommandRoute {
   const trimmed = input.trim();
   if (!trimmed) return { type: "menu" };
 
+  // Reserved before goal parsing so "/loop panel" never creates a dynamic loop.
+  const panelMatch = trimmed.match(/^panel(?:\s+(\S.*))?$/i);
+  if (panelMatch) {
+    const arg = panelMatch[1]?.trim().toLowerCase();
+    if (arg === undefined) return { type: "panel" };
+    if (arg === "on" || arg === "auto") return { type: "panel", mode: "auto" };
+    if (arg === "off") return { type: "panel", mode: "off" };
+    return { type: "panel", invalid: arg };
+  }
+
   const eventMatch = trimmed.match(/^(?:event|when)\s+(\S+)\s+(.+)$/i);
   if (eventMatch?.[1] && eventMatch[2]) {
     return { type: "event", source: eventMatch[1], prompt: eventMatch[2].trim() };
   }
+
+  // Reserved like "panel": a font check must never create a dynamic loop.
+  const glyphsMatch = trimmed.match(/^glyphs(?:\s+(\S.*))?$/i);
+  if (glyphsMatch) return { type: "glyphs", tier: parseGlyphTier(glyphsMatch[1]) };
 
   const parts = trimmed.split(/\s+/);
   if (parts.length > 5) {
@@ -252,7 +272,7 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
   }
 
   pi.registerCommand("loop", {
-    description: "Create a loop. Prefix with --expires-in <duration> to override its lifetime; then use [interval] [prompt], event <source> <prompt>, or <goal> for a dynamic goal loop.",
+    description: "Create a loop, toggle the side panel with `panel [on|off]`, or pick card glyphs with `glyphs [nerd|unicode|ascii]`. Prefix with --expires-in <duration> to override its lifetime; then use [interval] [prompt], event <source> <prompt>, or <goal> for a dynamic goal loop.",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const ui = ctx.ui;
       const expiry = extractExpiryOverride(args);
@@ -275,6 +295,41 @@ export function registerLoopCommand(options: LoopCommandOptions): void {
         if (choice.startsWith("Create event")) return eventLoop(ui, undefined, undefined, expiry.expiresIn);
         if (choice.startsWith("View loops")) return viewLoops(ui);
         return settings(ui);
+      }
+
+      if (route.type === "panel") {
+        if (route.invalid !== undefined) {
+          ui.notify("Use /loop panel, /loop panel on, or /loop panel off.", "warning");
+          return;
+        }
+        if (!options.getPanelMode || !options.setPanelMode) {
+          ui.notify("The progress panel is unavailable in this runtime.", "warning");
+          return;
+        }
+        const mode = route.mode ?? (options.getPanelMode() === "off" ? "auto" : "off");
+        options.setPanelMode(mode);
+        ui.notify(
+          mode === "off"
+            ? "Progress panel hidden. /loop panel on shows it again."
+            : "Progress panel on: shown on wide terminals while a workflow, orchestration, or task is in progress.",
+          "info",
+        );
+        return;
+      }
+
+      if (route.type === "glyphs") {
+        if (!route.tier) {
+          ui.notify(`Card glyphs: ${getGlyphTier()}. Use /loop glyphs nerd, unicode, or ascii.`, "info");
+          return;
+        }
+        setGlyphTier(route.tier);
+        const glyphs = cardGlyphs(route.tier);
+        // The sample lets the operator see at once whether the font draws the set.
+        ui.notify(
+          `Card glyphs: ${route.tier} — ${glyphs.visited}plan${glyphs.hop}${glyphs.currentOpen}build${glyphs.currentClose}${glyphs.field}${glyphs.next}pass${glyphs.outcomeJoin}retry${glyphs.field}${glyphs.taskActive}${glyphs.taskPending}. Applies to new cards.`,
+          "info",
+        );
+        return;
       }
 
       if (route.type === "event") return eventLoop(ui, route.prompt, route.source, expiry.expiresIn);

@@ -4,6 +4,7 @@ import { LoopStore } from "../src/store.js";
 import { reduceTaskState, type TaskReducerEvent, type TaskReducerState } from "../src/task-reducer.js";
 import { TaskStore } from "../src/task-store.js";
 import type { WorkflowDefinition } from "../src/types.js";
+import { PANEL_WIDTH, renderProgressPanel } from "../src/ui/progress-panel-overlay.js";
 import { createWorkflowRun, transitionWorkflowRun } from "../src/workflow-reducer.js";
 
 const cronCases = [
@@ -141,10 +142,40 @@ export function runStoreReadWorkload(): number {
   return loops.length + tasks.length + Number(loops.at(-1)?.id ?? 0) + Number(tasks.at(-1)?.id ?? 0);
 }
 
+// Worst realistic panel frame: more workflows than are detailed, and a full task store.
+const panelLoopStore = new LoopStore();
+for (let index = 0; index < 4; index++) {
+  panelLoopStore.create({ type: "dynamic" }, `panel-workflow-${index}`, {
+    recurring: true,
+    workflow: {
+      version: 1,
+      initialState: "s0",
+      states: Object.fromEntries(Array.from({ length: 12 }, (_, state) => [
+        `s${state}`,
+        state === 11
+          ? { prompt: "Done.", terminal: "completed" as const }
+          : { prompt: `Phase ${state}.`, task: { subject: `phase-${state}`, description: "benchmark" }, on: { next: `s${state + 1}` } },
+      ])),
+    },
+  });
+}
+const panelTheme = { fg: (_tone: string, text: string) => text } as Parameters<typeof renderProgressPanel>[0];
+
+/** One side-panel frame: store reads plus layout and framing, as on each repaint. */
+export function runProgressPanelWorkload(): number {
+  const lines = renderProgressPanel(
+    panelTheme,
+    { loops: panelLoopStore.list(), tasks: taskStore.list(), now: 1_000_000 },
+    PANEL_WIDTH,
+  );
+  return lines.reduce((sum, line) => sum + line.length, lines.length);
+}
+
 export const coreWorkloads = {
   cron: runCronWorkload,
   loopReducer: runLoopReducerWorkload,
   taskReducer: runTaskReducerWorkload,
   workflow: runWorkflowWorkload,
   storeReads: runStoreReadWorkload,
+  progressPanel: runProgressPanelWorkload,
 } as const;

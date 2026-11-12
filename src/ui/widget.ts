@@ -1,8 +1,10 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { MonitorManager } from "../monitor-manager.js";
 import type { LoopStore } from "../store.js";
+import type { TaskEntry } from "../task-types.js";
 import type { LoopEntry } from "../types.js";
 import { orchestrationWidgetSummary } from "./orchestration-presentation.js";
+import { type ProgressPanelMode, ProgressPanelOverlay } from "./progress-panel-overlay.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "./workflow-presentation.js";
 
 interface TaskSummary {
@@ -14,34 +16,67 @@ export class LoopWidget {
   private uiCtx: ExtensionUIContext | undefined;
   private taskSummaryProvider: (() => TaskSummary) | undefined;
   private activityRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  // pi requests a full render on every setStatus, so identical text is skipped.
+  // `null` means "nothing painted yet" and is distinct from a cleared status.
+  private lastStatus: string | undefined | null = null;
+  private taskListProvider: (() => readonly TaskEntry[]) | undefined;
+  private readonly panel: ProgressPanelOverlay;
 
   constructor(
     private store: LoopStore,
     private monitorManager: MonitorManager,
-  ) {}
+    panelMode: ProgressPanelMode = "auto",
+  ) {
+    this.panel = new ProgressPanelOverlay(panelMode);
+  }
 
   setUICtx(ctx: ExtensionUIContext) {
+    // Hooks rebind the same UI every turn; only a different UI needs a repaint.
+    if (ctx !== this.uiCtx) this.lastStatus = null;
     this.uiCtx = ctx;
+    this.panel.setUI(ctx);
   }
 
   setStore(store: LoopStore) {
     this.clearActivityRefresh();
     this.store = store;
+    this.lastStatus = null;
   }
 
   setTaskSummaryProvider(provider: (() => TaskSummary) | undefined) {
     this.taskSummaryProvider = provider;
   }
 
+  /** Standalone tasks for the side panel; absent while an external provider owns tasks. */
+  setTaskListProvider(provider: (() => readonly TaskEntry[]) | undefined) {
+    this.taskListProvider = provider;
+  }
+
+  getPanelMode(): ProgressPanelMode {
+    return this.panel.getMode();
+  }
+
+  setPanelMode(mode: ProgressPanelMode) {
+    this.panel.setMode(mode);
+    this.update();
+  }
+
   update() {
     if (!this.uiCtx) return;
     this.clearActivityRefresh();
-    this.uiCtx.setStatus("loops", this.computeStatus());
-    this.scheduleActivityRefresh();
+    const entries = this.store.list();
+    const status = this.computeStatus(entries);
+    if (status !== this.lastStatus) {
+      this.uiCtx.setStatus("loops", status);
+      this.lastStatus = status;
+    }
+    const tasks = this.taskListProvider?.() ?? [];
+    this.panel.sync({ loops: entries, tasks, now: Date.now() });
+    this.scheduleActivityRefresh(entries, tasks);
   }
 
-  private computeStatus(): string | undefined {
-    const loops = this.store.list().filter(isStatusVisibleLoop);
+  private computeStatus(entries: LoopEntry[]): string | undefined {
+    const loops = entries.filter(isStatusVisibleLoop);
     const workflows = loops.filter((loop) => loop.workflow !== undefined);
     const orchestrations = loops.filter((loop) => loop.orchestration !== undefined);
     const ordinaryLoops = loops.filter((loop) => loop.workflow === undefined && loop.orchestration === undefined);
@@ -81,13 +116,25 @@ export class LoopWidget {
   dispose() {
     this.clearActivityRefresh();
     this.uiCtx?.setStatus("loops", undefined);
+    this.lastStatus = null;
+    this.panel.dispose();
   }
 
-  private scheduleActivityRefresh() {
-    const workflows = this.store.list().filter((entry) => entry.workflow && isStatusVisibleLoop(entry));
-    const workflow = workflows.length === 1 ? workflows[0]?.workflow : undefined;
-    const expiresAt = workflow?.activeExecution?.lease?.expiresAt;
-    if (expiresAt === undefined || expiresAt <= Date.now()) return;
+  private scheduleActivityRefresh(entries: LoopEntry[], tasks: readonly TaskEntry[]) {
+    // Both the workflow activity and a task's stale-claim flag flip at a lease
+    // expiry, so repaint at the earliest live one of either kind.
+    const now = Date.now();
+    let expiresAt: number | undefined;
+    const consider = (leaseExpiry: number | undefined) => {
+      if (leaseExpiry !== undefined && leaseExpiry > now && (expiresAt === undefined || leaseExpiry < expiresAt)) expiresAt = leaseExpiry;
+    };
+    for (const entry of entries) {
+      if (entry.workflow && isStatusVisibleLoop(entry)) consider(entry.workflow.activeExecution?.lease?.expiresAt);
+    }
+    for (const task of tasks) {
+      if (task.status === "in_progress") consider(task.claim?.leaseExpiresAt);
+    }
+    if (expiresAt === undefined) return;
     this.activityRefreshTimer = setTimeout(() => {
       this.activityRefreshTimer = undefined;
       this.update();

@@ -214,7 +214,7 @@ npm run bench:compare
 npm run profile:core
 ```
 
-Core workloads live in `benchmarks/workloads.ts`. `bench:baseline` writes `.artifacts/benchmarks/baseline.json`; `bench:compare` reports throughput changes. Load `.cpuprofile` files in a V8-compatible viewer. Compare only the same machine, Node version, architecture, timezone, and power state.
+Core workloads live in `benchmarks/workloads.ts`. The `progressPanel` workload measures one side-panel frame (store reads, layout, framing) over four twelve-state workflows and 200 tasks. `bench:baseline` writes `.artifacts/benchmarks/baseline.json`; `bench:compare` reports throughput changes. Load `.cpuprofile` files in a V8-compatible viewer. Compare only the same machine, Node version, architecture, timezone, and power state.
 
 ### Tool context
 

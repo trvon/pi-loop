@@ -1,9 +1,15 @@
 import { type AgentToolResult, keyHint, type Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { ToolDisplayDetails } from "../tools/tool-result.js";
+import type { PanelLine } from "./progress-panel.js";
 
 type ToolCallArgs = object;
 const MAX_EXPANDED_VISUAL_LINES = 12;
+// Collapsed cards stay at two lines: the summary and one dense preview.
+const MAX_PREVIEW_LINES = 1;
+const PREVIEW_TONES = new Set(["accent", "success", "warning", "error", "muted", "dim", "text"]);
+// "Label: value" rows read faster when only the label recedes.
+const LABELLED_ROW = /^([A-Z][A-Za-z ]{0,24}:)( .*)?$/s;
 
 function singleLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
@@ -14,12 +20,14 @@ class BoundedToolText extends Text {
     private readonly summary: string,
     private readonly expandedText?: string,
     private readonly overflowTemplate?: string,
+    private readonly previewLines: string[] = [],
   ) {
     super("", 0, 0);
   }
 
   override render(width: number): string[] {
     const lines = [truncateToWidth(this.summary, width)];
+    for (const line of this.previewLines) lines.push(truncateToWidth(line, width));
     if (!this.expandedText) return lines;
     const visualLines = new Text(this.expandedText, 0, 0).render(width);
     lines.push(...visualLines.slice(0, MAX_EXPANDED_VISUAL_LINES));
@@ -56,6 +64,34 @@ function toneAppearance(tone: ToolDisplayDetails["tone"]): { color: "success" | 
   }
 }
 
+const CONTROL_BYTES = /[\u0000-\u001f\u007f-\u009f]/g;
+
+function isPreview(preview: unknown): preview is PanelLine[] {
+  return Array.isArray(preview) && preview.length <= MAX_PREVIEW_LINES && preview.every((line) =>
+    Array.isArray(line) && line.every((segment) =>
+      typeof segment?.text === "string" && PREVIEW_TONES.has(segment.tone)));
+}
+
+// Details are persisted with the session, so a preview from an older or foreign
+// version is untrusted: any malformed line or segment, or more lines than the
+// card contract allows, rejects the whole preview (summary alone), and control
+// bytes never reach the terminal.
+function stylePreview(preview: unknown, theme: Theme): string[] {
+  if (!isPreview(preview)) return [];
+  const lines: string[] = [];
+  for (const line of preview) {
+    const text = line.map((segment) => theme.fg(segment.tone, segment.text.replace(CONTROL_BYTES, " "))).join("");
+    if (line.some((segment) => segment.text.trim())) lines.push(text);
+  }
+  return lines;
+}
+
+function styleExpandedRow(line: string, theme: Theme): string {
+  const match = LABELLED_ROW.exec(line);
+  if (!match?.[1]) return theme.fg("dim", line);
+  return theme.fg("muted", match[1]) + (match[2] ?? "");
+}
+
 export function renderToolResult(
   result: AgentToolResult<unknown>,
   { expanded, isPartial }: ToolRenderResultOptions,
@@ -81,7 +117,7 @@ export function renderToolResult(
     summary += theme.fg("dim", ` · ${keyHint("app.tools.expand", "to expand")}`);
   }
   const expandedText = expanded && details.expanded?.length
-    ? details.expanded.map((line) => theme.fg("dim", line)).join("\n")
+    ? details.expanded.map((line) => styleExpandedRow(line, theme)).join("\n")
     : undefined;
-  return new BoundedToolText(summary, expandedText, theme.fg("dim", "__OVERFLOW__"));
+  return new BoundedToolText(summary, expandedText, theme.fg("dim", "__OVERFLOW__"), stylePreview(details.preview, theme));
 }

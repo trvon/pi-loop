@@ -127,6 +127,27 @@ export class TaskStore extends ReducerBackedStore<TaskEntry, TaskReducerState, T
     });
   }
 
+  /**
+   * Operator recovery for a dead owner: clears a claim only once its lease has
+   * expired, so a live owner's authority is never overridden.
+   */
+  releaseExpiredClaim(id: string, options: { toPending?: boolean; now?: number } = {}): TaskEntry | undefined {
+    return this.withLock(() => {
+      const current = this.entries.get(id);
+      const now = options.now ?? Date.now();
+      if (!current?.claim || current.claim.leaseExpiresAt > now) return undefined;
+      const entry: TaskEntry = {
+        ...current,
+        status: options.toPending && current.status === "in_progress" ? "pending" : current.status,
+        updatedAt: now,
+        revision: (current.revision ?? 0) + 1,
+        claim: undefined,
+      };
+      this.entries.set(id, entry);
+      return entry;
+    });
+  }
+
   start(id: string): TaskEntry | undefined {
     return this.withLock(() => {
       const entry = this.entries.get(id);
