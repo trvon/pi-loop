@@ -4,7 +4,7 @@ import type { LoopEntry } from "../types.js";
 import { formatWorkflowGraphWarnings } from "../workflow-graph.js";
 import { getWorkflowOutcomeAvailability, type WorkflowOutcomeAvailability } from "../workflow-reducer.js";
 import { activeCardGlyphs } from "./card-style.js";
-import { ACTIVITY_TONE, type PanelLine, type PanelSegment, plainPanelText, stateWindow } from "./progress-panel.js";
+import { ACTIVITY_TONE, type PanelLine, type PanelSegment, plainPanelText, stateWindow, trailStateNames } from "./progress-panel.js";
 
 const CARD_STATE_WINDOW = 5;
 const LIST_PREVIEW_WORKFLOWS = 3;
@@ -29,7 +29,7 @@ export function workflowCardPreview(entry: LoopEntry, now = Date.now()): PanelLi
   const glyphs = activeCardGlyphs();
   const activity = deriveWorkflowActivity(entry, now);
   const tone = ACTIVITY_TONE[activity.status];
-  const window = stateWindow(Object.keys(workflow.definition.states), workflow.currentState, CARD_STATE_WINDOW);
+  const window = stateWindow(trailStateNames(workflow), workflow.currentState, CARD_STATE_WINDOW);
   const hop: PanelSegment = { text: glyphs.hop, tone: "dim" };
   const field: PanelSegment = { text: glyphs.field, tone: "dim" };
   const line: PanelLine = [{ text: "  ", tone: "dim" }];

@@ -239,6 +239,13 @@ describe("workflow activity presentation", () => {
       expect(hostile).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
     });
 
+    // Same defect as the panel trail: a current state missing from the definition was not drawn.
+    it("still brackets the current state when the definition does not contain it", () => {
+      const entry = panelWorkflow();
+      entry.workflow!.currentState = "orphaned";
+      expect(preview(entry)[0]).toContain("  [orphaned] ▸ ✓plan ▸ ");
+    });
+
     it("gives several workflows a one-line roster and a single workflow its trail", () => {
       const one = panelWorkflow({ id: "1" });
       expect(workflowListPreview([one], PANEL_NOW)).toEqual(workflowCardPreview(one, PANEL_NOW));

@@ -174,9 +174,13 @@ describe("progress panel properties", () => {
         try {
           for (const tier of ["unicode", "nerd", "ascii"] as const) {
             setGlyphTier(tier);
-            const lines = workflowCardPreview(entry, now).map(panelLineText);
+            const preview = workflowCardPreview(entry, now);
+            const lines = preview.map(panelLineText);
             expect(lines).toHaveLength(1);
             expect(lines[0]).not.toMatch(CONTROL);
+            // Exactly one bracketed current state, even for dangling names.
+            const current = (preview[0] ?? []).filter((segment) => segment.tone === "accent" && /^\[.*\]$/s.test(segment.text));
+            expect(current).toHaveLength(1);
             reference ??= fields(lines[0] ?? "");
             expect(fields(lines[0] ?? "")).toBe(reference);
           }
