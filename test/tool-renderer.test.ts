@@ -41,10 +41,10 @@ describe("Pi tool renderer", () => {
 
   // Feature expectations: cards show bounded structure without expanding.
   it("shows a bounded, width-safe preview under the summary while collapsed", () => {
-    const preview = Array.from({ length: 7 }, (_, index) => [
+    const preview = [[
       { text: "  ✓ ", tone: "success" as const },
-      { text: `state-${index} ${"x".repeat(60)}`, tone: "muted" as const },
-    ]);
+      { text: `state-0 ${"x".repeat(60)}`, tone: "muted" as const },
+    ]];
     const result = {
       content: [{ type: "text" as const, text: "model text" }],
       details: { kind: "workflow" as const, action: "claim", tone: "success" as const, summary: "Workflow #1 claimed", expanded: ["Lease: live"], expandable: true, preview },
@@ -79,6 +79,8 @@ describe("Pi tool renderer", () => {
       [[ok], "not-a-line"],
       [[ok, null]],
       [[ok, { text: "fine", tone: "blink" }]],
+      // Review finding: more lines than the one-line contract is foreign metadata, not something to slice.
+      [[ok], [ok]],
     ];
     for (const malformed of malformedPreviews) {
       const lines = renderToolResult({ content: [], details: { ...base, preview: malformed } } as any, { expanded: false, isPartial: false }, theme).render(40);
