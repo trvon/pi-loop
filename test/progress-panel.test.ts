@@ -91,6 +91,29 @@ describe("progress panel layout", () => {
     expect(lines.filter((line) => /^ {2}[✓○▶] /.test(line))).toHaveLength(6);
   });
 
+  // Review finding: a current state missing from the definition rendered no current row at all.
+  it("still shows the current state when the definition does not contain it", () => {
+    const entry = panelWorkflow();
+    entry.workflow!.currentState = "orphaned";
+    const lines = text({ loops: [entry], tasks: [], now });
+    expect(lines.filter((line) => line.startsWith("  ▶ "))).toEqual(["  ▶ orphaned · try 1"]);
+    expect(lines).toContain("  ✓ plan");
+
+    const long = panelWorkflow({ states: Array.from({ length: 12 }, (_, index) => `s${index}`) });
+    long.workflow!.currentState = "orphaned";
+    expect(text({ loops: [long], tasks: [], now }).filter((line) => line.startsWith("  ▶ "))).toHaveLength(1);
+  });
+
+  // Review finding: the first attempt of a state without maxAttempts showed no attempt.
+  it("shows the attempt for every current state, including an unbounded first attempt", () => {
+    const entry = panelWorkflow();
+    delete entry.workflow!.definition.states.implement!.maxAttempts;
+    expect(text({ loops: [entry], tasks: [], now })).toContain("  ▶ implement · try 1");
+    entry.workflow!.attemptsByState.implement = 4;
+    expect(text({ loops: [entry], tasks: [], now })).toContain("  ▶ implement · try 4");
+    expect(text({ loops: [panelWorkflow()], tasks: [], now })).toContain("  ▶ implement · try 1/3");
+  });
+
   it("shows task progress with in-progress work first, stale claims flagged, and overflow", () => {
     const tasks = [
       panelTask("1", "completed"),

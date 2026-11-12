@@ -83,6 +83,20 @@ describe("progress panel properties", () => {
     );
   });
 
+  it("shows exactly one current-state row per detailed workflow, even for dangling state names", () => {
+    fc.assert(
+      fc.property(fc.array(workflow, { maxLength: 6 }), timestamp, (loops, now) => {
+        const shown = loops.filter((entry) => entry.status === "active" || entry.status === "paused").length;
+        const current = layoutProgressPanel({ loops, tasks: [], now }, 80, 1_000)
+          .map(panelLineText)
+          .filter((line) => line.startsWith("  ▶ "));
+        expect(current).toHaveLength(Math.min(shown, 2));
+        for (const line of current) expect(line).toMatch(/ · try \d+(\/\d+)?$/);
+      }),
+      propertyOptions(300),
+    );
+  });
+
   it("keeps task rows and controller rows on their own authority", () => {
     fc.assert(
       fc.property(input, (snapshot) => {

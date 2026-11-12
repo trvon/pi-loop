@@ -117,20 +117,27 @@ export function stateWindow(names: string[], current: string, size = MAX_STATE_R
   return { names: names.slice(start, end), before: start, after: names.length - end };
 }
 
+/**
+ * State names for a trail. A corrupt or mid-revision snapshot can name a
+ * current state the definition lacks; it is listed first so the active work
+ * never disappears from the trail.
+ */
+export function trailStateNames(workflow: NonNullable<LoopEntry["workflow"]>): string[] {
+  const names = Object.keys(workflow.definition.states);
+  return names.includes(workflow.currentState) ? names : [workflow.currentState, ...names];
+}
+
 function workflowLines(entry: LoopEntry, now: number): PanelLine[] {
   const workflow = entry.workflow;
   if (!workflow) return [];
   const activity = deriveWorkflowActivity(entry, now);
   const lines: PanelLine[] = [[seg("◆ ", "accent"), seg(`#${entry.id} `, "dim"), seg(plainPanelText(entry.prompt))]];
-  const window = stateWindow(Object.keys(workflow.definition.states), workflow.currentState);
+  const window = stateWindow(trailStateNames(workflow), workflow.currentState);
   if (window.before > 0) lines.push([seg(`  ⋮ ${window.before} earlier`, "dim")]);
   for (const name of window.names) {
     const label = plainPanelText(name);
     if (name === workflow.currentState) {
-      const state = workflow.definition.states[name];
-      const attempt = state?.maxAttempts !== undefined || (workflow.attemptsByState[name] ?? 1) > 1
-        ? ` · try ${workflowAttemptLabel(entry)}`
-        : "";
+      const attempt = ` · try ${workflowAttemptLabel(entry)}`;
       lines.push([seg("  ▶ ", ACTIVITY_TONE[activity.status]), seg(label, "accent"), seg(attempt, "dim")]);
       const waiting = workflow.waitingMonitor ? ` monitor #${plainPanelText(workflow.waitingMonitor.monitorId)}` : "";
       lines.push([seg(
