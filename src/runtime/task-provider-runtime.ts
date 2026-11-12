@@ -170,6 +170,9 @@ export function createTaskProviderRuntime(options: TaskProviderRuntimeOptions): 
     }
 
     nativeToolsRegistered = true;
+    // The first paint ran before this store existed; persisted tasks only
+    // become listable now, so the status and panel need one repaint.
+    updateWidget();
     notifyReady();
     debug?.(`native task tools registered on ${trigger} (pi-tasks not detected)`);
     return true;

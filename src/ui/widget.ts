@@ -70,8 +70,9 @@ export class LoopWidget {
       this.uiCtx.setStatus("loops", status);
       this.lastStatus = status;
     }
-    this.panel.sync({ loops: entries, tasks: this.taskListProvider?.() ?? [], now: Date.now() });
-    this.scheduleActivityRefresh(entries);
+    const tasks = this.taskListProvider?.() ?? [];
+    this.panel.sync({ loops: entries, tasks, now: Date.now() });
+    this.scheduleActivityRefresh(entries, tasks);
   }
 
   private computeStatus(entries: LoopEntry[]): string | undefined {
@@ -119,13 +120,19 @@ export class LoopWidget {
     this.panel.dispose();
   }
 
-  private scheduleActivityRefresh(entries: LoopEntry[]) {
-    // The panel shows every workflow, so repaint at the earliest live lease expiry.
+  private scheduleActivityRefresh(entries: LoopEntry[], tasks: readonly TaskEntry[]) {
+    // Both the workflow activity and a task's stale-claim flag flip at a lease
+    // expiry, so repaint at the earliest live one of either kind.
     const now = Date.now();
     let expiresAt: number | undefined;
-    for (const entry of entries) {
-      const leaseExpiry = entry.workflow && isStatusVisibleLoop(entry) ? entry.workflow.activeExecution?.lease?.expiresAt : undefined;
+    const consider = (leaseExpiry: number | undefined) => {
       if (leaseExpiry !== undefined && leaseExpiry > now && (expiresAt === undefined || leaseExpiry < expiresAt)) expiresAt = leaseExpiry;
+    };
+    for (const entry of entries) {
+      if (entry.workflow && isStatusVisibleLoop(entry)) consider(entry.workflow.activeExecution?.lease?.expiresAt);
+    }
+    for (const task of tasks) {
+      if (task.status === "in_progress") consider(task.claim?.leaseExpiresAt);
     }
     if (expiresAt === undefined) return;
     this.activityRefreshTimer = setTimeout(() => {

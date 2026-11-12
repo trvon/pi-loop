@@ -19,6 +19,7 @@ function setup(respondToTaskPing = false, isStaleExtensionContextError: (error: 
   const registerTool = contextProfile ? createToolContextRegistration(mock.pi, contextProfile) : undefined;
   const evaluateTaskBacklog = vi.fn(async () => ({ created: false, cleaned: 0 }));
   const onReady = vi.fn(async () => {});
+  const updateWidget = vi.fn();
   const runtime = createTaskProviderRuntime({
     pi: mock.pi,
     registerTool,
@@ -28,12 +29,13 @@ function setup(respondToTaskPing = false, isStaleExtensionContextError: (error: 
     evaluateTaskBacklog,
     onReady,
     getSessionGeneration: () => sessionGeneration,
-    updateWidget: vi.fn(),
+    updateWidget,
     isStaleExtensionContextError,
   });
   return {
     ...mock,
     runtime,
+    updateWidget,
     evaluateTaskBacklog,
     onReady,
     setSessionId: (next: string) => { sessionId = next; },
@@ -211,5 +213,28 @@ describe("task-provider-runtime", () => {
     expect(runtime.isReady()).toBe(false);
     await Promise.resolve();
     expect(onReady).not.toHaveBeenCalled();
+  });
+
+  // Review finding: the first widget paint runs before native registration, when
+  // the task list is still empty, and nothing repainted once the store existed.
+  it("repaints the widget once native tasks become listable", () => {
+    const h = setup();
+    expect(h.runtime.listNativeTasks()).toEqual([]);
+    expect(h.updateWidget).not.toHaveBeenCalled();
+
+    expect(h.runtime.registerNativeTools("session_start")).toBe(true);
+    expect(h.updateWidget).toHaveBeenCalledTimes(1);
+
+    // Idempotent registration must not repaint again.
+    expect(h.runtime.registerNativeTools("session_start")).toBe(true);
+    expect(h.updateWidget).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not repaint when an external provider owns tasks", async () => {
+    const h = setup(true);
+    await vi.advanceTimersByTimeAsync(7_000);
+    expect(h.runtime.registerNativeTools("session_start")).toBe(false);
+    expect(h.runtime.listNativeTasks()).toEqual([]);
+    expect(h.updateWidget).not.toHaveBeenCalled();
   });
 });

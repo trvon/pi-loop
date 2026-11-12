@@ -198,6 +198,36 @@ describe("progress panel invariants", () => {
     }
   });
 
+  // Review finding: only workflow leases scheduled a repaint, so a task claim
+  // kept its live row until the next heartbeat after its lease expired.
+  it("repaints at a task claim's lease expiry, not only at workflow lease expiry", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    try {
+      const tasks = new TaskStore();
+      tasks.create("Write parser", "desc");
+      tasks.claim("1", { claimId: "c", ownerSessionId: "s", ownerRuntimeId: "r", leaseMs: 60_000 });
+      const { ui, mounts } = createOverlayUi();
+      const widget = new LoopWidget(new LoopStore(), { list: () => [] } as any);
+      widget.setTaskListProvider(() => tasks.list());
+      widget.setUICtx(ui);
+      const rendered = () => (mounts.at(-1)?.component.render(PANEL_WIDTH) ?? []).join("\n");
+
+      widget.update();
+      expect(rendered()).not.toContain("stale claim");
+      vi.advanceTimersByTime(59_999);
+      expect(rendered()).not.toContain("stale claim");
+      vi.advanceTimersByTime(1);
+      expect(rendered()).toContain("stale claim");
+
+      // An already-expired claim must not schedule a zero-delay repaint loop.
+      expect(vi.getTimerCount()).toBe(0);
+      widget.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders a frame whose every line is exactly the overlay width", () => {
     const lines = renderProgressPanel(theme, { loops: [panelWorkflow()], tasks: [panelTask("1", "pending")], now }, PANEL_WIDTH);
     expect(lines[0]).toMatch(/^╭─ pi-loop ─+$/);
