@@ -25,11 +25,17 @@ function boundedAge(end: number, start: number): number {
   return Math.max(0, end - start);
 }
 
+// Rounds to the nearest unit, but carries into the next unit instead of
+// printing an overflowed label such as "60s", "60m", or "168h".
 export function formatCompactWorkflowDuration(ms: number): string {
   const bounded = Math.max(0, ms);
-  if (bounded < 60_000) return `${Math.round(bounded / 1_000)}s`;
-  if (bounded < 3_600_000) return `${Math.round(bounded / 60_000)}m`;
-  return `${Math.round(bounded / 3_600_000)}h`;
+  const seconds = Math.round(bounded / 1_000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(bounded / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(bounded / 3_600_000);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(bounded / 86_400_000)}d`;
 }
 
 export function deriveWorkflowActivity(entry: LoopEntry, now = Date.now()): WorkflowActivity {
