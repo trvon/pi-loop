@@ -118,6 +118,21 @@ WorkflowTransition id="1" outcome="blocked" evidence="Monitor #m1 failed." claim
 
 Newly entered task phases start unowned so another agent sharing project scope can claim the next phase immediately; whichever agent continues must call `WorkflowClaim id="1"` first. Workflow work is embedded in the loop controller — never call `TaskClaim` or `TaskUpdate` for it. `WorkflowClaim` also renews the current runtime's lease or takes over an expired lease after a restart. A self-loop requires `maxAttempts`, creates a fresh unowned attempt execution, and increments the displayed attempt count. Legacy unbounded self-loops fail closed at transition time until revised. When a target reaches `maxAttempts`, only outcomes leading to that target become unavailable; other declared outcomes remain selectable. Reaching a `completed` terminal state deletes the workflow loop; reaching an admitted `paused` terminal state preserves it with `semantic_terminal` pause provenance. Administrative, controller-limit, and orchestration-settlement pauses carry distinct provenance; legacy snapshots may be unattributed. Administrative and unattributed pauses require explicit resume, while self-transitions never bypass controller limits. Terminal workflow states cannot be resumed. Task status does not guess an outcome—the model selects one explicitly. LoopList and workflow wakes omit outcomes whose target state has exhausted `maxAttempts`.
 
+#### Verified outcomes
+
+A state can require a command to exit 0 before an outcome is accepted, so the model's own evidence cannot advance the workflow:
+
+```text
+"fix": {
+  "prompt": "Implement and validate the fix.",
+  "on": { "tests_pass": "done", "regression_found": "investigate" },
+  "verify": { "tests_pass": { "command": "npm test", "onFail": "regression_found" } },
+  "maxAttempts": 2
+}
+```
+
+`WorkflowTransition outcome="tests_pass"` runs `npm test` in the session cwd (same authority as `MonitorCreate`) before the transition is written. Exit 0 advances to `done` with the check recorded as admission evidence. A failure takes `onFail` with the exit status and output tail as evidence; without `onFail` the transition is rejected and the state is unchanged. The tool result shows the verdict and output tail either way. Verified outcomes cannot target a paused terminal, and `onFail` must be a different, unverified outcome. Details are in [REFERENCE.md](REFERENCE.md#verified-outcomes).
+
 When active work discovers a missing prerequisite or supersedes future instructions, inspect `LoopList` and submit one typed revision against its exact definition revision, state, and transition sequence:
 
 ```text
@@ -170,6 +185,21 @@ This surface requires the default file-backed session scope and `@tintinweb/pi-s
 Work items must be independent. The controller does not model dependencies or protect overlapping filesystem writes. Each spawned worker is background, does not inherit parent context, and is isolated from extension tools, so it cannot call pi-loop task/workflow/controller tools. The optional `agentType`, `model`, and `maxTurns` fields are the only invocation overrides.
 
 Local `concurrency` bounds spawning/queued/running dispatches while pi-subagents keeps its own global concurrency ceiling. A proved worker failure retries up to `maxAttempts`. A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
+
+#### Verified work and adaptive pacing
+
+A work item may declare `verify`, a shell command that must exit 0 before the item counts as complete. The worker is told the check; a failing check retries the item with the exit status and output tail in the next prompt:
+
+```text
+OrchestrationCreate goal="Port the parsers" pacing="aimd" work='[
+  {"prompt":"Port the CSV parser to the new API","verify":"npm test -- csv"},
+  {"prompt":"Port the TOML parser to the new API","verify":"npm test -- toml"}
+]' maxAttempts=2
+```
+
+`verify` runs in the session cwd with the same authority as `MonitorCreate`. While it runs, the dispatch shows as `verifying` and still holds capacity.
+
+`pacing="aimd"` replaces fixed `concurrency` with a window that starts at one worker, grows on verified completions, halves on overload errors or sustained slowdown, and collapses to one on timeouts. It is bounded only by the batch size, so use it when the real limit (a local model server, a provider rate limit) is unknown. Task failures do not shrink the window. The default `pacing="fixed"` is unchanged. Signal classification, the delay heuristic, and its limits are in [REFERENCE.md](REFERENCE.md#ack-clocked-pacing-opt-in).
 
 Inspect compact progress with `LoopList` and durable evidence with:
 
@@ -333,4 +363,4 @@ Workflow tool cards, `LoopList`, and `TaskList` stay at two lines while collapse
 
 On terminals at least 110 columns wide, a narrow progress panel docks at the top-right while a workflow, orchestration, running monitor, or native task is in progress. It never takes keyboard focus and disappears when nothing is in progress. Each workflow is a vertical state trail (`✓` visited, `▶` current with derived activity and attempt, `○` not yet entered) followed by its available outcomes; workflows that are paused or unclaimed are listed first. Running monitors (at most three, oldest first) show id, elapsed time, description or command, and their last output line, with a `quiet` flag after five minutes without output; monitor state is process-local, so nothing is shown for monitors from a previous pi process. Native tasks show `done/total`, in-progress work first, and flag a claim whose lease has expired. The panel is presentation only: it reads the same LoopStore and TaskStore snapshots as the status line and never claims work, resumes a controller, or schedules a wake. Task rows come only from standalone tasks, monitor rows only from this process's MonitorManager, and workflow rows only from LoopStore. Monitor output is untrusted and stripped of control bytes before display. Durations refresh on state changes and the existing 30-second heartbeat, and every minute while a monitor runs. Because it overlays the transcript's right edge, hide it with `/loop panel off` (or `/loop panel` to toggle), or start pi with `PI_LOOP_PANEL=off`.
 
-The runtime allows at most 25 active loops and 25 running monitors. Each orchestration batch allows up to 32 work items, 8 local workers, and 3 attempts per item.
+The runtime allows at most 25 active loops and 25 running monitors. Each orchestration batch allows up to 32 work items, 8 local workers under fixed pacing (the batch size under `aimd`), and 3 attempts per item.
