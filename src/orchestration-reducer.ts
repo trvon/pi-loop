@@ -60,7 +60,8 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
   if (!Number.isInteger(value.revision) || Number(value.revision) < 1) throw new Error("Malformed orchestration state: invalid revision");
   if (!ORCHESTRATION_STATUSES.has(String(value.status))) throw new Error("Malformed orchestration state: invalid status");
   if (typeof value.goal !== "string" || !value.goal.trim()) throw new Error("Malformed orchestration state: invalid goal");
-  if (!Number.isInteger(value.concurrency) || Number(value.concurrency) < 1 || Number(value.concurrency) > MAX_ORCHESTRATION_CONCURRENCY) throw new Error("Malformed orchestration state: invalid concurrency");
+  const concurrencyLimit = value.window === undefined ? MAX_ORCHESTRATION_CONCURRENCY : MAX_ORCHESTRATION_WORK_ITEMS;
+  if (!Number.isInteger(value.concurrency) || Number(value.concurrency) < 1 || Number(value.concurrency) > concurrencyLimit) throw new Error("Malformed orchestration state: invalid concurrency");
   if (!Number.isInteger(value.maxAttempts) || Number(value.maxAttempts) < 1 || Number(value.maxAttempts) > MAX_ORCHESTRATION_ATTEMPTS) throw new Error("Malformed orchestration state: invalid maxAttempts");
   if (value.model !== undefined && typeof value.model !== "string") throw new Error("Malformed orchestration state: invalid model");
   if (value.maxTurns !== undefined && (!Number.isInteger(value.maxTurns) || Number(value.maxTurns) < 1 || Number(value.maxTurns) > 100)) throw new Error("Malformed orchestration state: invalid maxTurns");
@@ -277,8 +278,8 @@ export function createOrchestrationState(
   owner: OrchestrationActor,
   at: number,
 ): OrchestrationState {
-  // Under aimd the window finds the limit; only the safety max bounds it.
-  const concurrency = input.pacing === "aimd" ? MAX_ORCHESTRATION_CONCURRENCY : input.concurrency ?? 3;
+  // Under aimd only feedback limits the window; the batch itself is the sole bound.
+  const concurrency = input.pacing === "aimd" ? input.work.length : input.concurrency ?? 3;
   return {
     version: 1,
     revision: 1,

@@ -109,7 +109,7 @@ describe("orchestration reducer properties", () => {
   it("keeps aimd dispatch inside the ACK window, counts every signal once, and never cuts for task failures", () => {
     type Step = "fill" | "complete" | "empty" | "task_error" | "overload" | "timeout" | "spawn_failed";
     fc.assert(fc.property(
-      fc.integer({ min: 1, max: 12 }),
+      fc.integer({ min: 1, max: 32 }),
       fc.integer({ min: 1, max: 3 }),
       fc.array(fc.constantFrom<Step>("fill", "complete", "empty", "task_error", "overload", "timeout", "spawn_failed"), { minLength: 1, maxLength: 60 }),
       (workCount, maxAttempts, steps) => {
@@ -120,7 +120,7 @@ describe("orchestration reducer properties", () => {
           maxAttempts,
           pacing: "aimd",
         }, owner, 0);
-        expect(state.concurrency).toBe(8);
+        expect(state.concurrency).toBe(workCount);
         const expected = () => ({ revision: state.revision, ownerRuntimeId: owner.runtimeId, generation: owner.generation });
         let at = 1;
         let signals = 0;
@@ -162,7 +162,7 @@ describe("orchestration reducer properties", () => {
           }
           if (step === "timeout") expect(window.cwnd).toBe(1);
           expect(window.cwnd).toBeGreaterThanOrEqual(1);
-          expect(window.cwnd).toBeLessThanOrEqual(8);
+          expect(window.cwnd).toBeLessThanOrEqual(workCount);
           expect(window.acks + window.losses + window.taskLosses).toBe(signals);
           expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
         }

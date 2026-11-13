@@ -120,10 +120,10 @@ describe("subagent orchestration tools", () => {
       pacing: "aimd",
     });
 
-    expect(out).toContain("2 work items · aimd window 1-8");
+    expect(out).toContain("2 work items · aimd window 1-2");
     expect(h.store.get("1")?.orchestration).toMatchObject({
-      concurrency: 8,
-      window: { mode: "aimd", cwnd: 1, ssthresh: 8 },
+      concurrency: 2,
+      window: { mode: "aimd", cwnd: 1, ssthresh: 2 },
       work: [{ verify: "node --test sum.test.js" }, { verify: "npm test" }],
     });
     expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], pacing: "cubic" })).toContain("pacing must be fixed or aimd");

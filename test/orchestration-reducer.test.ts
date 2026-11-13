@@ -298,10 +298,10 @@ describe("orchestration ACK-clocked pacing", () => {
     expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect", verify: "npm test" }], pacing: "aimd" })).toBeUndefined();
   });
 
-  it("ignores concurrency under aimd: the window starts at one and may grow to the safety max", () => {
+  it("ignores concurrency under aimd: the window starts at one and is bounded only by the batch", () => {
     const state = create(4, { concurrency: 2, pacing: "aimd" });
-    expect(state.concurrency).toBe(8);
-    expect(state.window).toEqual({ mode: "aimd", cwnd: 1, ssthresh: 8, acks: 0, losses: 0, taskLosses: 0 });
+    expect(state.concurrency).toBe(4);
+    expect(state.window).toEqual({ mode: "aimd", cwnd: 1, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
     const first = dispatch(state, "1", "dispatch-1", 110);
     expect(first.applied).toBe(true);
     expect(dispatch(first.state, "2", "dispatch-2", 120)).toMatchObject({ applied: false, reason: "capacity_exhausted" });
@@ -393,6 +393,17 @@ describe("orchestration ACK-clocked pacing", () => {
     }).state;
     expect(uncertain.window).toEqual(state.window);
     expect(uncertain.status).toBe("needs_attention");
+  });
+
+  it("lets an aimd window grow past the fixed-pacing safety max up to the batch size", () => {
+    let state = create(16, { pacing: "aimd", maxAttempts: 1 });
+    expect(state.concurrency).toBe(16);
+    for (let index = 1; index <= 12; index++) state = runToSettled(state, String(index), String(index), 100 + index * 10, { result: "ok" });
+    expect(getOrchestrationCapacity(state)).toBeGreaterThan(8);
+    expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
+    const fixedOver = structuredClone(create(2)) as any;
+    fixedOver.concurrency = 9;
+    expect(() => validatePersistedOrchestration(fixedOver)).toThrow("invalid concurrency");
   });
 
   it("round-trips persisted windows and verification evidence and rejects malformed ones", () => {

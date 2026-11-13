@@ -97,7 +97,9 @@ export function orchestrationControllerText(entry: LoopEntry): string {
     `Orchestration #${entry.id} · ${orchestrationStatusLabel(state.status)}`,
     `Goal: ${state.goal}`,
     `Progress: ${orchestrationProgressLabel(state)}`,
-    `Limits: concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`,
+    state.window
+      ? `Limits: aimd window=${Math.floor(state.window.cwnd)}/${state.concurrency} losses=${state.window.losses} taskLosses=${state.window.taskLosses} maxAttempts=${state.maxAttempts}`
+      : `Limits: concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`,
     "Reserved: local capacity; dispatch state is last reported, not proof of current execution.",
     ...state.work.map(orchestrationWorkSummary),
   ].join("\n");

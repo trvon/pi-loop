@@ -100,7 +100,7 @@ The parent `agent_end`, existing 30-second heartbeat, session recovery, and dire
 
 ### ACK-clocked pacing (opt-in)
 
-`pacing: "aimd"` replaces fixed local capacity with a persisted window modelled on TCP Reno. `concurrency` is ignored; the window starts at one dispatch in flight and may grow to the eight-worker safety limit. The default `fixed` pacing is unchanged and persists no window.
+`pacing: "aimd"` replaces fixed local capacity with a persisted window modelled on TCP Reno. `concurrency` and the eight-worker fixed-pacing limit do not apply; the window starts at one dispatch in flight and is bounded only by feedback and the batch size (at most 32 items). Beyond pi-subagents' own background pool, workers queue in the provider; that queue time may not appear in worker duration, so the delay signal can be blind to it. Without per-dispatch output-token usage there is no delay signal at all, and only errors and timeouts limit growth. The default `fixed` pacing is unchanged and persists no window.
 
 Work items may declare `verify`, a shell command run in the session cwd after the worker reports completion (same authority as `MonitorCreate`; five-minute timeout; bounded output tail). The dispatch stays in flight, holding window capacity, until the verifier exits; exit 0 is the ACK. A declared verifier that fails, is killed, or never ran makes the item fail and retry within `maxAttempts`. Shutdown aborts in-flight verifiers and drops their results; the dispatch is then reconciled like any other unconfirmed worker.
 

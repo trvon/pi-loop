@@ -159,7 +159,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       updateWidget();
       const message = [
         `Orchestration #${entry.id} created`,
-        definition.pacing === "aimd" ? `${definition.work.length} work items · aimd window 1-${MAX_CONCURRENCY}` : `${definition.work.length} work items · concurrency ${definition.concurrency}`,
+        definition.pacing === "aimd" ? `${definition.work.length} work items · aimd window 1-${definition.work.length}` : `${definition.work.length} work items · concurrency ${definition.concurrency}`,
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {
@@ -167,7 +167,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         action: "create",
         tone: "success",
         summary: `Orchestration #${entry.id} active · ${orchestrationProgressLabel(entry.orchestration!)}`,
-        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, definition.pacing === "aimd" ? `Pacing: aimd (window 1-${MAX_CONCURRENCY})` : `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
+        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, definition.pacing === "aimd" ? `Pacing: aimd (window 1-${definition.work.length})` : `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
       });
     },
   });
