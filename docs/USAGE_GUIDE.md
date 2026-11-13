@@ -118,6 +118,21 @@ WorkflowTransition id="1" outcome="blocked" evidence="Monitor #m1 failed." claim
 
 Newly entered task phases start unowned so another agent sharing project scope can claim the next phase immediately; whichever agent continues must call `WorkflowClaim id="1"` first. Workflow work is embedded in the loop controller — never call `TaskClaim` or `TaskUpdate` for it. `WorkflowClaim` also renews the current runtime's lease or takes over an expired lease after a restart. A self-loop requires `maxAttempts`, creates a fresh unowned attempt execution, and increments the displayed attempt count. Legacy unbounded self-loops fail closed at transition time until revised. When a target reaches `maxAttempts`, only outcomes leading to that target become unavailable; other declared outcomes remain selectable. Reaching a `completed` terminal state deletes the workflow loop; reaching an admitted `paused` terminal state preserves it with `semantic_terminal` pause provenance. Administrative, controller-limit, and orchestration-settlement pauses carry distinct provenance; legacy snapshots may be unattributed. Administrative and unattributed pauses require explicit resume, while self-transitions never bypass controller limits. Terminal workflow states cannot be resumed. Task status does not guess an outcome—the model selects one explicitly. LoopList and workflow wakes omit outcomes whose target state has exhausted `maxAttempts`.
 
+#### Verified outcomes
+
+A state can require a command to exit 0 before an outcome is accepted, so the model's own evidence cannot advance the workflow:
+
+```text
+"fix": {
+  "prompt": "Implement and validate the fix.",
+  "on": { "tests_pass": "done", "regression_found": "investigate" },
+  "verify": { "tests_pass": { "command": "npm test", "onFail": "regression_found" } },
+  "maxAttempts": 2
+}
+```
+
+`WorkflowTransition outcome="tests_pass"` runs `npm test` in the session cwd (same authority as `MonitorCreate`) before the transition is written. Exit 0 advances to `done` with the check recorded as admission evidence. A failure takes `onFail` with the exit status and output tail as evidence; without `onFail` the transition is rejected and the state is unchanged. The tool result shows the verdict and output tail either way. Verified outcomes cannot target a paused terminal, and `onFail` must be a different, unverified outcome. Details are in [REFERENCE.md](REFERENCE.md#verified-outcomes).
+
 When active work discovers a missing prerequisite or supersedes future instructions, inspect `LoopList` and submit one typed revision against its exact definition revision, state, and transition sequence:
 
 ```text
