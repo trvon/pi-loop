@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createWorkflowVerifier } from "../src/runtime/verify-runner.js";
 import { LoopStore } from "../src/store.js";
 import type { OrchestrationVerification, WorkflowDefinition } from "../src/types.js";
 import { admitWorkflowTransition } from "../src/workflow-admission.js";
@@ -128,5 +129,34 @@ describe("verified transition definitions", () => {
     expect(valid({ done: { command: "npm test", onFail: "done" } })).toContain("onFail");
     expect(valid({ done: { command: "npm test", onFail: "rework" }, rework: { command: "true" } })).toContain("onFail");
     expect(valid({ blocked: { command: "true" } })).toContain("paused terminal");
+  });
+});
+
+describe("review regressions: verified transitions", () => {
+  it("C1: gates on exit status 0, not a passed flag that disagrees with it", async () => {
+    for (const inconsistent of [{ passed: true, exitCode: 1, durationMs: 1 }, { passed: true, exitCode: null, durationMs: 1 }]) {
+      const { store, entry } = createStore({ done: { command: "npm test" } });
+      const before = structuredClone(store.get(entry.id));
+      const result = await admit(store, entry.id, "done", async () => inconsistent);
+      expect(result.decision).toMatchObject({ decision: "contradicted", reason: "verify_failed" });
+      expect(store.get(entry.id)).toEqual(before);
+    }
+  });
+
+  it("C2: aborting session verifiers stops a running check", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pi-loop-workflow-verifier-"));
+    directories.push(directory);
+    const verifier = createWorkflowVerifier(() => directory);
+    const running = verifier.run("sleep 30");
+    verifier.abortAll();
+    const result = await running;
+    expect(result).toMatchObject({ passed: false, exitCode: null });
+    expect(result.durationMs).toBeLessThan(5_000);
+    expect((await verifier.run("true")).passed).toBe(true);
+  });
+
+  it("C3: rejects onFail outcomes that target a paused terminal", () => {
+    const definitionWithPausedFallback = definition({ done: { command: "npm test", onFail: "blocked" } });
+    expect(validateWorkflowDefinition(definitionWithPausedFallback)).toContain("onFail");
   });
 });

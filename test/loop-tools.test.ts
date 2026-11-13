@@ -1495,6 +1495,7 @@ describe("WorkflowTransition verified outcomes", () => {
     expect(created).toContain("Workflow #1");
     const out = await h.text("WorkflowTransition", { id: "1", outcome: "done" });
     expect(out).toContain("completed and deleted");
+    expect(out).toContain("Verification: passed (exit 0)");
     expect(h.runVerify).toHaveBeenCalledTimes(1);
   });
 });

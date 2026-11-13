@@ -75,3 +75,22 @@ export const runVerifyCommand: VerifyRunner = ({ command, cwd, signal, timeoutMs
   if (signal.aborted) onAbort();
   else signal.addEventListener("abort", onAbort, { once: true });
 });
+
+/**
+ * Session-scoped verifier for workflow checks: every run shares one abort
+ * signal so session teardown stops in-flight checks instead of letting a
+ * stale command keep changing the workspace.
+ */
+export function createWorkflowVerifier(getCwd: () => string, runner: VerifyRunner = runVerifyCommand): {
+  run: (command: string) => Promise<OrchestrationVerification>;
+  abortAll: () => void;
+} {
+  let controller = new AbortController();
+  return {
+    run: (command) => runner({ command, cwd: getCwd(), signal: controller.signal }),
+    abortAll: () => {
+      controller.abort();
+      controller = new AbortController();
+    },
+  };
+}

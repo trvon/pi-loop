@@ -303,7 +303,8 @@ async function admitVerifiedTransition(
   if (input.isContextCurrent && !input.isContextCurrent()) {
     return { decision: { decision: "unresolved", reason: "stale_runtime_context", providers }, verification };
   }
-  if (verification.passed) {
+  // The exit status is the contract; a runner's passed flag cannot override it.
+  if (verification.passed && verification.exitCode === 0) {
     return {
       decision: { decision: "confirmed", reason: "verify_passed", providers },
       verification,

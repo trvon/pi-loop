@@ -562,7 +562,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       if (result.terminal === "completed") {
         const transition = `${entry.workflow?.lastTransition?.from ?? "?"} → ${entry.workflow?.currentState ?? "?"}`;
         return textResult(
-          `Workflow #${entry.id} completed and deleted\nFinal transition: ${transition}`,
+          [`Workflow #${entry.id} completed and deleted`, `Final transition: ${transition}`, ...checkLines].join("\n"),
           workflowDisplayDetails({
             entry,
             action: "transition",
@@ -573,7 +573,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       }
       if (result.terminal === "paused") {
         return textResult(
-          `Workflow #${entry.id} paused\nFinal state: ${entry.workflow?.currentState ?? "?"}`,
+          [`Workflow #${entry.id} paused`, `Final state: ${entry.workflow?.currentState ?? "?"}`, ...checkLines].join("\n"),
           workflowDisplayDetails({
             entry,
             action: "transition",

@@ -79,6 +79,8 @@ function validateVerify(definition: WorkflowDefinition, stateId: string, state: 
       if (typeof check.onFail !== "string" || !Object.hasOwn(outcomes, check.onFail) || check.onFail === outcome) {
         return `State "${stateId}" verify "${outcome}" onFail must be another declared outcome`;
       }
+      // onFail is taken directly, without blocker admission, so it cannot reach a paused terminal.
+      if (definition.states[outcomes[check.onFail]!]?.terminal === "paused") return `State "${stateId}" verify "${outcome}" onFail cannot target a paused terminal; use blocker admission`;
       // The harness takes onFail itself; a check on it could fail again with no defined recovery.
       if (Object.hasOwn(state.verify, check.onFail)) return `State "${stateId}" verify "${outcome}" onFail "${check.onFail}" cannot itself be verified`;
     }
