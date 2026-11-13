@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,8 +10,7 @@ import { validateWorkflowDefinition } from "../src/workflow-definition.js";
 
 const directories: string[] = [];
 afterEach(() => {
-  // Windows locks a killed check's cwd until taskkill finishes reaping it; retry like test/index.test.ts.
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 function definition(verify: WorkflowDefinition["states"][string]["verify"]): WorkflowDefinition {
@@ -144,16 +143,31 @@ describe("review regressions: verified transitions", () => {
     }
   });
 
-  it("C2: aborting session verifiers stops a running check", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "pi-loop-workflow-verifier-"));
-    directories.push(directory);
-    const verifier = createWorkflowVerifier(() => directory);
+  it("C2: aborting session verifiers settles a running check as failed", async () => {
+    // cwd is not deleted here: on Windows the killed shell can outlive the
+    // abort and keep its cwd locked. Tree-kill is proven on POSIX below.
+    const verifier = createWorkflowVerifier(() => tmpdir());
     const running = verifier.run("sleep 30");
     verifier.abortAll();
     const result = await running;
     expect(result).toMatchObject({ passed: false, exitCode: null });
     expect(result.durationMs).toBeLessThan(5_000);
     expect((await verifier.run("true")).passed).toBe(true);
+  });
+
+  // Matches the monitor tree-kill tests, which are also POSIX-only.
+  it.skipIf(process.platform === "win32")("C2: an aborted check is actually stopped", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pi-loop-workflow-verifier-"));
+    directories.push(directory);
+    const verifier = createWorkflowVerifier(() => directory);
+    const running = verifier.run("(touch ready; sleep 1; touch survived) & wait");
+    // Abort only once the background child exists, or there is nothing to leak.
+    for (let i = 0; i < 100 && !existsSync(join(directory, "ready")); i++) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(existsSync(join(directory, "ready"))).toBe(true);
+    verifier.abortAll();
+    expect(await running).toMatchObject({ passed: false, exitCode: null });
+    await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
+    expect(existsSync(join(directory, "survived"))).toBe(false);
   });
 
   it("C3: rejects onFail outcomes that target a paused terminal", () => {
