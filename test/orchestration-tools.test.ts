@@ -121,9 +121,10 @@ describe("subagent orchestration tools", () => {
     });
 
     expect(out).toContain("2 work items · concurrency 4 · aimd");
+    // Under aimd, concurrency is ignored; the window starts at one.
     expect(h.store.get("1")?.orchestration).toMatchObject({
-      concurrency: 4,
-      window: { mode: "aimd", cwnd: 1, ssthresh: 4, acks: 0, losses: 0 },
+      concurrency: 8,
+      window: { mode: "aimd", cwnd: 1, ssthresh: 8, acks: 0, losses: 0, taskLosses: 0 },
     });
     expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], pacing: "cubic" })).toContain("pacing must be fixed or aimd");
     expect(h.store.list()).toHaveLength(1);

@@ -99,12 +99,25 @@ export interface OrchestrationDispatch {
   consumeStatus: OrchestrationConsumeStatus;
   consumeAttempts: number;
   usage?: OrchestrationUsage;
+  /** Result of the work item's verifier, when one was declared. */
+  verify?: OrchestrationVerification;
+}
+
+export interface OrchestrationVerification {
+  passed: boolean;
+  /** null when the verifier was killed (timeout or teardown) before exiting. */
+  exitCode: number | null;
+  durationMs: number;
+  /** Bounded tail of combined stdout/stderr. */
+  output?: string;
 }
 
 export interface OrchestrationWorkItem {
   id: string;
   prompt: string;
   agentType?: string;
+  /** Shell command run after the worker completes; exit 0 is the ACK. */
+  verify?: string;
   status: OrchestrationWorkStatus;
   attemptCount: number;
   dispatches: OrchestrationDispatch[];
@@ -139,7 +152,7 @@ export interface OrchestrationState {
 
 export interface OrchestrationDefinitionInput {
   goal: string;
-  work: Array<{ prompt: string; agentType?: string }>;
+  work: Array<{ prompt: string; agentType?: string; verify?: string }>;
   concurrency?: number;
   pacing?: OrchestrationPacing;
   maxAttempts?: number;

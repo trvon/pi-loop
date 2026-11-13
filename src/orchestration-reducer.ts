@@ -1,10 +1,11 @@
-import { applyAckSignal, classifySettlement, createAckWindow, validateAckWindow, windowCapacity } from "./ack-window.js";
+import { type AckSignal, applyAckSignal, classifySettlement, createAckWindow, observeDelay, validateAckWindow, windowCapacity } from "./ack-window.js";
 import type {
   OrchestrationActor,
   OrchestrationDefinitionInput,
   OrchestrationDispatch,
   OrchestrationState,
   OrchestrationUsage,
+  OrchestrationVerification,
   OrchestrationWakeReason,
   OrchestrationWorkItem,
   OrchestrationWorkStatus,
@@ -17,6 +18,8 @@ export const MAX_ORCHESTRATION_WORK_ITEMS = 32;
 export const MAX_ORCHESTRATION_CONCURRENCY = 8;
 export const MAX_ORCHESTRATION_ATTEMPTS = 3;
 export const MAX_ORCHESTRATION_INPUT_BYTES = 65_536;
+export const MAX_ORCHESTRATION_VERIFY_CHARS = 2_048;
+export const MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS = 2_048;
 
 const ORCHESTRATION_STATUSES = new Set(["active", "needs_attention", "completed", "cancelled"]);
 const WORK_STATUSES = new Set(["pending", "active", "completed", "failed", "uncertain", "cancelled"]);
@@ -36,12 +39,20 @@ export function validateOrchestrationDefinition(input: OrchestrationDefinitionIn
   if (!Number.isInteger(attempts) || attempts < 1 || attempts > MAX_ORCHESTRATION_ATTEMPTS) return "invalid maxAttempts";
   if (input.maxTurns !== undefined && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 100)) return "invalid maxTurns";
   if (input.work.some((item) => !item.prompt.trim())) return "work prompts must not be empty";
+  if (input.work.some((item) => item.verify !== undefined && (!item.verify.trim() || item.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS))) return "invalid verify command";
   if (Buffer.byteLength(JSON.stringify(input), "utf8") > MAX_ORCHESTRATION_INPUT_BYTES) return "serialized input exceeds limit";
   return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isVerification(value: unknown): value is OrchestrationVerification {
+  if (!isRecord(value) || typeof value.passed !== "boolean") return false;
+  if (value.exitCode !== null && !Number.isInteger(value.exitCode)) return false;
+  if (!Number.isFinite(value.durationMs) || Number(value.durationMs) < 0) return false;
+  return value.output === undefined || (typeof value.output === "string" && value.output.length <= MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS);
 }
 
 export function validatePersistedOrchestration(value: unknown): OrchestrationState {
@@ -63,6 +74,7 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
     if (!isRecord(rawItem) || typeof rawItem.id !== "string" || !rawItem.id || ids.has(rawItem.id) || typeof rawItem.prompt !== "string" || !rawItem.prompt.trim() || (rawItem.agentType !== undefined && (typeof rawItem.agentType !== "string" || !rawItem.agentType)) || !WORK_STATUSES.has(String(rawItem.status)) || !Number.isInteger(rawItem.attemptCount) || !Array.isArray(rawItem.dispatches)) {
       throw new Error("Malformed orchestration state: invalid work item");
     }
+    if (rawItem.verify !== undefined && (typeof rawItem.verify !== "string" || !rawItem.verify.trim() || rawItem.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS)) throw new Error("Malformed orchestration state: invalid verify command");
     ids.add(rawItem.id);
     if (rawItem.status !== "completed") allWorkCompleted = false;
     if (Number(rawItem.attemptCount) < 0 || Number(rawItem.attemptCount) > Number(value.maxAttempts) || rawItem.dispatches.length !== Number(rawItem.attemptCount)) throw new Error("Malformed orchestration state: invalid attempt count");
@@ -78,6 +90,7 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
       if (typeof rawDispatch.result === "string" && rawDispatch.result.length > MAX_ORCHESTRATION_RESULT_CHARS) throw new Error("Malformed orchestration state: oversized result");
       if (rawDispatch.error !== undefined && typeof rawDispatch.error !== "string") throw new Error("Malformed orchestration state: invalid error");
       if (typeof rawDispatch.error === "string" && rawDispatch.error.length > MAX_ORCHESTRATION_ERROR_CHARS) throw new Error("Malformed orchestration state: oversized error");
+      if (rawDispatch.verify !== undefined && !isVerification(rawDispatch.verify)) throw new Error("Malformed orchestration state: invalid verification");
       if (rawDispatch.usage !== undefined) {
         if (!isRecord(rawDispatch.usage)) throw new Error("Malformed orchestration state: invalid usage");
         for (const field of ["toolUses", "durationMs"] as const) {
@@ -116,7 +129,7 @@ export type OrchestrationEvent =
   | { type: "dispatch_bound"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; agentId: string }
   | { type: "cleanup_bound"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; attempt: number; agentId: string }
   | { type: "dispatch_started"; at: number; expected: ExpectedOrchestration; agentId: string }
-  | { type: "dispatch_settled"; at: number; expected: ExpectedOrchestration; agentId: string; outcome: "completed" | "failed"; result?: string; error?: string; usage?: OrchestrationUsage }
+  | { type: "dispatch_settled"; at: number; expected: ExpectedOrchestration; agentId: string; outcome: "completed" | "failed"; result?: string; error?: string; usage?: OrchestrationUsage; verify?: OrchestrationVerification }
   | { type: "dispatch_spawn_failed"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
   | { type: "dispatch_interrupted"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
   | { type: "dispatch_uncertain"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
@@ -148,6 +161,7 @@ function cloneState(state: OrchestrationState): OrchestrationState {
       dispatches: item.dispatches.map((dispatch) => ({
         ...dispatch,
         usage: cloneUsage(dispatch.usage),
+        verify: dispatch.verify ? { ...dispatch.verify } : undefined,
       })),
     })),
     pendingWake: state.pendingWake ? { ...state.pendingWake } : undefined,
@@ -250,8 +264,8 @@ export function getOrchestrationCapacity(state: OrchestrationState): number {
   return state.window ? windowCapacity(state.window, state.concurrency) : state.concurrency;
 }
 
-function recordAckSignal(state: OrchestrationState, signal: Parameters<typeof applyAckSignal>[1]): void {
-  if (state.window) state.window = applyAckSignal(state.window, signal, state.concurrency);
+function recordAckSignal(state: OrchestrationState, signal: AckSignal, dispatch: OrchestrationDispatch, at: number): void {
+  if (state.window) state.window = applyAckSignal(state.window, signal, state.concurrency, { at, requestedAt: dispatch.requestedAt });
 }
 
 function settleFailure(item: OrchestrationWorkItem, state: OrchestrationState): void {
@@ -263,7 +277,8 @@ export function createOrchestrationState(
   owner: OrchestrationActor,
   at: number,
 ): OrchestrationState {
-  const concurrency = input.concurrency ?? 3;
+  // Under aimd the window finds the limit; only the safety max bounds it.
+  const concurrency = input.pacing === "aimd" ? MAX_ORCHESTRATION_CONCURRENCY : input.concurrency ?? 3;
   return {
     version: 1,
     revision: 1,
@@ -278,6 +293,7 @@ export function createOrchestrationState(
       id: String(index + 1),
       prompt: item.prompt,
       agentType: item.agentType,
+      ...(item.verify !== undefined ? { verify: item.verify } : {}),
       status: "pending",
       attemptCount: 0,
       dispatches: [],
@@ -408,9 +424,25 @@ export function applyOrchestrationEvent(
     found.dispatch.usage = event.usage;
     found.dispatch.settledAt = event.at;
     found.dispatch.consumeStatus = "provider_owned";
-    found.item.status = event.outcome === "completed" ? "completed" : "failed";
-    recordAckSignal(next, classifySettlement(event.outcome, event.result, found.dispatch.attempt));
-    if (event.outcome === "failed") settleFailure(found.item, next);
+    if (event.verify) found.dispatch.verify = { ...event.verify, output: truncate(event.verify.output, MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS) };
+    // A declared verifier with no passing evidence is not an ACK; the item retries within its budget.
+    const verifiedFailure = event.outcome === "completed" && found.item.verify !== undefined && event.verify?.passed !== true;
+    found.item.status = event.outcome === "completed" && !verifiedFailure ? "completed" : "failed";
+    if (verifiedFailure && !found.dispatch.error) found.dispatch.error = event.verify ? `verify failed (exit ${event.verify.exitCode ?? "killed"})` : "verify did not run";
+    if (next.window) {
+      const evidence = {
+        outcome: event.outcome,
+        result: event.result,
+        error: event.error,
+        attempt: found.dispatch.attempt,
+        verifyPassed: found.item.verify === undefined ? undefined : event.verify?.passed ?? false,
+        durationMs: event.usage?.durationMs,
+        outputTokens: event.usage?.tokens?.output,
+      };
+      recordAckSignal(next, classifySettlement(evidence, next.window), found.dispatch, event.at);
+      next.window = observeDelay(next.window!, evidence);
+    }
+    if (found.item.status === "failed") settleFailure(found.item, next);
     refreshControllerStatus(next, event.at);
     return applied(next, event.at);
   }
@@ -425,8 +457,8 @@ export function applyOrchestrationEvent(
     dispatch.settledAt = event.at;
     dispatch.consumeStatus = uncertain ? "unavailable" : dispatch.agentId ? "pending" : "not_applicable";
     item.status = uncertain ? "uncertain" : "failed";
-    // Uncertain termination already blocks every dispatch; only proved spawn failure is a loss.
-    if (!uncertain) recordAckSignal(next, "loss");
+    // Uncertain termination already blocks every dispatch; a proved spawn failure is path congestion.
+    if (!uncertain) recordAckSignal(next, "congestion", dispatch, event.at);
     if (!uncertain) settleFailure(item, next);
     refreshControllerStatus(next, event.at);
     return applied(next, event.at);

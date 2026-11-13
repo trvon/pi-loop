@@ -106,21 +106,21 @@ describe("orchestration reducer properties", () => {
     }), propertyOptions());
   });
 
-  it("keeps aimd dispatch inside the ACK window and the window inside concurrency", () => {
-    type Step = "fill" | "complete" | "empty" | "failed" | "spawn_failed";
+  it("keeps aimd dispatch inside the ACK window, counts every signal once, and never cuts for task failures", () => {
+    type Step = "fill" | "complete" | "empty" | "task_error" | "overload" | "timeout" | "spawn_failed";
     fc.assert(fc.property(
       fc.integer({ min: 1, max: 12 }),
-      fc.integer({ min: 1, max: 8 }),
       fc.integer({ min: 1, max: 3 }),
-      fc.array(fc.constantFrom<Step>("fill", "complete", "empty", "failed", "spawn_failed"), { minLength: 1, maxLength: 60 }),
-      (workCount, concurrency, maxAttempts, steps) => {
+      fc.array(fc.constantFrom<Step>("fill", "complete", "empty", "task_error", "overload", "timeout", "spawn_failed"), { minLength: 1, maxLength: 60 }),
+      (workCount, maxAttempts, steps) => {
         let state = createOrchestrationState({
           goal: "aimd property",
           work: Array.from({ length: workCount }, (_, index) => ({ prompt: `work ${index + 1}` })),
-          concurrency,
+          concurrency: 2,
           maxAttempts,
           pacing: "aimd",
         }, owner, 0);
+        expect(state.concurrency).toBe(8);
         const expected = () => ({ revision: state.revision, ownerRuntimeId: owner.runtimeId, generation: owner.generation });
         let at = 1;
         let signals = 0;
@@ -132,8 +132,9 @@ describe("orchestration reducer properties", () => {
               const capacity = getOrchestrationCapacity(state);
               const dispatchId = `d${at}`;
               const requested = applyOrchestrationEvent(state, { type: "dispatch_requested", at: at++, expected: expected(), workId: item.id, dispatchId });
-              expect(requested.applied).toBe(before < capacity && item.attemptCount < maxAttempts);
+              expect(requested.applied).toBe(before < capacity);
               if (!requested.applied) break;
+              state = requested.state;
               state = applyChecked(state, { type: "dispatch_bound", at: at++, expected: expected(), workId: item.id, dispatchId, agentId: `a${dispatchId}` });
             }
             continue;
@@ -141,6 +142,7 @@ describe("orchestration reducer properties", () => {
           const active = state.work.find((candidate) => candidate.status === "active");
           const dispatch = active?.dispatches.at(-1);
           if (!active || !dispatch?.agentId) continue;
+          const windowBefore = state.window!;
           state = step === "spawn_failed"
             ? applyChecked(state, { type: "dispatch_spawn_failed", at: at++, expected: expected(), workId: active.id, dispatchId: dispatch.dispatchId, error: "spawn" })
             : applyChecked(state, {
@@ -148,15 +150,20 @@ describe("orchestration reducer properties", () => {
                 at: at++,
                 expected: expected(),
                 agentId: dispatch.agentId,
-                outcome: step === "failed" ? "failed" : "completed",
+                outcome: step === "complete" || step === "empty" ? "completed" : "failed",
                 result: step === "complete" ? "done" : step === "empty" ? " " : undefined,
+                error: step === "overload" ? "503 overloaded" : step === "timeout" ? "timed out" : step === "task_error" ? "assertion failed" : undefined,
               });
           signals += 1;
           const window = state.window!;
+          if (step === "empty" || step === "task_error") {
+            expect(window.cwnd).toBe(windowBefore.cwnd);
+            expect(window.ssthresh).toBe(windowBefore.ssthresh);
+          }
+          if (step === "timeout") expect(window.cwnd).toBe(1);
           expect(window.cwnd).toBeGreaterThanOrEqual(1);
-          expect(window.cwnd).toBeLessThanOrEqual(concurrency);
-          expect(window.acks + window.losses).toBe(signals);
-          expect(getOrchestrationCounts(state).active).toBeLessThanOrEqual(concurrency);
+          expect(window.cwnd).toBeLessThanOrEqual(8);
+          expect(window.acks + window.losses + window.taskLosses).toBe(signals);
           expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
         }
       },
