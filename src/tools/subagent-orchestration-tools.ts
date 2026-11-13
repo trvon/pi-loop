@@ -1,9 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { INITIAL_WINDOW } from "../ack-window.js";
 import { MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
 import type { LoopScope } from "../runtime/scope.js";
 import type { LoopStore } from "../store.js";
-import type { OrchestrationActor, OrchestrationDefinitionInput } from "../types.js";
+import type { OrchestrationActor, OrchestrationDefinitionInput, OrchestrationPacing } from "../types.js";
 import { orchestrationControllerText, orchestrationDisplayDetails, orchestrationProgressLabel, orchestrationWorkText } from "../ui/orchestration-presentation.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { textResult } from "./tool-result.js";
@@ -23,6 +24,8 @@ interface OrchestrationToolsOptions {
   getScope: () => LoopScope;
   getPiLoopEnv: () => string | undefined;
   getActor: () => OrchestrationActor | undefined;
+  /** Pacing for batches that set neither `pacing` nor `concurrency` (PI_LOOP_PACING). */
+  defaultPacing?: OrchestrationPacing;
   probeSubagents: () => Promise<unknown>;
   updateWidget: () => void;
 }
@@ -79,6 +82,20 @@ function protocolVersion(value: unknown): number | undefined {
   return Number.isInteger(version) ? Number(version) : undefined;
 }
 
+/** PI_LOOP_PACING: unset means aimd; anything but fixed/aimd fails activation. */
+export function resolveDefaultPacing(value: string | undefined): OrchestrationPacing {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return "aimd";
+  if (normalized === "fixed" || normalized === "aimd") return normalized;
+  throw new Error(`Invalid PI_LOOP_PACING: expected fixed or aimd, got ${JSON.stringify(value)}`);
+}
+
+/** An explicit concurrency is a request for that many workers, so it means fixed pacing. */
+function resolvePacing(params: CreateParams, defaultPacing: OrchestrationPacing): CreateParams {
+  if (params.pacing !== undefined) return params;
+  return { ...params, pacing: params.concurrency !== undefined ? "fixed" : defaultPacing };
+}
+
 function definitionFrom(params: CreateParams): OrchestrationDefinitionInput {
   return {
     goal: params.goal.trim(),
@@ -98,6 +115,7 @@ function definitionFrom(params: CreateParams): OrchestrationDefinitionInput {
 export function registerSubagentOrchestrationTools(options: OrchestrationToolsOptions): void {
   const registerTool: ExtensionAPI["registerTool"] = options.registerTool ?? (definition => options.pi.registerTool(definition));
   const { getStore, getScope, getPiLoopEnv, getActor, probeSubagents, updateWidget } = options;
+  const defaultPacing = options.defaultPacing ?? "aimd";
 
   registerTool({
     name: "OrchestrationCreate",
@@ -115,12 +133,13 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       agentType: Type.Optional(Type.String({ description: "Default subagent type (default: general-purpose)" })),
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
       maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
-      concurrency: Type.Optional(Type.Integer({ description: "Fixed capacity 1-8 (default: 3)", minimum: 1, default: 3 })),
-      pacing: Type.Optional(Type.String({ description: "aimd adapts", enum: ["fixed", "aimd"] })),
+      concurrency: Type.Optional(Type.Integer({ description: "Sets fixed pacing: 1-8 workers", minimum: 1 })),
+      pacing: Type.Optional(Type.String({ description: "Default aimd adapts", enum: ["fixed", "aimd"] })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
       expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new batch, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
     }),
-    async execute(_toolCallId, params: CreateParams) {
+    async execute(_toolCallId, input: CreateParams) {
+      const params = resolvePacing(input, defaultPacing);
       if (getScope() !== "session") return errorResult("Orchestration requires the default file-backed session scope; memory and project scopes are unsupported.");
       if (getPiLoopEnv() !== undefined) return errorResult("Orchestration is unavailable when PI_LOOP overrides storage; unset PI_LOOP and use session scope.");
       const actor = getActor();
@@ -159,7 +178,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       updateWidget();
       const message = [
         `Orchestration #${entry.id} created`,
-        definition.pacing === "aimd" ? `${definition.work.length} work items · aimd window 1-${definition.work.length}` : `${definition.work.length} work items · concurrency ${definition.concurrency}`,
+        definition.pacing === "aimd" ? `${definition.work.length} work items · aimd window ${Math.min(INITIAL_WINDOW, definition.work.length)}-${definition.work.length}` : `${definition.work.length} work items · concurrency ${definition.concurrency}`,
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {
@@ -167,7 +186,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         action: "create",
         tone: "success",
         summary: `Orchestration #${entry.id} active · ${orchestrationProgressLabel(entry.orchestration!)}`,
-        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, definition.pacing === "aimd" ? `Pacing: aimd (window 1-${definition.work.length})` : `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
+        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, definition.pacing === "aimd" ? `Pacing: aimd (window ${Math.min(INITIAL_WINDOW, definition.work.length)}-${definition.work.length})` : `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
       });
     },
   });

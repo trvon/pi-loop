@@ -273,13 +273,18 @@ const tokens = (output: number) => ({ input: 10, output, total: 10 + output });
 const pass = { passed: true, exitCode: 0, durationMs: 5 };
 const fail = { passed: false, exitCode: 1, durationMs: 5, output: "1 failing test" };
 
+/** Window-mechanics tests count from one unit in flight, below the default initial window. */
+function fromOne<T extends ReturnType<typeof createOrchestrationState>>(state: T): T {
+  return state.window ? { ...state, window: { ...state.window, cwnd: 1 } } : state;
+}
+
 function verifiedBatch(count: number, maxAttempts = 2) {
-  return createOrchestrationState({
+  return fromOne(createOrchestrationState({
     goal: "verified batch",
     work: Array.from({ length: count }, (_, index) => ({ prompt: `task ${index + 1}`, verify: `npm test -- task${index + 1}` })),
     pacing: "aimd",
     maxAttempts,
-  }, owner, 100);
+  }, owner, 100));
 }
 
 describe("orchestration ACK-clocked pacing", () => {
@@ -300,13 +305,20 @@ describe("orchestration ACK-clocked pacing", () => {
     expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect" }], concurrency: 9 })).toContain("concurrency");
   });
 
-  it("ignores concurrency under aimd: the window starts at one and is bounded only by the batch", () => {
-    const state = create(4, { concurrency: 2, pacing: "aimd" });
+  it("ignores concurrency under aimd: the window starts at three and is bounded only by the batch", () => {
+    let state = create(4, { concurrency: 2, pacing: "aimd" });
     expect(state.concurrency).toBe(4);
-    expect(state.window).toEqual({ mode: "aimd", cwnd: 1, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
-    const first = dispatch(state, "1", "dispatch-1", 110);
-    expect(first.applied).toBe(true);
-    expect(dispatch(first.state, "2", "dispatch-2", 120)).toMatchObject({ applied: false, reason: "capacity_exhausted" });
+    expect(state.window).toEqual({ mode: "aimd", cwnd: 3, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
+    for (const key of ["1", "2", "3"]) state = dispatch(state, key, `dispatch-${key}`, 110).state;
+    expect(getOrchestrationCounts(state).active).toBe(3);
+    expect(dispatch(state, "4", "dispatch-4", 120)).toMatchObject({ applied: false, reason: "capacity_exhausted" });
+  });
+
+  it("keeps a persisted batch without a window on fixed pacing", () => {
+    const fixed = create(4);
+    expect(fixed.window).toBeUndefined();
+    expect(getOrchestrationCapacity(fixed)).toBe(2);
+    expect(getOrchestrationCapacity(validatePersistedOrchestration(structuredClone(fixed)))).toBe(2);
   });
 
   it("uses a passing verifier as the ACK and retries a failing one without shrinking the window", () => {
@@ -330,7 +342,7 @@ describe("orchestration ACK-clocked pacing", () => {
   });
 
   it("halves on overload errors, resets on timeouts, and ignores generic task errors", () => {
-    let state = create(8, { pacing: "aimd", maxAttempts: 3 });
+    let state = fromOne(create(8, { pacing: "aimd", maxAttempts: 3 }));
     for (const [index, key] of ["1", "2", "3", "4"].entries()) state = runToSettled(state, String(index + 1), key, 100 + index * 10, { result: "ok" });
     expect(state.window?.cwnd).toBe(5);
 
@@ -345,7 +357,7 @@ describe("orchestration ACK-clocked pacing", () => {
   });
 
   it("cuts once per window when parallel workers report congestion together", () => {
-    let state = create(6, { pacing: "aimd", maxAttempts: 2 });
+    let state = fromOne(create(6, { pacing: "aimd", maxAttempts: 2 }));
     for (const [index, key] of ["1", "2", "3"].entries()) state = runToSettled(state, String(index + 1), key, 100 + index * 10, { result: "ok" });
     expect(getOrchestrationCapacity(state)).toBe(4);
     state = request(state, "4", "a", 200);

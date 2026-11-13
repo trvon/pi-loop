@@ -164,7 +164,7 @@ Lint has two established optional-chain warnings; do not add new warnings. Workf
 - 25 active loops
 - 25 running monitors
 - 32 orchestration work items
-- 8 local orchestration workers under fixed pacing; `pacing: "aimd"` is bounded only by its feedback window and batch size (pi-subagents' provider-owned pool still queues beyond its own limit)
+- 8 local orchestration workers under fixed pacing; `pacing: "aimd"` (the default unless `concurrency` or `PI_LOOP_PACING=fixed` is given) is bounded only by its feedback window and batch size (pi-subagents' provider-owned pool still queues beyond its own limit)
 - 3 orchestration attempts per item
 - seven-day default loop lifetime; explicit `PI_LOOP_EXPIRES_IN` or per-loop `expiresIn` may be longer
 - five-minute self-paced default interval

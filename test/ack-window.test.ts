@@ -20,14 +20,21 @@ function apply(window: AckWindow, ceiling: number, ...signals: AckSignal[]): Ack
 }
 
 describe("ACK-clocked Reno window", () => {
-  it("starts at one unit in flight and treats the ceiling as the slow-start threshold", () => {
+  it("treats the ceiling as the slow-start threshold", () => {
     const window = createAckWindow(4);
-    expect(window).toEqual({ mode: "aimd", cwnd: 1, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
-    expect(windowCapacity(window, 4)).toBe(1);
+    expect(window).toEqual({ mode: "aimd", cwnd: 3, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
+    expect(windowCapacity(window, 4)).toBe(3);
+  });
+
+  it("starts at the fixed-pacing default of three, or the batch size if smaller (RFC 6928 initial window)", () => {
+    expect(createAckWindow(8)).toMatchObject({ cwnd: 3, ssthresh: 8 });
+    expect(createAckWindow(2)).toMatchObject({ cwnd: 2, ssthresh: 2 });
+    expect(createAckWindow(1)).toMatchObject({ cwnd: 1, ssthresh: 1 });
+    expect(windowCapacity(createAckWindow(32), 32)).toBe(3);
   });
 
   it("grows one unit per ACK in slow start, then about one unit per window", () => {
-    const slowStart = apply(createAckWindow(8), 8, "ack", "ack", "ack");
+    const slowStart = apply({ ...createAckWindow(8), cwnd: 1 }, 8, "ack", "ack", "ack");
     expect(slowStart.cwnd).toBe(4);
     const avoidance = apply({ ...createAckWindow(8), cwnd: 4, ssthresh: 4 }, 8, "ack", "ack", "ack", "ack");
     expect(avoidance.cwnd).toBeGreaterThan(4.9);
@@ -36,7 +43,7 @@ describe("ACK-clocked Reno window", () => {
   });
 
   it("halves on congestion and resets to one on timeout, like Reno", () => {
-    const grown = apply(createAckWindow(8), 8, "ack", "ack", "ack", "ack", "ack");
+    const grown = apply({ ...createAckWindow(8), cwnd: 1 }, 8, "ack", "ack", "ack", "ack", "ack");
     expect(grown.cwnd).toBe(6);
     expect(apply(grown, 8, "congestion")).toMatchObject({ cwnd: 3, ssthresh: 3, losses: 1 });
     expect(apply(grown, 8, "timeout")).toMatchObject({ cwnd: 1, ssthresh: 3, losses: 1 });

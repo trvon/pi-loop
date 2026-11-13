@@ -56,8 +56,15 @@ export const DELAY_CONGESTION_STREAK = 2;
 const CONGESTION_ERROR = /\b(429|503|rate.?limit|overload(ed)?|too many requests|capacity|server busy|ECONNRESET|ECONNREFUSED|socket hang up)\b/i;
 const TIMEOUT_ERROR = /\b(timed? ?out|timeout|ETIMEDOUT|deadline exceeded)\b/i;
 
+/**
+ * Initial window: the fixed-pacing default, so an aimd batch is never slower
+ * to start than a default fixed one (cf. RFC 6928's larger initial window).
+ * Timeouts still collapse to one.
+ */
+export const INITIAL_WINDOW = 3;
+
 export function createAckWindow(ceiling: number): AckWindow {
-  return { mode: "aimd", cwnd: 1, ssthresh: ceiling, acks: 0, losses: 0, taskLosses: 0 };
+  return { mode: "aimd", cwnd: Math.min(INITIAL_WINDOW, ceiling), ssthresh: ceiling, acks: 0, losses: 0, taskLosses: 0 };
 }
 
 export function windowCapacity(window: AckWindow, ceiling: number): number {

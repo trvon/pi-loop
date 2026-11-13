@@ -44,7 +44,7 @@ MonitorStop monitorId="1"
 Run a finite batch of independent subagent work after the parent becomes idle:
 
 ```text
-OrchestrationCreate goal="Review release readiness" work='[{"prompt":"Inspect API compatibility","agentType":"Explore"},{"prompt":"Review rollout risks","agentType":"Plan"}]' concurrency=2
+OrchestrationCreate goal="Review release readiness" work='[{"prompt":"Inspect API compatibility","agentType":"Explore"},{"prompt":"Review rollout risks","agentType":"Plan"}]'
 OrchestrationGet id="1"
 ```
 

@@ -146,7 +146,7 @@ describe("orchestration presentation", () => {
       },
     });
     const text = orchestrationControllerText(entry);
-    expect(text).toContain("Limits: aimd window=1/3 losses=0 taskLosses=0 maxAttempts=2");
+    expect(text).toContain("Limits: aimd window=3/3 losses=0 taskLosses=0 maxAttempts=2");
     expect(text).not.toContain("concurrency=");
   });
 });
