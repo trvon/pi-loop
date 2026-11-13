@@ -7,6 +7,7 @@ import type {
 } from "./types.js";
 
 const MAX_WORKFLOW_DEFINITION_BYTES = 65_536;
+export const MAX_WORKFLOW_VERIFY_COMMAND_CHARS = 2_048;
 
 const WORKFLOW_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const RESERVED_WORKFLOW_KEYS = new Set(["__proto__", "prototype", "constructor"]);
@@ -64,6 +65,27 @@ function validateTransitions(
   return undefined;
 }
 
+function validateVerify(definition: WorkflowDefinition, stateId: string, state: WorkflowStateDefinition): string | undefined {
+  if (state.verify === undefined) return undefined;
+  if (!state.verify || typeof state.verify !== "object" || Array.isArray(state.verify)) return `State "${stateId}" verify must be an object`;
+  const outcomes = state.on ?? {};
+  for (const [outcome, check] of Object.entries(state.verify)) {
+    if (!Object.hasOwn(outcomes, outcome)) return `State "${stateId}" verify names undeclared outcome "${outcome}"`;
+    if (!check || typeof check !== "object" || typeof check.command !== "string" || !check.command.trim() || check.command.length > MAX_WORKFLOW_VERIFY_COMMAND_CHARS) {
+      return `State "${stateId}" verify "${outcome}" command must contain 1-${MAX_WORKFLOW_VERIFY_COMMAND_CHARS} characters`;
+    }
+    if (definition.states[outcomes[outcome]!]?.terminal === "paused") return `State "${stateId}" verify "${outcome}" cannot target a paused terminal; use blocker admission`;
+    if (check.onFail !== undefined) {
+      if (typeof check.onFail !== "string" || !Object.hasOwn(outcomes, check.onFail) || check.onFail === outcome) {
+        return `State "${stateId}" verify "${outcome}" onFail must be another declared outcome`;
+      }
+      // The harness takes onFail itself; a check on it could fail again with no defined recovery.
+      if (Object.hasOwn(state.verify, check.onFail)) return `State "${stateId}" verify "${outcome}" onFail "${check.onFail}" cannot itself be verified`;
+    }
+  }
+  return undefined;
+}
+
 function validateTerminal(stateId: string, state: WorkflowStateDefinition): string | undefined {
   if (state.terminal !== undefined && state.terminal !== "completed" && state.terminal !== "paused") {
     return `State "${stateId}" terminal must be "completed" or "paused"`;
@@ -91,7 +113,8 @@ function validateState(
   return validateTerminal(stateId, state)
     ?? validateTask(stateId, state.task)
     ?? validateLoop(stateId, state.loop)
-    ?? validateTransitions(definition, stateId, state, allowUnboundedSelfLoops);
+    ?? validateTransitions(definition, stateId, state, allowUnboundedSelfLoops)
+    ?? validateVerify(definition, stateId, state);
 }
 
 function definitionBytes(definition: WorkflowDefinition): number {

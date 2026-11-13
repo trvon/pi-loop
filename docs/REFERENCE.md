@@ -163,6 +163,11 @@ The public `revision_limit_reached` failure-code literal is retained for TypeScr
 
 Revision and transition race through the same LoopStore lock. Revision-first makes a stale transition fail its definition CAS; transition-first makes a stale revision fail state/sequence CAS.
 
+
+### Verified outcomes
+
+A state may declare `verify: { <outcome>: { command, onFail? } }`. `WorkflowTransition` for a verified outcome runs `command` through `sh` in the session cwd (same authority as `MonitorCreate`) before the LoopStore mutation, then applies the transition with the same state/sequence/revision/execution CAS as blocker admission. Exit 0 records an `environmental` admission (`provider: "verify"`, `fact: "exit_code"`, `expected: 0`). On failure, without `onFail` the transition is rejected and state is preserved; with `onFail` the harness takes that outcome, subject to its target's `maxAttempts`, with the exit status and output tail as evidence. The tool result shows the verdict and output tail either way. A verifier that cannot start counts as a failure; a context change during the check leaves the transition unresolved. Constraints: verified outcomes must be declared in `on`, cannot target a paused terminal (use blocker admission), and `onFail` must be a different declared outcome that is not itself verified. `revise_state` does not change `verify`; `add_state` may declare it.
+
 ## Standalone tasks
 
 Native task statuses are `pending`, `in_progress`, `completed`, and `closed`. `TaskClaim` starts or resumes unfinished work and returns a renewable bearer claim ID. `TaskHeartbeat` renews it. Subject/description edits, terminal updates, and deletion of live claimed work require that ID. Missing, wrong, or expired bearers reject before mutation; expired claims may be taken over. In `/tasks`, the operator may release a claim only after its lease has expired (confirmation required): the task can then be completed, closed, deleted, or returned to `pending`. A live claim is never overridden and still requires its token.

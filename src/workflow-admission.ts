@@ -1,5 +1,5 @@
 import type { LoopStore } from "./store.js";
-import type { LoopEntry, WorkflowRuntimeActor } from "./types.js";
+import type { LoopEntry, OrchestrationVerification, WorkflowRuntimeActor } from "./types.js";
 
 export type WorkflowFactValue = string | number | boolean | null;
 export type WorkflowClaimClass = "environmental" | "user_authority";
@@ -80,12 +80,21 @@ export interface WorkflowAdmissionRequest {
   providers: WorkflowAdmissionProvider[];
   now?: number | (() => number);
   isContextCurrent?: () => boolean;
+  /** Runs a state's per-outcome check; absent means verified outcomes stay unresolved. */
+  runVerify?: (command: string) => Promise<OrchestrationVerification>;
 }
 
 export interface WorkflowAdmissionResult {
   decision: WorkflowAdmissionDecision;
   transition?: ReturnType<LoopStore["transitionWorkflow"]>;
+  /** Present when the outcome declared a check and it ran. */
+  verification?: OrchestrationVerification;
+  /** The outcome actually taken, when it differs from the requested one (onFail). */
+  appliedOutcome?: string;
 }
+
+const VERIFY_PROVIDER = "verify";
+const VERIFY_EVIDENCE_TAIL_CHARS = 1_500;
 
 function workflowContext(entry: LoopEntry, contextDigest: string): WorkflowAdmissionContext | undefined {
   const workflow = entry.workflow;
@@ -204,6 +213,8 @@ export async function admitWorkflowTransition(input: WorkflowAdmissionRequest): 
   if (input.isContextCurrent && !input.isContextCurrent()) {
     return { decision: { decision: "unresolved", reason: "stale_runtime_context", providers: [] } };
   }
+  const check = entry.workflow.definition.states[entry.workflow.currentState]?.verify?.[input.outcome];
+  if (check) return admitVerifiedTransition(input, check, expected);
   if (!terminalPauseTarget(entry, input.outcome)) {
     return {
       decision: { decision: "not_required", reason: "ordinary_transition", providers: [] },
@@ -268,6 +279,60 @@ export async function admitWorkflowTransition(input: WorkflowAdmissionRequest): 
         observations: decision.providers,
         decidedAt: decisionTime,
       },
+      actor: input.actor,
+    }, expected),
+  };
+}
+
+async function admitVerifiedTransition(
+  input: WorkflowAdmissionRequest,
+  check: { command: string; onFail?: string },
+  expected: ReturnType<typeof expectedState>,
+): Promise<WorkflowAdmissionResult> {
+  if (!input.runVerify) return { decision: { decision: "unresolved", reason: "verifier_unavailable", providers: [] } };
+  const clock = typeof input.now === "function" ? input.now : input.now === undefined ? Date.now : () => input.now as number;
+  let verification: OrchestrationVerification;
+  const startedAt = clock();
+  // The check runs before the CAS-protected store mutation, like any admission provider.
+  try {
+    verification = await input.runVerify(check.command);
+  } catch (error) {
+    verification = { passed: false, exitCode: null, durationMs: Math.max(0, clock() - startedAt), output: `verifier could not run: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  const providers = [`${VERIFY_PROVIDER}@1`];
+  if (input.isContextCurrent && !input.isContextCurrent()) {
+    return { decision: { decision: "unresolved", reason: "stale_runtime_context", providers }, verification };
+  }
+  if (verification.passed) {
+    return {
+      decision: { decision: "confirmed", reason: "verify_passed", providers },
+      verification,
+      transition: input.store.transitionWorkflow(input.workflowId, {
+        outcome: input.outcome,
+        evidence: input.evidence,
+        admission: {
+          claimClass: "environmental",
+          provider: VERIFY_PROVIDER,
+          subject: check.command.slice(0, MAX_SUBJECT_LENGTH),
+          fact: "exit_code",
+          expected: 0,
+          observations: providers,
+          decidedAt: clock(),
+        },
+        actor: input.actor,
+      }, expected),
+    };
+  }
+  const decision: WorkflowAdmissionDecision = { decision: "contradicted", reason: "verify_failed", providers };
+  if (!check.onFail) return { decision, verification };
+  const tail = verification.output ? `\n${verification.output.slice(-VERIFY_EVIDENCE_TAIL_CHARS)}` : "";
+  return {
+    decision,
+    verification,
+    appliedOutcome: check.onFail,
+    transition: input.store.transitionWorkflow(input.workflowId, {
+      outcome: check.onFail,
+      evidence: `verify failed for "${input.outcome}" (exit ${verification.exitCode ?? "killed"}): ${check.command}${tail}`,
       actor: input.actor,
     }, expected),
   };

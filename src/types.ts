@@ -181,6 +181,13 @@ export interface WorkflowStateLoopDefinition {
   startImmediately?: boolean;
 }
 
+/** A check that must exit 0 before an outcome is admitted. */
+export interface WorkflowOutcomeVerification {
+  command: string;
+  /** Outcome the harness takes, with the failure as evidence, when the check fails. */
+  onFail?: string;
+}
+
 export interface WorkflowStateDefinition {
   prompt: string;
   task?: WorkflowTaskDefinition;
@@ -188,6 +195,8 @@ export interface WorkflowStateDefinition {
   on?: Record<string, string>;
   terminal?: WorkflowTerminalStatus;
   maxAttempts?: number;
+  /** Per-outcome checks run by the harness before the transition is admitted. */
+  verify?: Record<string, WorkflowOutcomeVerification>;
 }
 
 export interface WorkflowDefinition {

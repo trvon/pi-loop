@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { formatLastTransitionLines } from "../loop-format.js";
-import type { LoopEntry, Trigger, WorkflowAdmissionRecord, WorkflowDefinition, WorkflowRevisionChange, WorkflowRevisionFailure, WorkflowRuntimeActor } from "../types.js";
+import type { LoopEntry, OrchestrationVerification, Trigger, WorkflowAdmissionRecord, WorkflowDefinition, WorkflowRevisionChange, WorkflowRevisionFailure, WorkflowRuntimeActor } from "../types.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { workflowAttemptLabel, workflowDisplayDetails, workflowLeaseLabel, workflowTimingSummaryLine } from "../ui/workflow-presentation.js";
 import { admitWorkflowTransition, type WorkflowAdmissionProvider } from "../workflow-admission.js";
@@ -102,6 +102,8 @@ export interface WorkflowToolsOptions {
   getAdmissionContextDigest: () => string;
   getSessionGeneration?: () => number;
   getAdmissionProviders: () => WorkflowAdmissionProvider[];
+  /** Runs per-outcome workflow checks in the session cwd. */
+  runVerify?: (command: string) => Promise<OrchestrationVerification>;
   updateWidget: () => void;
   onDynamicLoopActivated?: (entry: LoopEntry) => void;
 }
@@ -231,6 +233,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
     getAdmissionContextDigest,
     getSessionGeneration,
     getAdmissionProviders,
+    runVerify,
     updateWidget,
     onDynamicLoopActivated,
   } = options;
@@ -490,7 +493,15 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
         contextDigest,
         providers: getAdmissionProviders(),
         isContextCurrent,
+        runVerify,
       });
+      const check = admission.verification;
+      const checkLines = check
+        ? [
+            `Verification: ${check.passed ? "passed" : "failed"} (exit ${check.exitCode ?? "killed"})${admission.appliedOutcome ? `; took onFail outcome "${admission.appliedOutcome}"` : ""}`,
+            ...(!check.passed && check.output ? [`Output tail:\n${check.output.slice(-1_500)}`] : []),
+          ]
+        : [];
       const result = admission.transition;
       if (!result) {
         const entry = store.get(params.id);
@@ -498,8 +509,12 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
           ? "Ask the user for the explicit decision and keep the workflow active; this runtime has no authority provider."
           : admission.decision.reason === "claim_required"
             ? "Retry with a typed claim backed by a trusted provider."
-            : "Refresh the scoped evidence and retry; unresolved or contradicted claims never mutate workflow state.";
-        const message = `Workflow #${params.id} did not transition\nAdmission: ${admission.decision.decision} (${admission.decision.reason})\nNext: ${next}`;
+            : admission.decision.reason === "verify_failed"
+              ? "Fix what the check reports, then retry this outcome; a failed check never advances the workflow."
+              : admission.decision.reason === "verifier_unavailable"
+                ? "This runtime cannot run workflow checks; choose an outcome without a check or resume in an active pi session."
+                : "Refresh the scoped evidence and retry; unresolved or contradicted claims never mutate workflow state.";
+        const message = [`Workflow #${params.id} did not transition`, `Admission: ${admission.decision.decision} (${admission.decision.reason})`, ...checkLines, `Next: ${next}`].join("\n");
         return textResult(message, entry?.workflow
           ? workflowDisplayDetails({
               entry,
@@ -576,7 +591,7 @@ export function registerWorkflowTools(options: WorkflowToolsOptions): void {
       updateWidget();
       const transition = `${current.workflow?.lastTransition?.from ?? "?"} → ${current.workflow?.currentState ?? "?"}`;
       return textResult(
-        `Workflow #${current.id} advanced: ${transition}\n${formatWorkflowSummary(current, `Workflow #${current.id} — ${current.status}`)}`,
+        [`Workflow #${current.id} advanced: ${transition}`, ...checkLines, formatWorkflowSummary(current, `Workflow #${current.id} — ${current.status}`)].join("\n"),
         workflowDisplayDetails({
           entry: current,
           action: "transition",
