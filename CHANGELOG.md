@@ -6,6 +6,27 @@
 
 * **tasks:** register the native task tools at `session_start` instead of six seconds after startup. A prompt sent inside that window used to go out with the pre-registration tool set, and the next request carried four more tools plus their prompt guidelines, so the request prefix changed once per session and every provider-side prompt cache missed (a full ~22k-token re-prefill on llama-server). The timer stays as a backstop and an external `pi-tasks` that answered the startup ping still wins.
 
+## [0.7.21](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.20...pi-loop-v0.7.21) (2026-11-13)
+
+
+### Features
+
+* **orchestration:** add opt-in ACK-clocked AIMD pacing ([ba15cd8](https://github.com/trvon/pi-loop/commit/ba15cd8d84b61b0e1f7a1eec576c3d62498d54b3))
+* **orchestration:** bound aimd only by feedback and batch size ([dbfe8d7](https://github.com/trvon/pi-loop/commit/dbfe8d7ffb504810cf5d9e3a5549144c586a8ff6))
+* **orchestration:** classify losses Reno-style before they reach the window ([a1224d0](https://github.com/trvon/pi-loop/commit/a1224d075365f76bdb1d299eb30be7b7ccf4f471))
+* **orchestration:** verify work items before acknowledging them ([887238a](https://github.com/trvon/pi-loop/commit/887238a92b0dda7373e9e3eeb4347075871fa4d0))
+* **ui:** show running monitors in the progress panel ([518d42a](https://github.com/trvon/pi-loop/commit/518d42ae62bd8cb06c9e3e46740fec116f1ce622))
+* **ui:** show running monitors in the progress panel ([6109732](https://github.com/trvon/pi-loop/commit/6109732c937665999d40e6442afc0e5dd3b95a04))
+* **workflow:** admit verified outcomes only after their check passes ([f814c7f](https://github.com/trvon/pi-loop/commit/f814c7f1d5ada02cd0a93bf8dabc247c83499cad))
+
+
+### Bug Fixes
+
+* **orchestration:** address review findings on verified aimd pacing ([4795c83](https://github.com/trvon/pi-loop/commit/4795c83864d98faa3874bf9f4c0f3973f4807731))
+* **orchestration:** ignore concurrency bounds under aimd pacing ([81f0424](https://github.com/trvon/pi-loop/commit/81f0424769720140753dc477dbc1d3d12c19e7e9))
+* **ui:** flag silent monitors from start and at five minutes ([dcb50c7](https://github.com/trvon/pi-loop/commit/dcb50c7dc7747523ccf317b2d218c70af84bf045))
+* **workflow:** enforce exit 0, abort checks on teardown, and report terminal verdicts ([db55a53](https://github.com/trvon/pi-loop/commit/db55a53fe6dc650e09ddd564d737c365043e59a3))
+
 ## [0.7.20](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.19...pi-loop-v0.7.20) (2026-11-12)
 
 
