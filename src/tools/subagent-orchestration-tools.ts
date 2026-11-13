@@ -53,7 +53,7 @@ function validateCreate(params: CreateParams): string | undefined {
   if (!params.goal.trim() || params.goal.length > MAX_GOAL_CHARS) return `goal must contain 1-${MAX_GOAL_CHARS} characters`;
   if (params.work.length < 1 || params.work.length > MAX_WORK_ITEMS) return `Orchestration requires between 1 and ${MAX_WORK_ITEMS} work items.`;
   const concurrency = params.concurrency ?? 3;
-  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY) return `concurrency must be between 1 and ${MAX_CONCURRENCY}`;
+  if (params.pacing !== "aimd" && (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY)) return `concurrency must be between 1 and ${MAX_CONCURRENCY}`;
   if (params.pacing !== undefined && params.pacing !== "fixed" && params.pacing !== "aimd") return "pacing must be fixed or aimd";
   const maxAttempts = params.maxAttempts ?? 1;
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > MAX_ATTEMPTS) return `maxAttempts must be between 1 and ${MAX_ATTEMPTS}`;
@@ -115,7 +115,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       agentType: Type.Optional(Type.String({ description: "Default subagent type (default: general-purpose)" })),
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
       maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
-      concurrency: Type.Optional(Type.Integer({ description: "Local worker capacity (default: 3)", minimum: 1, maximum: MAX_CONCURRENCY, default: 3 })),
+      concurrency: Type.Optional(Type.Integer({ description: "Fixed capacity 1-8 (default: 3)", minimum: 1, default: 3 })),
       pacing: Type.Optional(Type.String({ description: "aimd adapts", enum: ["fixed", "aimd"] })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
       expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new batch, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),

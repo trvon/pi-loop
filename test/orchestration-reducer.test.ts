@@ -296,6 +296,8 @@ describe("orchestration ACK-clocked pacing", () => {
     expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect", verify: "  " }] })).toContain("verify");
     expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect", verify: "x".repeat(5000) }] })).toContain("verify");
     expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect", verify: "npm test" }], pacing: "aimd" })).toBeUndefined();
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect" }], pacing: "aimd", concurrency: 9 })).toBeUndefined();
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect" }], concurrency: 9 })).toContain("concurrency");
   });
 
   it("ignores concurrency under aimd: the window starts at one and is bounded only by the batch", () => {

@@ -131,6 +131,13 @@ describe("subagent orchestration tools", () => {
     expect(h.store.list()).toHaveLength(1);
   });
 
+  it("ignores concurrency under aimd instead of rejecting values above the fixed-pacing limit", async () => {
+    const out = await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], pacing: "aimd", concurrency: 9 });
+    expect(out).toContain("Orchestration #1 created");
+    expect(h.store.get("1")?.orchestration?.concurrency).toBe(1);
+    expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], concurrency: 9 })).toContain("concurrency must be between 1 and 8");
+  });
+
   it("keeps fixed pacing without a persisted window or verifier", async () => {
     await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], pacing: "fixed" });
     expect(h.store.get("1")?.orchestration?.window).toBeUndefined();

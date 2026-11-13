@@ -32,9 +32,10 @@ export function validateOrchestrationDefinition(input: OrchestrationDefinitionIn
   if (!Array.isArray(input.work) || input.work.length < 1 || input.work.length > MAX_ORCHESTRATION_WORK_ITEMS) {
     return `work must contain 1-${MAX_ORCHESTRATION_WORK_ITEMS} items`;
   }
-  const concurrency = input.concurrency ?? 3;
-  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_ORCHESTRATION_CONCURRENCY) return "invalid concurrency";
   if (input.pacing !== undefined && input.pacing !== "fixed" && input.pacing !== "aimd") return "invalid pacing";
+  // aimd ignores concurrency entirely; the fixed-pacing bound only applies when it is used.
+  const concurrency = input.concurrency ?? 3;
+  if (input.pacing !== "aimd" && (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_ORCHESTRATION_CONCURRENCY)) return "invalid concurrency";
   const attempts = input.maxAttempts ?? 1;
   if (!Number.isInteger(attempts) || attempts < 1 || attempts > MAX_ORCHESTRATION_ATTEMPTS) return "invalid maxAttempts";
   if (input.maxTurns !== undefined && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 100)) return "invalid maxTurns";
