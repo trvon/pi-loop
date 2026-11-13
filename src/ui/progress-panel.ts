@@ -1,7 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { TaskEntry } from "../task-types.js";
-import type { LoopEntry } from "../types.js";
+import type { LoopEntry, MonitorEntry } from "../types.js";
 import { getWorkflowOutcomeAvailability } from "../workflow-reducer.js";
 import { activeCardGlyphs } from "./card-style.js";
 import { orchestrationStatusLabel } from "./orchestration-presentation.js";
@@ -29,6 +29,8 @@ export type PanelLine = PanelSegment[];
 export interface ProgressPanelInput {
   loops: readonly LoopEntry[];
   tasks: readonly TaskEntry[];
+  /** Process-local monitor snapshots; absent means none are known to be running. */
+  monitors?: readonly MonitorEntry[];
   now: number;
 }
 
@@ -37,6 +39,9 @@ const MAX_DETAILED_WORKFLOWS = 2;
 const MAX_STATE_ROWS = 6;
 const MAX_TASK_ROWS = 5;
 const MAX_ORCHESTRATION_ROWS = 2;
+const MAX_MONITOR_ROWS = 3;
+/** Silence longer than this is flagged; a long build with no output is worth a glance. */
+const MONITOR_QUIET_MS = 5 * 60_000;
 
 // Subjects, goals, and state names are model- or user-authored. Control and
 // escape bytes must never reach the terminal from a persistent overlay.
@@ -172,6 +177,34 @@ function orchestrationLine(entry: LoopEntry): PanelLine {
   ];
 }
 
+/**
+ * Running monitors only. Output is untrusted process text, so it passes through
+ * the same control-byte stripping as model-authored names. Nothing here stops,
+ * waits on, or infers the state of a process beyond its last reported snapshot.
+ */
+function monitorLines(monitors: readonly MonitorEntry[], now: number): PanelLine[] {
+  const running = monitors.filter((monitor) => monitor.status === "running").sort((a, b) => a.startedAt - b.startedAt);
+  const lines: PanelLine[] = [];
+  for (const monitor of running.slice(0, MAX_MONITOR_ROWS)) {
+    const label = plainPanelText(monitor.description?.trim() ? monitor.description : monitor.command ?? "");
+    lines.push([
+      seg("▶ ", "accent"),
+      seg(`#${plainPanelText(monitor.id)} `, "dim"),
+      seg(`${formatCompactWorkflowDuration(now - monitor.startedAt)} `, "muted"),
+      seg(label),
+    ]);
+    const quietMs = monitor.lastOutputAt === undefined ? undefined : now - monitor.lastOutputAt;
+    const lastLine = plainPanelText(monitor.outputBuffer?.at(-1) ?? "");
+    if (quietMs !== undefined && quietMs > MONITOR_QUIET_MS) {
+      lines.push([seg(`    quiet ${formatCompactWorkflowDuration(quietMs)} `, "warning"), seg(lastLine, "dim")]);
+    } else if (lastLine) {
+      lines.push([seg("    ", "dim"), seg(lastLine, "dim")]);
+    }
+  }
+  if (running.length > MAX_MONITOR_ROWS) lines.push([seg(`▶ … ${running.length - MAX_MONITOR_ROWS} more`, "dim")]);
+  return lines;
+}
+
 function taskLines(tasks: readonly TaskEntry[], now: number): PanelLine[] {
   const counted = tasks.filter((task) => task.status !== "closed");
   const open = counted.filter((task) => task.status === "in_progress" || task.status === "pending");
@@ -230,6 +263,7 @@ export function layoutProgressPanel(input: ProgressPanelInput, width: number, ma
     lines.push([seg(`◇ … ${orchestrations.length - MAX_ORCHESTRATION_ROWS} more`, "dim")]);
   }
 
+  lines.push(...monitorLines(input.monitors ?? [], now));
   lines.push(...taskLines(input.tasks, now));
 
   const bounded = lines.length > maxRows

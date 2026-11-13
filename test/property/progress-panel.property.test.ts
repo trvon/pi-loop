@@ -2,12 +2,12 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { TaskEntry } from "../../src/task-types.js";
-import type { LoopEntry } from "../../src/types.js";
+import type { LoopEntry, MonitorEntry } from "../../src/types.js";
 import { setGlyphTier } from "../../src/ui/card-style.js";
 import { layoutProgressPanel, panelLineText } from "../../src/ui/progress-panel.js";
 import { ProgressPanelOverlay, renderProgressPanel } from "../../src/ui/progress-panel-overlay.js";
 import { workflowCardPreview } from "../../src/ui/workflow-presentation.js";
-import { PANEL_NOW, panelOrchestration, panelTask, panelWorkflow } from "../helpers/progress-panel-fixtures.js";
+import { PANEL_NOW, panelMonitor, panelOrchestration, panelTask, panelWorkflow } from "../helpers/progress-panel-fixtures.js";
 import { propertyOptions } from "./config.js";
 
 // Hostile text: ANSI/OSC escapes, C0/C1 controls, wide and combining characters.
@@ -54,9 +54,20 @@ const orchestration: fc.Arbitrary<LoopEntry> = fc.record({
   status: fc.constantFrom("active", "needs_attention", "completed", "cancelled"),
 }).map(({ id, work, status }) => panelOrchestration(id, work as never, status as never));
 
+const monitor: fc.Arbitrary<MonitorEntry> = fc.record({
+  id: fc.oneof(fc.integer({ min: 1, max: 999 }).map(String), hostileText),
+  status: fc.constantFrom("running", "completed", "error", "stopped"),
+  command: hostileText,
+  description: fc.option(hostileText, { nil: undefined }),
+  startedAt: timestamp,
+  output: fc.array(hostileText, { maxLength: 4 }),
+  lastOutputAt: fc.option(timestamp, { nil: undefined }),
+}).map(({ id, ...spec }) => panelMonitor(id, spec as never));
+
 const input = fc.record({
   loops: fc.array(fc.oneof(workflow, orchestration), { maxLength: 8 }),
   tasks: fc.array(task, { maxLength: 30 }),
+  monitors: fc.array(monitor, { maxLength: 6 }),
   now: timestamp,
 });
 
@@ -97,16 +108,21 @@ describe("progress panel properties", () => {
     );
   });
 
-  it("keeps task rows and controller rows on their own authority", () => {
+  it("keeps task, monitor, and controller rows on their own authority", () => {
     fc.assert(
       fc.property(input, (snapshot) => {
         const rows = (value: typeof snapshot) => layoutProgressPanel(value, 60, 1_000).map(panelLineText);
-        const controllerRows = rows({ ...snapshot, tasks: [] });
-        const taskRows = rows({ ...snapshot, loops: [] });
-        expect(controllerRows.some((line) => line.startsWith("□"))).toBe(false);
-        expect(taskRows.some((line) => line.startsWith("◆") || line.startsWith("◇"))).toBe(false);
-        // Composition is concatenation: neither source changes the other's rows.
-        expect(rows(snapshot)).toEqual([...controllerRows, ...taskRows]);
+        const controllerRows = rows({ ...snapshot, tasks: [], monitors: [] });
+        const monitorRows = rows({ ...snapshot, loops: [], tasks: [] });
+        const taskRows = rows({ ...snapshot, loops: [], monitors: [] });
+        expect(controllerRows.some((line) => line.startsWith("□") || line.startsWith("▶"))).toBe(false);
+        expect(taskRows.some((line) => line.startsWith("◆") || line.startsWith("◇") || line.startsWith("▶"))).toBe(false);
+        expect(monitorRows.every((line) => line.startsWith("▶") || line.startsWith("    "))).toBe(true);
+        // Only running monitors are ever shown.
+        const running = snapshot.monitors.filter((entry) => entry.status === "running").length;
+        expect(monitorRows.filter((line) => line.startsWith("▶ #")).length).toBe(Math.min(running, 3));
+        // Composition is concatenation: no source changes another's rows.
+        expect(rows(snapshot)).toEqual([...controllerRows, ...monitorRows, ...taskRows]);
       }),
       propertyOptions(200),
     );

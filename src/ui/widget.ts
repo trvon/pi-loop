@@ -7,6 +7,8 @@ import { orchestrationWidgetSummary } from "./orchestration-presentation.js";
 import { type ProgressPanelMode, ProgressPanelOverlay } from "./progress-panel-overlay.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "./workflow-presentation.js";
 
+const MONITOR_REFRESH_MS = 60_000;
+
 interface TaskSummary {
   count: number;
   focusText?: string;
@@ -71,8 +73,9 @@ export class LoopWidget {
       this.lastStatus = status;
     }
     const tasks = this.taskListProvider?.() ?? [];
-    this.panel.sync({ loops: entries, tasks, now: Date.now() });
-    this.scheduleActivityRefresh(entries, tasks);
+    const monitors = this.monitorManager.list().filter((monitor) => monitor.status === "running");
+    this.panel.sync({ loops: entries, tasks, monitors, now: Date.now() });
+    this.scheduleActivityRefresh(entries, tasks, monitors.length > 0);
   }
 
   private computeStatus(entries: LoopEntry[]): string | undefined {
@@ -120,7 +123,7 @@ export class LoopWidget {
     this.panel.dispose();
   }
 
-  private scheduleActivityRefresh(entries: LoopEntry[], tasks: readonly TaskEntry[]) {
+  private scheduleActivityRefresh(entries: LoopEntry[], tasks: readonly TaskEntry[], monitorsRunning = false) {
     // Both the workflow activity and a task's stale-claim flag flip at a lease
     // expiry, so repaint at the earliest live one of either kind.
     const now = Date.now();
@@ -134,6 +137,8 @@ export class LoopWidget {
     for (const task of tasks) {
       if (task.status === "in_progress") consider(task.claim?.leaseExpiresAt);
     }
+    // Monitor rows show elapsed and quiet time at minute resolution.
+    if (monitorsRunning) consider(now + MONITOR_REFRESH_MS);
     if (expiresAt === undefined) return;
     this.activityRefreshTimer = setTimeout(() => {
       this.activityRefreshTimer = undefined;

@@ -14,7 +14,7 @@ import {
   resolveProgressPanelMode,
 } from "../src/ui/progress-panel-overlay.js";
 import { LoopWidget } from "../src/ui/widget.js";
-import { PANEL_NOW, panelOrchestration, panelTask, panelWorkflow } from "./helpers/progress-panel-fixtures.js";
+import { PANEL_NOW, panelMonitor, panelOrchestration, panelTask, panelWorkflow } from "./helpers/progress-panel-fixtures.js";
 
 const now = PANEL_NOW;
 const text = (input: Parameters<typeof layoutProgressPanel>[0], width = 34, rows = 18) =>
@@ -354,5 +354,82 @@ describe("progress panel overlay lifecycle", () => {
     const headless = new ProgressPanelOverlay();
     headless.setUI({ setStatus: vi.fn() } as any);
     expect(() => headless.sync(busy)).not.toThrow();
+  });
+});
+
+describe("progress panel monitors (issue #181)", () => {
+  const text = (lines: ReturnType<typeof layoutProgressPanel>) => lines.map(panelLineText);
+
+  it("shows running monitors with id, elapsed time, label, and last output line", () => {
+    const lines = text(layoutProgressPanel({
+      loops: [],
+      tasks: [],
+      monitors: [panelMonitor("3", { description: "train model", output: ["epoch 1", "epoch 7 loss=0.31"] })],
+      now: PANEL_NOW,
+    }, 40, 18));
+    expect(lines[0]).toContain("#3");
+    expect(lines[0]).toContain("41m");
+    expect(lines[0]).toContain("train model");
+    expect(lines[1]).toContain("epoch 7 loss=0.31");
+  });
+
+  it("omits finished monitors and caps the section", () => {
+    const monitors = [
+      panelMonitor("1", { status: "completed" }),
+      ...["2", "3", "4", "5"].map((id) => panelMonitor(id)),
+    ];
+    const lines = text(layoutProgressPanel({ loops: [], tasks: [], monitors, now: PANEL_NOW }, 40, 18));
+    expect(lines.some((line) => line.includes("#1"))).toBe(false);
+    expect(lines.filter((line) => /#\d/.test(line))).toHaveLength(3);
+    expect(lines.at(-1)).toContain("1 more");
+  });
+
+  it("falls back to the command and flags a quiet monitor", () => {
+    const lines = text(layoutProgressPanel({
+      loops: [],
+      tasks: [],
+      monitors: [panelMonitor("9", { command: "make soak", output: ["started"], lastOutputAt: PANEL_NOW - 12 * 60_000 })],
+      now: PANEL_NOW,
+    }, 40, 18));
+    expect(lines[0]).toContain("make soak");
+    expect(lines[1]).toContain("quiet 12m");
+  });
+
+  it("never lets monitor output reach the terminal with control bytes", () => {
+    const lines = text(layoutProgressPanel({
+      loops: [],
+      tasks: [],
+      monitors: [panelMonitor("1", { description: "\u001b[31mred", output: ["\u001b]8;;http://x\u0007link\u001b]8;;\u0007 \u009b2J"] })],
+      now: PANEL_NOW,
+    }, 40, 18));
+    for (const line of lines) expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+  });
+
+  it("shows the panel when only a monitor is running", () => {
+    expect(layoutProgressPanel({ loops: [], tasks: [], monitors: [panelMonitor("1")], now: PANEL_NOW }, 40, 18).length).toBeGreaterThan(0);
+    expect(layoutProgressPanel({ loops: [], tasks: [], monitors: [panelMonitor("1", { status: "error" })], now: PANEL_NOW }, 40, 18)).toEqual([]);
+  });
+
+  it("feeds running monitors from the widget and repaints their elapsed time each minute", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(PANEL_NOW));
+    try {
+      const running = panelMonitor("4", { description: "soak test", startedAt: PANEL_NOW - 60_000 });
+      const finished = panelMonitor("5", { status: "completed", description: "old job" });
+      const { ui, mounts } = createOverlayUi();
+      const widget = new LoopWidget(new LoopStore(), { list: () => [running, finished] } as any);
+      widget.setUICtx(ui);
+      const rendered = () => (mounts.at(-1)?.component.render(PANEL_WIDTH) ?? []).join("\n");
+
+      widget.update();
+      expect(rendered()).toContain("#4 1m soak test");
+      expect(rendered()).not.toContain("old job");
+      vi.advanceTimersByTime(60_000);
+      expect(rendered()).toContain("#4 2m soak test");
+      widget.dispose();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
