@@ -100,7 +100,21 @@ The parent `agent_end`, existing 30-second heartbeat, session recovery, and dire
 
 ### ACK-clocked pacing (opt-in)
 
-`pacing: "aimd"` narrows local capacity with a persisted additive-increase/multiplicative-decrease window; `concurrency` remains the hard ceiling and the default `fixed` pacing is unchanged. The window starts at one dispatch in flight with the slow-start threshold at `concurrency`. A completed first attempt with a non-empty result adds one unit below the threshold and about `1/cwnd` above it. A proved failure, a spawn failure, or a completed dispatch with an empty result halves the window (minimum one). A success that needed a retry is counted but never grows the window, because like a retransmitted TCP segment it is ambiguous evidence about capacity. Uncertain dispatches do not change the window; they already block all further dispatch. Signals come only from lifecycle evidence, never from the parent model, so identical event sequences produce identical capacity. The window does not judge result quality: a non-empty result is evidence of delivery, not correctness. `node --import tsx benchmarks/ack-window-sim.ts` compares both modes against a synthetic hidden bottleneck.
+`pacing: "aimd"` replaces fixed local capacity with a persisted window modelled on TCP Reno. `concurrency` is ignored; the window starts at one dispatch in flight and may grow to the eight-worker safety limit. The default `fixed` pacing is unchanged and persists no window.
+
+Work items may declare `verify`, a shell command run in the session cwd after the worker reports completion (same authority as `MonitorCreate`; five-minute timeout; bounded output tail). The dispatch stays in flight, holding window capacity, until the verifier exits; exit 0 is the ACK. A declared verifier that fails, is killed, or never ran makes the item fail and retry within `maxAttempts`. Shutdown aborts in-flight verifiers and drops their results; the dispatch is then reconciled like any other unconfirmed worker.
+
+Each settlement is classified before it reaches the window:
+
+| Signal | Evidence | Window |
+|---|---|---|
+| ACK | verifier passed; without a verifier, a non-empty completion | slow start below `ssthresh`, then about `1/cwnd` per ACK |
+| retry ACK | success on attempt > 1 | counted, never grows (Karn) |
+| task loss | verifier failed, empty result, other worker errors | counted, unchanged |
+| congestion | overload errors (429, 503, rate limit, connection reset), spawn failure, or per-output-token latency above twice the observed first-attempt floor | halve, once per window: work dispatched before the last cut cannot cut again |
+| timeout | timeout errors | collapse to one; `ssthresh` halves |
+
+Uncertain dispatches do not change the window; they already block all dispatch. Signals come only from lifecycle and verifier evidence, never from the parent model, so identical event sequences produce identical capacity. Error classification is pattern-based on provider error text and can misclassify. `npm run sim:ack-window` compares both modes in a synthetic model, including scenarios where aimd is slower than a well-chosen fixed value; `benchmarks/live-pacing.mjs` runs the comparison against a real model server.
 
 Lifecycle callbacks CAS loop revision, owner runtime/generation, work ID, dispatch ID, attempt, and agent ID. Normal terminal evidence is bounded and persisted with `provider_owned` completion status; pi-loop does not call `subagents:rpc:consume`, so the provider retains its native completion surface. Protocol-v2 stop replies and `stopped`/`aborted` lifecycle statuses acknowledge cancellation, not quiescence. They become non-retryable, non-consumable `uncertain` dispatches before stop RPCs run. A late spawn reply may attach its exact cleanup identity without restoring execution. Proved failures retry only within `maxAttempts`; a spawn timeout is ambiguous without upstream status/list or idempotent dispatch keys, so it becomes `uncertain` and is never retried automatically.
 

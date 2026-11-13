@@ -112,27 +112,29 @@ describe("subagent orchestration tools", () => {
     expect(h.store.list()).toHaveLength(0);
   });
 
-  it("creates an opt-in aimd batch that starts with one dispatch slot", async () => {
+  it("creates an opt-in aimd batch with per-item verifiers", async () => {
     const out = await h.text("OrchestrationCreate", {
-      goal: "Review release readiness",
-      work: [{ prompt: "Inspect API compatibility" }, { prompt: "Review rollout risks" }],
-      concurrency: 4,
+      goal: "Implement helpers",
+      work: [{ prompt: "Add sum()", verify: "node --test sum.test.js" }, { prompt: "Add mul()", verify: " npm test " }],
+      concurrency: 2,
       pacing: "aimd",
     });
 
-    expect(out).toContain("2 work items · concurrency 4 · aimd");
-    // Under aimd, concurrency is ignored; the window starts at one.
+    expect(out).toContain("2 work items · aimd window 1-8");
     expect(h.store.get("1")?.orchestration).toMatchObject({
       concurrency: 8,
-      window: { mode: "aimd", cwnd: 1, ssthresh: 8, acks: 0, losses: 0, taskLosses: 0 },
+      window: { mode: "aimd", cwnd: 1, ssthresh: 8 },
+      work: [{ verify: "node --test sum.test.js" }, { verify: "npm test" }],
     });
     expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], pacing: "cubic" })).toContain("pacing must be fixed or aimd");
+    expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect", verify: " " }] })).toContain("verify must contain");
     expect(h.store.list()).toHaveLength(1);
   });
 
-  it("keeps fixed pacing without a persisted window", async () => {
+  it("keeps fixed pacing without a persisted window or verifier", async () => {
     await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], pacing: "fixed" });
     expect(h.store.get("1")?.orchestration?.window).toBeUndefined();
+    expect(h.store.get("1")?.orchestration?.work[0]?.verify).toBeUndefined();
   });
 
   it("requires pi-subagents protocol v2 before persisting", async () => {

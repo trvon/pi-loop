@@ -10,9 +10,11 @@ import type {
   OrchestrationPendingWake,
   OrchestrationState,
   OrchestrationUsage,
+  OrchestrationVerification,
   OrchestrationWorkItem,
 } from "../types.js";
 import type { LoopScope } from "./scope.js";
+import { runVerifyCommand, type VerifyRunner } from "./verify-runner.js";
 
 const SPAWN_RPC = "subagents:rpc:spawn";
 const STOP_RPC = "subagents:rpc:stop";
@@ -55,6 +57,9 @@ export interface SubagentOrchestrationRuntimeOptions {
   now?: () => number;
   scheduleReconcile?: (fn: () => void) => void;
   isContextCurrent?: () => boolean;
+  /** Runs a work item's verifier; injectable for tests. */
+  runVerify?: VerifyRunner;
+  getCwd?: () => string;
   debug?: (...args: unknown[]) => void;
 }
 
@@ -149,6 +154,10 @@ export function createSubagentOrchestrationRuntime(
   const wakeQueued = new Set<string>();
   const consumeInFlight = new Set<string>();
   const dispatchesInFlight = new Map<string, Set<Promise<void>>>();
+  // Verification keeps the dispatch running, so it still holds window capacity until acknowledged.
+  const verifiesInFlight = new Map<string, AbortController>();
+  const runVerify = options.runVerify ?? runVerifyCommand;
+  const getCwd = options.getCwd ?? (() => process.cwd());
   let active = true;
   let reconcileQueued = false;
   let pumpPromise: Promise<void> | undefined;
@@ -320,7 +329,18 @@ export function createSubagentOrchestrationRuntime(
       durationMs: event.durationMs,
       tokens: event.tokens,
     };
-    const result = getStore().mutateOrchestration(match.entry.id, {
+    const verifyCommand = state.work.find((item) => currentDispatch(item)?.agentId === event.id)?.verify;
+    if (event.kind === "completed" && verifyCommand !== undefined) {
+      startVerify(match.entry.id, event, usage, verifyCommand);
+      return true;
+    }
+    return settleDispatch(match.entry.id, event, usage);
+  }
+
+  function settleDispatch(loopId: string, event: LifecycleEvent, usage: OrchestrationUsage, verify?: OrchestrationVerification): boolean {
+    const state = getStore().get(loopId)?.orchestration;
+    if (!state || !actorOwns(state)) return false;
+    const result = getStore().mutateOrchestration(loopId, {
       type: "dispatch_settled",
       at: now(),
       expected: expected(state),
@@ -329,11 +349,36 @@ export function createSubagentOrchestrationRuntime(
       result: event.result,
       error: event.error ?? (event.kind === "failed" ? event.status : undefined),
       usage,
+      verify,
     });
     if (!result.applied) return false;
     updateWidget();
     schedulePump();
     return true;
+  }
+
+  function startVerify(loopId: string, event: LifecycleEvent, usage: OrchestrationUsage, command: string): void {
+    if (verifiesInFlight.has(event.id)) return;
+    const controller = new AbortController();
+    verifiesInFlight.set(event.id, controller);
+    const generation = getGeneration();
+    void runVerify({ command, cwd: getCwd(), signal: controller.signal }).then(
+      (verify) => {
+        verifiesInFlight.delete(event.id);
+        // Teardown or a session switch owns the dispatch now; it will be reconciled as uncertain.
+        if (!active || controller.signal.aborted || !isContextCurrent() || getGeneration() !== generation) return;
+        settleDispatch(loopId, event, usage, verify);
+      },
+      (error) => {
+        verifiesInFlight.delete(event.id);
+        debug?.("orchestration verify failed to run", error);
+      },
+    );
+  }
+
+  function abortVerifies(): void {
+    for (const controller of verifiesInFlight.values()) controller.abort();
+    verifiesInFlight.clear();
   }
 
   const unsubStarted = events.on("subagents:started", (raw) => {
@@ -640,6 +685,7 @@ export function createSubagentOrchestrationRuntime(
 
   async function shutdown(): Promise<void> {
     active = false;
+    abortVerifies();
     const stops: Promise<void>[] = [];
     for (const entry of getStore().list()) {
       const state = entry.orchestration;
@@ -735,6 +781,7 @@ export function createSubagentOrchestrationRuntime(
     acknowledgeWake,
     dispose() {
       active = false;
+      abortVerifies();
       unsubStarted();
       unsubCompleted();
       unsubFailed();

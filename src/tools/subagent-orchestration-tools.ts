@@ -13,6 +13,7 @@ const MAX_ATTEMPTS = 3;
 const MAX_TURNS = 100;
 const MAX_GOAL_CHARS = 2_000;
 const MAX_PROMPT_CHARS = 16_384;
+const MAX_VERIFY_CHARS = 2_048;
 const MAX_SERIALIZED_INPUT_BYTES = 65_536;
 
 interface OrchestrationToolsOptions {
@@ -28,7 +29,7 @@ interface OrchestrationToolsOptions {
 
 interface CreateParams {
   goal: string;
-  work: Array<{ prompt: string; agentType?: string }>;
+  work: Array<{ prompt: string; agentType?: string; verify?: string }>;
   agentType?: string;
   model?: string;
   maxTurns?: number;
@@ -63,6 +64,8 @@ function validateCreate(params: CreateParams): string | undefined {
     if (!item.prompt.trim()) return `work item ${index + 1} prompt must not be empty`;
     if (item.prompt.length > MAX_PROMPT_CHARS) return `work prompt exceeds ${MAX_PROMPT_CHARS} characters at item ${index + 1}`;
     if ((item.agentType ?? params.agentType ?? "general-purpose").length > 128) return `agentType exceeds 128 characters at item ${index + 1}`;
+    const verify = item.verify;
+    if (verify !== undefined && (!verify.trim() || verify.length > MAX_VERIFY_CHARS)) return `verify must contain 1-${MAX_VERIFY_CHARS} characters at item ${index + 1}`;
   }
   if (Buffer.byteLength(JSON.stringify(params), "utf8") > MAX_SERIALIZED_INPUT_BYTES) {
     return `Serialized orchestration input exceeds ${MAX_SERIALIZED_INPUT_BYTES} bytes.`;
@@ -82,6 +85,7 @@ function definitionFrom(params: CreateParams): OrchestrationDefinitionInput {
     work: params.work.map((item) => ({
       prompt: item.prompt.trim(),
       agentType: item.agentType ?? params.agentType ?? "general-purpose",
+      ...(item.verify !== undefined ? { verify: item.verify.trim() } : {}),
     })),
     concurrency: params.concurrency ?? 3,
     ...(params.pacing === "aimd" ? { pacing: "aimd" as const } : {}),
@@ -106,12 +110,13 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       work: Type.Array(Type.Object({
         prompt: Type.String({ description: "Bounded independent work prompt", maxLength: MAX_PROMPT_CHARS }),
         agentType: Type.Optional(Type.String({ description: "Per-item subagent type override" })),
+        verify: Type.Optional(Type.String({ description: "exit 0=ok" })),
       }), { minItems: 1, maxItems: MAX_WORK_ITEMS }),
       agentType: Type.Optional(Type.String({ description: "Default subagent type (default: general-purpose)" })),
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
       maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
       concurrency: Type.Optional(Type.Integer({ description: "Local worker capacity (default: 3)", minimum: 1, maximum: MAX_CONCURRENCY, default: 3 })),
-      pacing: Type.Optional(Type.String({ description: "aimd: grow on results, halve on loss", enum: ["fixed", "aimd"] })),
+      pacing: Type.Optional(Type.String({ description: "aimd adapts", enum: ["fixed", "aimd"] })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
       expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new batch, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
     }),
@@ -154,7 +159,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       updateWidget();
       const message = [
         `Orchestration #${entry.id} created`,
-        `${definition.work.length} work items · concurrency ${definition.concurrency}${definition.pacing === "aimd" ? " · aimd" : ""}`,
+        definition.pacing === "aimd" ? `${definition.work.length} work items · aimd window 1-${MAX_CONCURRENCY}` : `${definition.work.length} work items · concurrency ${definition.concurrency}`,
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {
@@ -162,7 +167,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         action: "create",
         tone: "success",
         summary: `Orchestration #${entry.id} active · ${orchestrationProgressLabel(entry.orchestration!)}`,
-        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, `Concurrency: ${definition.concurrency}${definition.pacing === "aimd" ? " (aimd window starts at 1)" : ""}`, `Attempts: ${definition.maxAttempts}`],
+        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, definition.pacing === "aimd" ? `Pacing: aimd (window 1-${MAX_CONCURRENCY})` : `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
       });
     },
   });
