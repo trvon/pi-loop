@@ -30,6 +30,8 @@ export interface AckWindow {
   recoverAt?: number;
   /** Lowest observed milliseconds per output token: the uncongested floor. */
   minMsPerToken?: number;
+  /** Consecutive first-attempt samples above the delay threshold. */
+  delayStreak?: number;
 }
 
 /**
@@ -44,6 +46,12 @@ export type AckSignal = "ack" | "retry_ack" | "task_loss" | "congestion" | "time
 
 /** Per-token latency above this multiple of the floor means a queue is building. */
 export const DELAY_CONGESTION_FACTOR = 2;
+/**
+ * Slow samples needed in a row before delay counts as congestion. Worker
+ * duration includes the task's own tool time, so one slow sample is as likely
+ * a heavy task as a queue; a run of them is not.
+ */
+export const DELAY_CONGESTION_STREAK = 2;
 
 const CONGESTION_ERROR = /\b(429|503|rate.?limit|overload(ed)?|too many requests|capacity|server busy|ECONNRESET|ECONNREFUSED|socket hang up)\b/i;
 const TIMEOUT_ERROR = /\b(timed? ?out|timeout|ETIMEDOUT|deadline exceeded)\b/i;
@@ -71,6 +79,8 @@ export function applyAckSignal(window: AckWindow, signal: AckSignal, ceiling: nu
   }
   const sameWindow = window.recoverAt !== undefined && context.requestedAt <= window.recoverAt;
   if (signal === "congestion" && sameWindow) return { ...window, losses: window.losses + 1 };
+  // RFC 5681: repeated timeouts for the same flight reset the window but hold ssthresh.
+  if (signal === "timeout" && sameWindow) return { ...window, cwnd: 1, losses: window.losses + 1 };
   const half = Math.max(1, Math.floor(window.cwnd / 2));
   return {
     ...window,
@@ -98,7 +108,7 @@ export function msPerToken(evidence: Pick<SettlementEvidence, "durationMs" | "ou
   return durationMs / outputTokens;
 }
 
-export function classifySettlement(evidence: SettlementEvidence, window: Pick<AckWindow, "minMsPerToken">): AckSignal {
+export function classifySettlement(evidence: SettlementEvidence, window: Pick<AckWindow, "minMsPerToken" | "delayStreak">): AckSignal {
   if (evidence.outcome === "failed") {
     const error = evidence.error ?? "";
     if (TIMEOUT_ERROR.test(error)) return "timeout";
@@ -107,17 +117,23 @@ export function classifySettlement(evidence: SettlementEvidence, window: Pick<Ac
   }
   if (evidence.verifyPassed === false) return "task_loss";
   if (evidence.verifyPassed === undefined && !evidence.result?.trim()) return "task_loss";
-  const sample = msPerToken(evidence);
-  if (sample !== undefined && window.minMsPerToken !== undefined && sample > window.minMsPerToken * DELAY_CONGESTION_FACTOR) return "congestion";
-  return evidence.attempt > 1 ? "retry_ack" : "ack";
+  if (evidence.attempt > 1) return "retry_ack";
+  if (isDelayed(evidence, window) && (window.delayStreak ?? 0) + 1 >= DELAY_CONGESTION_STREAK) return "congestion";
+  return "ack";
 }
 
-/** Fold a delay sample into the floor. Retried work is excluded (Karn). */
+function isDelayed(evidence: Pick<SettlementEvidence, "durationMs" | "outputTokens">, window: Pick<AckWindow, "minMsPerToken">): boolean {
+  const sample = msPerToken(evidence);
+  return sample !== undefined && window.minMsPerToken !== undefined && sample > window.minMsPerToken * DELAY_CONGESTION_FACTOR;
+}
+
+/** Fold a delay sample into the floor and streak. Retried work is excluded (Karn). */
 export function observeDelay(window: AckWindow, evidence: Pick<SettlementEvidence, "durationMs" | "outputTokens" | "attempt">): AckWindow {
   const sample = msPerToken(evidence);
   if (sample === undefined || evidence.attempt > 1) return window;
-  if (window.minMsPerToken !== undefined && window.minMsPerToken <= sample) return window;
-  return { ...window, minMsPerToken: sample };
+  const delayStreak = isDelayed(evidence, window) ? (window.delayStreak ?? 0) + 1 : 0;
+  const minMsPerToken = window.minMsPerToken === undefined ? sample : Math.min(window.minMsPerToken, sample);
+  return { ...window, minMsPerToken, delayStreak };
 }
 
 export function validateAckWindow(value: unknown, ceiling: number): value is AckWindow {
@@ -130,5 +146,6 @@ export function validateAckWindow(value: unknown, ceiling: number): value is Ack
     && Number.isInteger(window.ssthresh) && Number(window.ssthresh) >= 1 && Number(window.ssthresh) <= ceiling
     && count(window.acks) && count(window.losses) && count(window.taskLosses)
     && optionalFinite(window.recoverAt, 0)
-    && optionalFinite(window.minMsPerToken, Number.MIN_VALUE);
+    && optionalFinite(window.minMsPerToken, Number.MIN_VALUE)
+    && (window.delayStreak === undefined || count(window.delayStreak));
 }

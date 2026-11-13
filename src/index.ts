@@ -443,7 +443,6 @@ export default function (pi: ExtensionAPI) {
     onExpired: (entry, disposition) => emitLoopExpired(entry, disposition, "scheduler", "expires_at"),
     updateWidget: () => widget.update(),
     isContextCurrent: isCurrentExtensionContext,
-    getCwd: () => process.cwd(),
     debug,
   });
 

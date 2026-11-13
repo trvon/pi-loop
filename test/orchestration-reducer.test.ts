@@ -356,14 +356,16 @@ describe("orchestration ACK-clocked pacing", () => {
     expect(state.window).toMatchObject({ cwnd: 2, losses: 3 });
   });
 
-  it("treats rising per-token latency on a verified success as congestion", () => {
+  it("treats a run of rising per-token latency on verified successes as congestion", () => {
     let state = verifiedBatch(4);
     state = runToSettled(state, "1", "1", 100, { verify: pass, usage: { durationMs: 2_000, tokens: tokens(100) } });
     state = runToSettled(state, "2", "2", 110, { verify: pass, usage: { durationMs: 2_200, tokens: tokens(100) } });
     expect(state.window).toMatchObject({ cwnd: 3, minMsPerToken: 20 });
     state = runToSettled(state, "3", "3", 120, { verify: pass, usage: { durationMs: 6_000, tokens: tokens(100) } });
-    expect(state.window).toMatchObject({ cwnd: 1, ssthresh: 1, losses: 1, acks: 2, minMsPerToken: 20 });
-    expect(state.work[2]?.status).toBe("completed");
+    expect(state.window).toMatchObject({ cwnd: 4, acks: 3, delayStreak: 1 });
+    state = runToSettled(state, "4", "4", 130, { verify: pass, usage: { durationMs: 6_000, tokens: tokens(100) } });
+    expect(state.window).toMatchObject({ cwnd: 2, ssthresh: 2, losses: 1, acks: 3, delayStreak: 2, minMsPerToken: 20 });
+    expect(state.work[3]?.status).toBe("completed");
   });
 
   it("counts spawn failure as congestion", () => {
@@ -418,5 +420,53 @@ describe("orchestration ACK-clocked pacing", () => {
     const badCommand = structuredClone(state) as any;
     badCommand.work[0].verify = "";
     expect(() => validatePersistedOrchestration(badCommand)).toThrow("invalid verify command");
+  });
+});
+
+describe("review regressions: persisted verification", () => {
+  function awaiting(state: ReturnType<typeof create>, key: string, at: number, result = "done") {
+    return applyOrchestrationEvent(state, {
+      type: "dispatch_awaiting_verify", at, expected: expectedOf(state), agentId: `agent-${key}`, result,
+      usage: { durationMs: 2000, tokens: tokens(100) },
+    });
+  }
+
+  it("R6: persists a completed worker as verifying, holding capacity until verified", () => {
+    let state = request(verifiedBatch(2), "1", "1", 100);
+    const pending = awaiting(state, "1", 110);
+    expect(pending.applied).toBe(true);
+    state = pending.state;
+    expect(state.work[0]).toMatchObject({ status: "active" });
+    expect(state.work[0]?.dispatches[0]).toMatchObject({ status: "verifying", result: "done", settledAt: 110, usage: { durationMs: 2000 } });
+    expect(getOrchestrationCounts(state).active).toBe(1);
+    expect(dispatch(state, "2", "dispatch-2", 115)).toMatchObject({ applied: false, reason: "capacity_exhausted" });
+    expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
+
+    const verified = applyOrchestrationEvent(state, { type: "dispatch_verified", at: 120, expected: expectedOf(state), agentId: "agent-1", verify: pass }).state;
+    expect(verified.work[0]).toMatchObject({ status: "completed" });
+    expect(verified.work[0]?.dispatches[0]).toMatchObject({ status: "completed", result: "done", verify: pass, consumeStatus: "provider_owned" });
+    expect(verified.window).toMatchObject({ cwnd: 2, acks: 1, minMsPerToken: 20 });
+  });
+
+  it("R6: rejects verification for dispatches that are not verifying", () => {
+    const state = request(verifiedBatch(1), "1", "1", 100);
+    expect(applyOrchestrationEvent(state, { type: "dispatch_verified", at: 120, expected: expectedOf(state), agentId: "agent-1", verify: pass }))
+      .toMatchObject({ applied: false, reason: "dispatch_not_verifying" });
+    const unverified = request(create(1), "1", "1", 100);
+    expect(awaiting(unverified, "1", 110)).toMatchObject({ applied: false, reason: "verify_not_declared" });
+  });
+
+  it("R6: verifying work survives foreign owner adoption and is not unconfirmed on cancel", () => {
+    const state = awaiting(request(verifiedBatch(1), "1", "1", 100), "1", 110).state;
+    const adopted = applyOrchestrationEvent(state, {
+      type: "owner_adopted", at: state.owner.leaseExpiresAt + 1, expectedRevision: state.revision,
+      owner: { sessionId: "session-a", runtimeId: "runtime-b", generation: 0 },
+    }).state;
+    expect(adopted.work[0]?.dispatches[0]?.status).toBe("verifying");
+    expect(adopted.status).toBe("active");
+
+    const cancelled = applyOrchestrationEvent(state, { type: "cancelled", at: 130, expected: expectedOf(state) }).state;
+    expect(cancelled.work[0]).toMatchObject({ status: "cancelled" });
+    expect(cancelled.work[0]?.dispatches[0]).toMatchObject({ status: "completed", consumeStatus: "provider_owned", error: "cancelled before verification" });
   });
 });

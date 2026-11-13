@@ -170,6 +170,64 @@ describe("orchestration reducer properties", () => {
     ), propertyOptions());
   });
 
+  it("holds capacity while verifying, settles each verification once, and never makes verifying work uncertain", () => {
+    type Step = "fill" | "complete" | "pass" | "fail" | "adopt" | "cancel";
+    fc.assert(fc.property(
+      fc.integer({ min: 1, max: 10 }),
+      fc.integer({ min: 1, max: 3 }),
+      fc.array(fc.constantFrom<Step>("fill", "complete", "pass", "fail", "adopt", "cancel"), { minLength: 1, maxLength: 50 }),
+      (workCount, maxAttempts, steps) => {
+        let state = createOrchestrationState({
+          goal: "verify property",
+          work: Array.from({ length: workCount }, (_, index) => ({ prompt: `work ${index + 1}`, verify: `check ${index + 1}` })),
+          maxAttempts,
+          pacing: "aimd",
+        }, owner, 0);
+        let actor = { ...owner };
+        const expected = () => ({ revision: state.revision, ownerRuntimeId: actor.runtimeId, generation: actor.generation });
+        let at = 1;
+        for (const step of steps) {
+          if (step === "fill") {
+            for (const item of state.work.filter((candidate) => candidate.status === "pending")) {
+              const dispatchId = `d${at}`;
+              const requested = applyOrchestrationEvent(state, { type: "dispatch_requested", at: at++, expected: expected(), workId: item.id, dispatchId });
+              if (!requested.applied) break;
+              state = requested.state;
+              state = applyChecked(state, { type: "dispatch_bound", at: at++, expected: expected(), workId: item.id, dispatchId, agentId: `a${dispatchId}` });
+            }
+          } else if (step === "complete") {
+            const live = state.work.map((item) => item.dispatches.at(-1)).find((d) => d && (d.status === "queued" || d.status === "running"));
+            if (live?.agentId) state = applyChecked(state, { type: "dispatch_awaiting_verify", at: at++, expected: expected(), agentId: live.agentId, result: "done" });
+          } else if (step === "pass" || step === "fail") {
+            const verifying = state.work.map((item) => item.dispatches.at(-1)).find((d) => d?.status === "verifying");
+            if (!verifying?.agentId) continue;
+            const before = structuredClone(state);
+            state = applyChecked(state, { type: "dispatch_verified", at: at++, expected: expected(), agentId: verifying.agentId, verify: { passed: step === "pass", exitCode: step === "pass" ? 0 : 1, durationMs: 1 } });
+            const again = applyOrchestrationEvent(state, { type: "dispatch_verified", at: at++, expected: expected(), agentId: verifying.agentId, verify: { passed: true, exitCode: 0, durationMs: 1 } });
+            expect(again.applied).toBe(false);
+            expect(before.work.flatMap((item) => item.dispatches).filter((d) => d.status === "verifying").length - 1)
+              .toBe(state.work.flatMap((item) => item.dispatches).filter((d) => d.status === "verifying").length);
+          } else if (step === "adopt") {
+            const next = { sessionId: owner.sessionId, runtimeId: `runtime-${at}`, generation: actor.generation + 1 };
+            const adopted = applyOrchestrationEvent(state, { type: "owner_adopted", at: state.owner.leaseExpiresAt + 1, expectedRevision: state.revision, owner: next });
+            if (adopted.applied) {
+              const verifyingBefore = state.work.filter((item) => item.dispatches.at(-1)?.status === "verifying").map((item) => item.id);
+              state = adopted.state;
+              actor = next;
+              for (const id of verifyingBefore) expect(state.work.find((item) => item.id === id)?.dispatches.at(-1)?.status).toBe("verifying");
+            }
+          } else if (state.status !== "cancelled") {
+            state = applyChecked(state, { type: "cancelled", at: at++, expected: expected() });
+            expect(state.work.flatMap((item) => item.dispatches).some((d) => d.status === "verifying")).toBe(false);
+          }
+          const verifyingItems = state.work.filter((item) => item.dispatches.at(-1)?.status === "verifying");
+          expect(verifyingItems.every((item) => item.status === "active")).toBe(true);
+          expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
+        }
+      },
+    ), propertyOptions());
+  });
+
   it("rejects arbitrary stale revisions without mutation", () => {
     fc.assert(
       fc.property(fc.integer({ min: 2, max: 10_000 }), (staleRevision) => {

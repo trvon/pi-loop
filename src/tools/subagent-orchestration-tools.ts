@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
 import type { LoopScope } from "../runtime/scope.js";
 import type { LoopStore } from "../store.js";
 import type { OrchestrationActor, OrchestrationDefinitionInput } from "../types.js";
@@ -13,7 +14,6 @@ const MAX_ATTEMPTS = 3;
 const MAX_TURNS = 100;
 const MAX_GOAL_CHARS = 2_000;
 const MAX_PROMPT_CHARS = 16_384;
-const MAX_VERIFY_CHARS = 2_048;
 const MAX_SERIALIZED_INPUT_BYTES = 65_536;
 
 interface OrchestrationToolsOptions {
@@ -65,7 +65,7 @@ function validateCreate(params: CreateParams): string | undefined {
     if (item.prompt.length > MAX_PROMPT_CHARS) return `work prompt exceeds ${MAX_PROMPT_CHARS} characters at item ${index + 1}`;
     if ((item.agentType ?? params.agentType ?? "general-purpose").length > 128) return `agentType exceeds 128 characters at item ${index + 1}`;
     const verify = item.verify;
-    if (verify !== undefined && (!verify.trim() || verify.length > MAX_VERIFY_CHARS)) return `verify must contain 1-${MAX_VERIFY_CHARS} characters at item ${index + 1}`;
+    if (verify !== undefined && (!verify.trim() || verify.length > MAX_ORCHESTRATION_VERIFY_CHARS)) return `verify must contain 1-${MAX_ORCHESTRATION_VERIFY_CHARS} characters at item ${index + 1}`;
   }
   if (Buffer.byteLength(JSON.stringify(params), "utf8") > MAX_SERIALIZED_INPUT_BYTES) {
     return `Serialized orchestration input exceeds ${MAX_SERIALIZED_INPUT_BYTES} bytes.`;

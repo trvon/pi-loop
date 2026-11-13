@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS } from "../src/orchestration-reducer.js";
 import { createSubagentOrchestrationRuntime } from "../src/runtime/subagent-orchestration-runtime.js";
 import { runVerifyCommand, type VerifyRequest } from "../src/runtime/verify-runner.js";
 import { LoopStore } from "../src/store.js";
@@ -16,18 +17,19 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function setup(work: Array<{ prompt: string; verify?: string }>, maxAttempts = 2) {
+function setup(work: Array<{ prompt: string; verify?: string }>, maxAttempts = 2, runVerifyOverride?: (request: VerifyRequest) => Promise<OrchestrationVerification>) {
   const { pi } = createMockPi();
   const store = new LoopStore();
   let actor = { ...owner };
   let nextAgent = 0;
   const pendingVerifies: Array<{ request: VerifyRequest; reply: ReturnType<typeof deferred<OrchestrationVerification>> }> = [];
-  const runVerify = vi.fn((request: VerifyRequest) => {
+  const runVerify = vi.fn(runVerifyOverride ?? ((request: VerifyRequest) => {
     const reply = deferred<OrchestrationVerification>();
     pendingVerifies.push({ request, reply });
     return reply.promise;
-  });
-  const rpc = vi.fn(async (channel: string) => channel === "subagents:rpc:spawn" ? { id: `agent-${++nextAgent}` } : undefined);
+  }));
+  const rpc = vi.fn(async (channel: string, _params?: Record<string, unknown>) => channel === "subagents:rpc:spawn" ? { id: `agent-${++nextAgent}` } : undefined);
+  const emitWake = vi.fn();
   const runtime = createSubagentOrchestrationRuntime({
     events: pi.events,
     getStore: () => store,
@@ -35,7 +37,7 @@ function setup(work: Array<{ prompt: string; verify?: string }>, maxAttempts = 2
     getActor: () => actor,
     getGeneration: () => actor.generation,
     rpcCall: rpc,
-    emitWake: vi.fn(),
+    emitWake,
     onExpired: vi.fn(),
     updateWidget: vi.fn(),
     now: () => 1_000,
@@ -50,7 +52,8 @@ function setup(work: Array<{ prompt: string; verify?: string }>, maxAttempts = 2
   });
   const state = () => store.get(entry.id)!.orchestration!;
   const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
-  return { pi, store, runtime, runVerify, pendingVerifies, entry, state, flush, rpc, setActor(value: OrchestrationActor) { actor = value; } };
+  const prompts = () => rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:spawn").map(([, params]) => String((params as { prompt?: string } | undefined)?.prompt ?? ""));
+  return { pi, store, runtime, runVerify, pendingVerifies, entry, state, flush, rpc, emitWake, prompts, setActor(value: OrchestrationActor) { actor = value; } };
 }
 
 const pass: OrchestrationVerification = { passed: true, exitCode: 0, durationMs: 12 };
@@ -158,3 +161,108 @@ describe("verify command runner", () => {
     expect(await pending).toMatchObject({ passed: false, exitCode: null });
   });
 });
+
+describe("review regressions: verifier runtime", () => {
+  it("R1: a final verification failure wakes the parent instead of deferring to the provider", async () => {
+    const h = setup([{ prompt: "add sum()", verify: "node --test" }], 1);
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "done" });
+    await h.flush();
+    h.pendingVerifies[0]!.reply.resolve(fail);
+    await h.flush();
+    await h.runtime.pump();
+    expect(h.state()).toMatchObject({ status: "needs_attention" });
+    expect(h.emitWake).toHaveBeenCalledTimes(1);
+    expect(h.state().pendingWake).toMatchObject({ reason: "failed" });
+    h.runtime.dispose();
+  });
+
+  it("R2: a verifier that cannot run settles the dispatch as unverified instead of hanging", async () => {
+    const h = setup([{ prompt: "add sum()", verify: "node --test" }], 1, async () => { throw new Error("spawn EINVAL"); });
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "done" });
+    await h.flush();
+    expect(h.state().work[0]?.dispatches[0]).toMatchObject({ status: "completed", verify: { passed: false, exitCode: null } });
+    expect(h.state().work[0]?.dispatches[0]?.verify?.output).toContain("spawn EINVAL");
+    expect(h.state().work[0]?.status).toBe("failed");
+    expect(h.state().status).toBe("needs_attention");
+    h.runtime.dispose();
+  });
+
+  it("R3: cancelling a batch aborts its in-flight verifier", async () => {
+    const h = setup([{ prompt: "add sum()", verify: "node --test" }]);
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "done" });
+    await h.flush();
+    const signal = h.pendingVerifies[0]!.request.signal;
+    await h.runtime.cancel(h.entry.id, "delete");
+    expect(signal.aborted).toBe(true);
+    h.runtime.dispose();
+  });
+
+  it("R6: shutdown keeps a completed worker verifying and recovery re-runs its verifier", async () => {
+    const h = setup([{ prompt: "add sum()", verify: "node --test" }]);
+    await h.runtime.pump();
+    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "implemented", tokens: { input: 1, output: 100, total: 101 }, durationMs: 2000 });
+    await h.flush();
+    expect(h.state().work[0]?.dispatches[0]).toMatchObject({ status: "verifying", result: "implemented" });
+    await h.runtime.shutdown();
+    expect(h.pendingVerifies[0]!.request.signal.aborted).toBe(true);
+    expect(h.state().work[0]?.dispatches[0]).toMatchObject({ status: "verifying", result: "implemented" });
+    expect(h.rpc.mock.calls.some(([channel]) => channel === "subagents:rpc:stop")).toBe(false);
+
+    await h.runtime.recover();
+    await h.flush();
+    expect(h.runVerify).toHaveBeenCalledTimes(2);
+    h.pendingVerifies[1]!.reply.resolve(pass);
+    await h.flush();
+    expect(h.state().work[0]).toMatchObject({ status: "completed" });
+    expect(h.state().work[0]?.dispatches[0]).toMatchObject({ status: "completed", result: "implemented", verify: pass });
+    h.runtime.dispose();
+  });
+
+  it("R9: workers see their check, and a retry sees why the previous attempt failed", async () => {
+    const h = setup([{ prompt: "add sum()", verify: "node --test test/sum.test.js" }]);
+    await h.runtime.pump();
+    expect(h.prompts()[0]).toContain("node --test test/sum.test.js");
+    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "done" });
+    await h.flush();
+    h.pendingVerifies[0]!.reply.resolve(fail);
+    await h.flush();
+    await h.runtime.pump();
+    const retry = h.prompts()[1]!;
+    expect(retry).toContain("Previous attempt failed verification");
+    expect(retry).toContain("exit 1");
+    expect(retry).toContain("expected 3, got 2");
+    h.runtime.dispose();
+  });
+});
+
+describe("review regressions: verify command runner", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-loop-verify-r-"));
+  const run = (command: string, timeoutMs?: number) => runVerifyCommand({ command, cwd, signal: new AbortController().signal, timeoutMs });
+
+  it("R4: settles on shell exit even when a background child keeps stdio open", async () => {
+    const result = await run("sleep 20 & echo started", 15_000);
+    expect(result).toMatchObject({ passed: true, exitCode: 0 });
+    expect(result.durationMs).toBeLessThan(10_000);
+  });
+
+  it("R8: runs through sh regardless of the user's login shell", async () => {
+    const previous = process.env.SHELL;
+    process.env.SHELL = "/usr/bin/false";
+    try {
+      expect(await run("[ 1 -eq 1 ] && echo ok")).toMatchObject({ passed: true, exitCode: 0 });
+    } finally {
+      process.env.SHELL = previous;
+    }
+  });
+
+  it("R10: keeps multibyte output intact across chunk boundaries and within the persisted bound", async () => {
+    const result = await run(`node -e "process.stdout.write('\u20ac'.repeat(100000))"`);
+    expect(result.output).not.toContain("\uFFFD");
+    expect(result.output?.length).toBeLessThanOrEqual(MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS);
+    expect(result.output?.at(-1)).toBe("\u20ac");
+  });
+});
+

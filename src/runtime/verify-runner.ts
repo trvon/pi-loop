@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
+import { MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS } from "../orchestration-reducer.js";
+import { EXIT_CLOSE_GRACE_MS, signalProcessTree } from "../process-tree.js";
 import type { OrchestrationVerification } from "../types.js";
 
 export const VERIFY_TIMEOUT_MS = 300_000;
-const OUTPUT_TAIL_CHARS = 2_048;
 
 export interface VerifyRequest {
   command: string;
@@ -14,42 +16,62 @@ export interface VerifyRequest {
 export type VerifyRunner = (request: VerifyRequest) => Promise<OrchestrationVerification>;
 
 /**
- * Runs a work item's verifier through the user's shell. The command carries
- * the same authority as MonitorCreate: model-supplied, executed in the session
- * cwd. Only the exit status is evidence; output is a bounded tail for humans.
+ * Runs a work item's verifier through `sh`, exactly as MonitorCreate runs its
+ * commands: model-supplied, in the session cwd. Only the exit status is
+ * evidence; output is a bounded tail for humans and retry feedback.
  */
 export const runVerifyCommand: VerifyRunner = ({ command, cwd, signal, timeoutMs = VERIFY_TIMEOUT_MS }) => new Promise((resolve) => {
   const startedAt = Date.now();
+  const decoder = new StringDecoder("utf8");
   let output = "";
   let settled = false;
+  let exitGrace: NodeJS.Timeout | undefined;
+  let timer: NodeJS.Timeout | undefined;
+  const append = (text: string) => {
+    output = (output + text).slice(-MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS);
+  };
+
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn("sh", ["-c", command], { cwd, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+  } catch (error) {
+    resolve({ passed: false, exitCode: null, durationMs: 0, output: `verifier could not start: ${error instanceof Error ? error.message : String(error)}` });
+    return;
+  }
+
+  const kill = () => signalProcessTree(child, "SIGKILL");
   const finish = (exitCode: number | null) => {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
-    signal.removeEventListener("abort", kill);
-    resolve({ passed: exitCode === 0, exitCode, durationMs: Date.now() - startedAt, output: output.slice(-OUTPUT_TAIL_CHARS) || undefined });
+    clearTimeout(exitGrace);
+    signal.removeEventListener("abort", onAbort);
+    append(decoder.end());
+    resolve({ passed: exitCode === 0, exitCode, durationMs: Date.now() - startedAt, output: output || undefined });
   };
-  const child = spawn(process.env.SHELL || "/bin/sh", ["-c", command], { cwd, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
-  const kill = () => {
-    try {
-      if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL");
-      else child.kill("SIGKILL");
-    } catch {
-      // Already exited.
-    }
+  const onAbort = () => {
+    kill();
     finish(null);
   };
-  const append = (chunk: Buffer) => {
-    output = (output + chunk.toString("utf8")).slice(-OUTPUT_TAIL_CHARS);
-  };
-  child.stdout?.on("data", append);
-  child.stderr?.on("data", append);
+
+  child.stdout?.on("data", (chunk: Buffer) => append(decoder.write(chunk)));
+  child.stderr?.on("data", (chunk: Buffer) => append(decoder.write(chunk)));
   child.on("error", (error) => {
-    output = `${output}\n${error.message}`.slice(-OUTPUT_TAIL_CHARS);
+    append(`\n${error.message}`);
     finish(null);
   });
   child.on("close", (code) => finish(code));
-  const timer = setTimeout(kill, timeoutMs);
-  if (signal.aborted) kill();
-  else signal.addEventListener("abort", kill, { once: true });
+  // A backgrounded grandchild can hold stdio open after the shell exits; the
+  // shell's exit status is the verdict, and leftovers are reaped.
+  child.on("exit", (code) => {
+    if (settled || exitGrace) return;
+    exitGrace = setTimeout(() => {
+      finish(code);
+      kill();
+    }, EXIT_CLOSE_GRACE_MS);
+    exitGrace.unref?.();
+  });
+  timer = setTimeout(onAbort, timeoutMs);
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
 });

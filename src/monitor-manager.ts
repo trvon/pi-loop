@@ -1,5 +1,5 @@
 
-import { type ChildProcess, spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
+import { spawn as nodeSpawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -7,10 +7,11 @@ import {
   type MonitorReducerState,
   reduceMonitorState,
 } from "./monitor-reducer.js";
+import { EXIT_CLOSE_GRACE_MS, type SpawnFn, signalProcessTree } from "./process-tree.js";
 import { isStaleExtensionContextError } from "./runtime/stale-context.js";
 import type { MonitorEntry, MonitorProcess, MonitorProgress } from "./types.js";
 
-export type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+export type { SpawnFn } from "./process-tree.js";
 
 export interface MonitorManagerOptions {
   platform?: NodeJS.Platform;
@@ -22,9 +23,10 @@ const MAX_OUTPUT_LINE_LENGTH = 4096;
 const OUTPUT_RATE_WINDOW_MS = 60000;
 export const MONITOR_RETENTION_MS = 15 * 60 * 1000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 // How long a dead shell may keep its monitor "running" while a grandchild
 // still holds the inherited stdio pipes open.
-export const EXIT_CLOSE_GRACE_MS = 2000;
+export { EXIT_CLOSE_GRACE_MS } from "./process-tree.js";
 
 export class MonitorManager {
   private processes = new Map<string, MonitorProcess>();
@@ -166,36 +168,7 @@ export class MonitorManager {
   }
 
   private signalProcessTree(bp: MonitorProcess, signal: NodeJS.Signals): void {
-    let fellBack = false;
-    const fallback = () => {
-      if (fellBack) return;
-      fellBack = true;
-      try { bp.proc.kill(signal); } catch { /* already dead */ }
-    };
-
-    if (this.platform === "win32") {
-      try {
-        const taskkill = this.taskkillSpawn(
-          "taskkill",
-          ["/pid", String(bp.pid), "/t", "/f"],
-          { stdio: "ignore", windowsHide: true },
-        );
-        taskkill.once("error", fallback);
-        taskkill.once("close", (code) => {
-          if (code !== 0) fallback();
-        });
-        return;
-      } catch {
-        fallback();
-        return;
-      }
-    }
-
-    try {
-      process.kill(-bp.pid, signal);
-    } catch {
-      fallback();
-    }
+    signalProcessTree(bp.proc, signal, { platform: this.platform, taskkillSpawn: this.taskkillSpawn });
   }
 
   // Retain terminal state long enough for a completion wake to inspect it.

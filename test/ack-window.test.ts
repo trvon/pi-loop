@@ -96,13 +96,15 @@ describe("settlement classification", () => {
     expect(classifySettlement({ outcome: "failed", attempt: 1 }, noFloor)).toBe("task_loss");
   });
 
-  it("flags a verified success as congestion when per-token latency exceeds the floor", () => {
+  it("flags a verified success as congestion only after a run of slow samples", () => {
     const floor = { minMsPerToken: 20 };
     const fast = { outcome: "completed" as const, attempt: 1, verifyPassed: true, outputTokens: 100 };
-    expect(classifySettlement({ ...fast, durationMs: 100 * 20 * DELAY_CONGESTION_FACTOR }, floor)).toBe("ack");
-    expect(classifySettlement({ ...fast, durationMs: 100 * 20 * DELAY_CONGESTION_FACTOR + 100 }, floor)).toBe("congestion");
-    expect(classifySettlement({ ...fast, durationMs: 999_999 }, noFloor)).toBe("ack");
-    expect(classifySettlement({ ...fast, durationMs: 999_999, outputTokens: 0 }, floor)).toBe("ack");
+    const slowDuration = 100 * 20 * DELAY_CONGESTION_FACTOR + 100;
+    expect(classifySettlement({ ...fast, durationMs: 100 * 20 * DELAY_CONGESTION_FACTOR }, { ...floor, delayStreak: 1 })).toBe("ack");
+    expect(classifySettlement({ ...fast, durationMs: slowDuration }, floor)).toBe("ack");
+    expect(classifySettlement({ ...fast, durationMs: slowDuration }, { ...floor, delayStreak: 1 })).toBe("congestion");
+    expect(classifySettlement({ ...fast, durationMs: 999_999 }, { delayStreak: 9 })).toBe("ack");
+    expect(classifySettlement({ ...fast, durationMs: 999_999, outputTokens: 0 }, { ...floor, delayStreak: 9 })).toBe("ack");
   });
 
   it("tracks the delay floor from first attempts only", () => {
@@ -132,5 +134,34 @@ describe("persisted window validation", () => {
       { ...valid, mode: "cubic" },
       null,
     ]) expect(validateAckWindow(bad, 4)).toBe(false);
+  });
+});
+
+describe("review regressions", () => {
+  it("R5: repeated timeouts in one window reset cwnd but do not lower ssthresh again (RFC 5681)", () => {
+    const grown = { ...createAckWindow(8), cwnd: 8, ssthresh: 8 };
+    const first = applyAckSignal(grown, "timeout", 8, { at: 100, requestedAt: 50 });
+    expect(first).toMatchObject({ cwnd: 1, ssthresh: 4, recoverAt: 100 });
+    const second = applyAckSignal(first, "timeout", 8, { at: 110, requestedAt: 60 });
+    expect(second).toMatchObject({ cwnd: 1, ssthresh: 4, losses: 2 });
+    const nextWindow = applyAckSignal({ ...second, cwnd: 6 }, "timeout", 8, { at: 200, requestedAt: 150 });
+    expect(nextWindow).toMatchObject({ cwnd: 1, ssthresh: 3 });
+  });
+
+  it("R7: one slow sample is not congestion; two consecutive slow samples are", () => {
+    const floor = { ...createAckWindow(8), minMsPerToken: 20 };
+    const slow = { outcome: "completed" as const, attempt: 1, verifyPassed: true, outputTokens: 100, durationMs: 100 * 20 * 3 };
+    const fast = { ...slow, durationMs: 100 * 20 };
+    expect(classifySettlement(slow, floor)).toBe("ack");
+    const afterOne = observeDelay(floor, slow);
+    expect(afterOne.delayStreak).toBe(1);
+    expect(classifySettlement(slow, afterOne)).toBe("congestion");
+    expect(observeDelay(afterOne, fast).delayStreak).toBe(0);
+  });
+
+  it("R7: a retried success is never classified as delay congestion (Karn)", () => {
+    const primed = { ...createAckWindow(8), minMsPerToken: 20, delayStreak: 5 };
+    expect(classifySettlement({ outcome: "completed", attempt: 2, verifyPassed: true, outputTokens: 100, durationMs: 999_999 }, primed)).toBe("retry_ack");
+    expect(observeDelay(primed, { attempt: 2, outputTokens: 100, durationMs: 999_999 }).delayStreak).toBe(5);
   });
 });

@@ -23,7 +23,7 @@ export const MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS = 2_048;
 
 const ORCHESTRATION_STATUSES = new Set(["active", "needs_attention", "completed", "cancelled"]);
 const WORK_STATUSES = new Set(["pending", "active", "completed", "failed", "uncertain", "cancelled"]);
-const DISPATCH_STATUSES = new Set(["spawning", "queued", "running", "completed", "failed", "interrupted", "stopped", "uncertain"]);
+const DISPATCH_STATUSES = new Set(["spawning", "queued", "running", "verifying", "completed", "failed", "interrupted", "stopped", "uncertain"]);
 const CONSUME_STATUSES = new Set(["not_applicable", "provider_owned", "pending", "consumed", "unavailable"]);
 const WAKE_REASONS = new Set(["completed", "failed", "uncertain", "recovery"]);
 
@@ -104,7 +104,8 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
     }
     const lastDispatch = rawItem.dispatches.at(-1);
     const shouldBeActive = rawItem.status === "active";
-    const hasActiveDispatch = isRecord(lastDispatch) && (lastDispatch.status === "spawning" || lastDispatch.status === "queued" || lastDispatch.status === "running");
+    const hasActiveDispatch = isRecord(lastDispatch) && (lastDispatch.status === "spawning" || lastDispatch.status === "queued" || lastDispatch.status === "running" || lastDispatch.status === "verifying");
+    if (isRecord(lastDispatch) && lastDispatch.status === "verifying" && (rawItem.verify === undefined || typeof lastDispatch.agentId !== "string")) throw new Error("Malformed orchestration state: verifying dispatch without verifier");
     if (shouldBeActive !== hasActiveDispatch) throw new Error("Malformed orchestration state: work/dispatch status mismatch");
   }
   if (value.status === "completed" && !allWorkCompleted) throw new Error("Malformed orchestration state: incomplete completed batch");
@@ -131,6 +132,8 @@ export type OrchestrationEvent =
   | { type: "cleanup_bound"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; attempt: number; agentId: string }
   | { type: "dispatch_started"; at: number; expected: ExpectedOrchestration; agentId: string }
   | { type: "dispatch_settled"; at: number; expected: ExpectedOrchestration; agentId: string; outcome: "completed" | "failed"; result?: string; error?: string; usage?: OrchestrationUsage; verify?: OrchestrationVerification }
+  | { type: "dispatch_awaiting_verify"; at: number; expected: ExpectedOrchestration; agentId: string; result?: string; usage?: OrchestrationUsage }
+  | { type: "dispatch_verified"; at: number; expected: ExpectedOrchestration; agentId: string; verify: OrchestrationVerification }
   | { type: "dispatch_spawn_failed"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
   | { type: "dispatch_interrupted"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
   | { type: "dispatch_uncertain"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
@@ -199,6 +202,57 @@ function findByAgent(state: OrchestrationState, agentId: string): { item: Orches
     if (dispatch?.agentId === agentId) return { item, dispatch };
   }
   return undefined;
+}
+
+function findVerifying(state: OrchestrationState, agentId: string): { item: OrchestrationWorkItem; dispatch: OrchestrationDispatch } | undefined {
+  for (const item of state.work) {
+    const dispatch = item.dispatches.at(-1);
+    if (dispatch?.status === "verifying" && dispatch.agentId === agentId) return { item, dispatch };
+  }
+  return undefined;
+}
+
+interface SettlementInput {
+  outcome: "completed" | "failed";
+  result?: string;
+  error?: string;
+  usage?: OrchestrationUsage;
+  verify?: OrchestrationVerification;
+}
+
+function settleDispatch(
+  next: OrchestrationState,
+  found: { item: OrchestrationWorkItem; dispatch: OrchestrationDispatch },
+  input: SettlementInput,
+  at: number,
+): void {
+  const { item, dispatch } = found;
+  dispatch.status = input.outcome;
+  dispatch.result = truncate(input.result, MAX_ORCHESTRATION_RESULT_CHARS);
+  dispatch.error = truncate(input.error, MAX_ORCHESTRATION_ERROR_CHARS);
+  dispatch.usage = input.usage;
+  dispatch.settledAt ??= at;
+  dispatch.consumeStatus = "provider_owned";
+  if (input.verify) dispatch.verify = { ...input.verify, output: truncate(input.verify.output, MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS) };
+  // A declared verifier with no passing evidence is not an ACK; the item retries within its budget.
+  const verifiedFailure = input.outcome === "completed" && item.verify !== undefined && input.verify?.passed !== true;
+  item.status = input.outcome === "completed" && !verifiedFailure ? "completed" : "failed";
+  if (verifiedFailure && !dispatch.error) dispatch.error = input.verify ? `verify failed (exit ${input.verify.exitCode ?? "killed"})` : "verify did not run";
+  if (next.window) {
+    const evidence = {
+      outcome: input.outcome,
+      result: input.result,
+      error: input.error,
+      attempt: dispatch.attempt,
+      verifyPassed: item.verify === undefined ? undefined : input.verify?.passed ?? false,
+      durationMs: input.usage?.durationMs,
+      outputTokens: input.usage?.tokens?.output,
+    };
+    recordAckSignal(next, classifySettlement(evidence, next.window), dispatch, at);
+    next.window = observeDelay(next.window!, evidence);
+  }
+  if (item.status === "failed") settleFailure(item, next);
+  refreshControllerStatus(next, at);
 }
 
 function setPendingWake(state: OrchestrationState, reason: OrchestrationWakeReason, at: number): void {
@@ -419,32 +473,27 @@ export function applyOrchestrationEvent(
   if (event.type === "dispatch_settled") {
     const found = findByAgent(next, event.agentId);
     if (!found) return rejected(state, "agent_not_active");
-    found.dispatch.status = event.outcome;
+    settleDispatch(next, found, event, event.at);
+    return applied(next, event.at);
+  }
+
+  if (event.type === "dispatch_awaiting_verify") {
+    const found = findByAgent(next, event.agentId);
+    if (!found) return rejected(state, "agent_not_active");
+    if (found.item.verify === undefined) return rejected(state, "verify_not_declared");
+    // The worker has finished; persist its evidence so a restart re-verifies instead of discarding it.
+    found.dispatch.status = "verifying";
     found.dispatch.result = truncate(event.result, MAX_ORCHESTRATION_RESULT_CHARS);
-    found.dispatch.error = truncate(event.error, MAX_ORCHESTRATION_ERROR_CHARS);
     found.dispatch.usage = event.usage;
     found.dispatch.settledAt = event.at;
     found.dispatch.consumeStatus = "provider_owned";
-    if (event.verify) found.dispatch.verify = { ...event.verify, output: truncate(event.verify.output, MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS) };
-    // A declared verifier with no passing evidence is not an ACK; the item retries within its budget.
-    const verifiedFailure = event.outcome === "completed" && found.item.verify !== undefined && event.verify?.passed !== true;
-    found.item.status = event.outcome === "completed" && !verifiedFailure ? "completed" : "failed";
-    if (verifiedFailure && !found.dispatch.error) found.dispatch.error = event.verify ? `verify failed (exit ${event.verify.exitCode ?? "killed"})` : "verify did not run";
-    if (next.window) {
-      const evidence = {
-        outcome: event.outcome,
-        result: event.result,
-        error: event.error,
-        attempt: found.dispatch.attempt,
-        verifyPassed: found.item.verify === undefined ? undefined : event.verify?.passed ?? false,
-        durationMs: event.usage?.durationMs,
-        outputTokens: event.usage?.tokens?.output,
-      };
-      recordAckSignal(next, classifySettlement(evidence, next.window), found.dispatch, event.at);
-      next.window = observeDelay(next.window!, evidence);
-    }
-    if (found.item.status === "failed") settleFailure(found.item, next);
-    refreshControllerStatus(next, event.at);
+    return applied(next, event.at);
+  }
+
+  if (event.type === "dispatch_verified") {
+    const found = findVerifying(next, event.agentId);
+    if (!found) return rejected(state, "dispatch_not_verifying");
+    settleDispatch(next, found, { outcome: "completed", result: found.dispatch.result, usage: found.dispatch.usage, verify: event.verify }, event.at);
     return applied(next, event.at);
   }
 
@@ -486,6 +535,14 @@ export function applyOrchestrationEvent(
     next.pendingWake = undefined;
     for (const item of next.work) {
       if (item.status === "completed") continue;
+      const last = item.dispatches.at(-1);
+      if (last?.status === "verifying") {
+        // The worker already finished, so termination is confirmed; only the verdict is abandoned.
+        last.status = "completed";
+        last.error = "cancelled before verification";
+        item.status = "cancelled";
+        continue;
+      }
       const dispatch = activeDispatch(item);
       if (dispatch) {
         dispatch.status = "uncertain";

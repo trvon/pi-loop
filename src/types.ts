@@ -63,7 +63,8 @@ export interface DynamicLoopState {
 
 export type OrchestrationStatus = "active" | "needs_attention" | "completed" | "cancelled";
 export type OrchestrationWorkStatus = "pending" | "active" | "completed" | "failed" | "uncertain" | "cancelled";
-export type OrchestrationDispatchStatus = "spawning" | "queued" | "running" | "completed" | "failed" | "interrupted" | "stopped" | "uncertain";
+/** `verifying`: the worker finished; its result is persisted while the item verifier runs. */
+export type OrchestrationDispatchStatus = "spawning" | "queued" | "running" | "verifying" | "completed" | "failed" | "interrupted" | "stopped" | "uncertain";
 export type OrchestrationConsumeStatus = "not_applicable" | "provider_owned" | "pending" | "consumed" | "unavailable";
 export type OrchestrationWakeReason = "completed" | "failed" | "uncertain" | "recovery";
 
