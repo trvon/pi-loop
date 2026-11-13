@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
 import type { LoopScope } from "../runtime/scope.js";
 import type { LoopStore } from "../store.js";
 import type { OrchestrationActor, OrchestrationDefinitionInput } from "../types.js";
@@ -28,11 +29,12 @@ interface OrchestrationToolsOptions {
 
 interface CreateParams {
   goal: string;
-  work: Array<{ prompt: string; agentType?: string }>;
+  work: Array<{ prompt: string; agentType?: string; verify?: string }>;
   agentType?: string;
   model?: string;
   maxTurns?: number;
   concurrency?: number;
+  pacing?: "fixed" | "aimd";
   maxAttempts?: number;
   expiresIn?: string;
 }
@@ -51,7 +53,8 @@ function validateCreate(params: CreateParams): string | undefined {
   if (!params.goal.trim() || params.goal.length > MAX_GOAL_CHARS) return `goal must contain 1-${MAX_GOAL_CHARS} characters`;
   if (params.work.length < 1 || params.work.length > MAX_WORK_ITEMS) return `Orchestration requires between 1 and ${MAX_WORK_ITEMS} work items.`;
   const concurrency = params.concurrency ?? 3;
-  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY) return `concurrency must be between 1 and ${MAX_CONCURRENCY}`;
+  if (params.pacing !== "aimd" && (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY)) return `concurrency must be between 1 and ${MAX_CONCURRENCY}`;
+  if (params.pacing !== undefined && params.pacing !== "fixed" && params.pacing !== "aimd") return "pacing must be fixed or aimd";
   const maxAttempts = params.maxAttempts ?? 1;
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > MAX_ATTEMPTS) return `maxAttempts must be between 1 and ${MAX_ATTEMPTS}`;
   if (params.maxTurns !== undefined && (!Number.isInteger(params.maxTurns) || params.maxTurns < 1 || params.maxTurns > MAX_TURNS)) {
@@ -61,6 +64,8 @@ function validateCreate(params: CreateParams): string | undefined {
     if (!item.prompt.trim()) return `work item ${index + 1} prompt must not be empty`;
     if (item.prompt.length > MAX_PROMPT_CHARS) return `work prompt exceeds ${MAX_PROMPT_CHARS} characters at item ${index + 1}`;
     if ((item.agentType ?? params.agentType ?? "general-purpose").length > 128) return `agentType exceeds 128 characters at item ${index + 1}`;
+    const verify = item.verify;
+    if (verify !== undefined && (!verify.trim() || verify.length > MAX_ORCHESTRATION_VERIFY_CHARS)) return `verify must contain 1-${MAX_ORCHESTRATION_VERIFY_CHARS} characters at item ${index + 1}`;
   }
   if (Buffer.byteLength(JSON.stringify(params), "utf8") > MAX_SERIALIZED_INPUT_BYTES) {
     return `Serialized orchestration input exceeds ${MAX_SERIALIZED_INPUT_BYTES} bytes.`;
@@ -80,8 +85,10 @@ function definitionFrom(params: CreateParams): OrchestrationDefinitionInput {
     work: params.work.map((item) => ({
       prompt: item.prompt.trim(),
       agentType: item.agentType ?? params.agentType ?? "general-purpose",
+      ...(item.verify !== undefined ? { verify: item.verify.trim() } : {}),
     })),
     concurrency: params.concurrency ?? 3,
+    ...(params.pacing === "aimd" ? { pacing: "aimd" as const } : {}),
     maxAttempts: params.maxAttempts ?? 1,
     model: params.model,
     maxTurns: params.maxTurns,
@@ -103,11 +110,13 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       work: Type.Array(Type.Object({
         prompt: Type.String({ description: "Bounded independent work prompt", maxLength: MAX_PROMPT_CHARS }),
         agentType: Type.Optional(Type.String({ description: "Per-item subagent type override" })),
+        verify: Type.Optional(Type.String({ description: "exit 0=ok" })),
       }), { minItems: 1, maxItems: MAX_WORK_ITEMS }),
       agentType: Type.Optional(Type.String({ description: "Default subagent type (default: general-purpose)" })),
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
       maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
-      concurrency: Type.Optional(Type.Integer({ description: "Local worker capacity (default: 3)", minimum: 1, maximum: MAX_CONCURRENCY, default: 3 })),
+      concurrency: Type.Optional(Type.Integer({ description: "Fixed capacity 1-8 (default: 3)", minimum: 1, default: 3 })),
+      pacing: Type.Optional(Type.String({ description: "aimd adapts", enum: ["fixed", "aimd"] })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
       expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new batch, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
     }),
@@ -150,7 +159,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       updateWidget();
       const message = [
         `Orchestration #${entry.id} created`,
-        `${definition.work.length} work items · concurrency ${definition.concurrency}`,
+        definition.pacing === "aimd" ? `${definition.work.length} work items · aimd window 1-${definition.work.length}` : `${definition.work.length} work items · concurrency ${definition.concurrency}`,
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {
@@ -158,7 +167,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         action: "create",
         tone: "success",
         summary: `Orchestration #${entry.id} active · ${orchestrationProgressLabel(entry.orchestration!)}`,
-        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
+        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, definition.pacing === "aimd" ? `Pacing: aimd (window 1-${definition.work.length})` : `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
       });
     },
   });

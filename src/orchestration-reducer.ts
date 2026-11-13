@@ -1,9 +1,11 @@
+import { type AckSignal, applyAckSignal, classifySettlement, createAckWindow, observeDelay, validateAckWindow, windowCapacity } from "./ack-window.js";
 import type {
   OrchestrationActor,
   OrchestrationDefinitionInput,
   OrchestrationDispatch,
   OrchestrationState,
   OrchestrationUsage,
+  OrchestrationVerification,
   OrchestrationWakeReason,
   OrchestrationWorkItem,
   OrchestrationWorkStatus,
@@ -16,10 +18,12 @@ export const MAX_ORCHESTRATION_WORK_ITEMS = 32;
 export const MAX_ORCHESTRATION_CONCURRENCY = 8;
 export const MAX_ORCHESTRATION_ATTEMPTS = 3;
 export const MAX_ORCHESTRATION_INPUT_BYTES = 65_536;
+export const MAX_ORCHESTRATION_VERIFY_CHARS = 2_048;
+export const MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS = 2_048;
 
 const ORCHESTRATION_STATUSES = new Set(["active", "needs_attention", "completed", "cancelled"]);
 const WORK_STATUSES = new Set(["pending", "active", "completed", "failed", "uncertain", "cancelled"]);
-const DISPATCH_STATUSES = new Set(["spawning", "queued", "running", "completed", "failed", "interrupted", "stopped", "uncertain"]);
+const DISPATCH_STATUSES = new Set(["spawning", "queued", "running", "verifying", "completed", "failed", "interrupted", "stopped", "uncertain"]);
 const CONSUME_STATUSES = new Set(["not_applicable", "provider_owned", "pending", "consumed", "unavailable"]);
 const WAKE_REASONS = new Set(["completed", "failed", "uncertain", "recovery"]);
 
@@ -28,12 +32,15 @@ export function validateOrchestrationDefinition(input: OrchestrationDefinitionIn
   if (!Array.isArray(input.work) || input.work.length < 1 || input.work.length > MAX_ORCHESTRATION_WORK_ITEMS) {
     return `work must contain 1-${MAX_ORCHESTRATION_WORK_ITEMS} items`;
   }
+  if (input.pacing !== undefined && input.pacing !== "fixed" && input.pacing !== "aimd") return "invalid pacing";
+  // aimd ignores concurrency entirely; the fixed-pacing bound only applies when it is used.
   const concurrency = input.concurrency ?? 3;
-  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_ORCHESTRATION_CONCURRENCY) return "invalid concurrency";
+  if (input.pacing !== "aimd" && (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_ORCHESTRATION_CONCURRENCY)) return "invalid concurrency";
   const attempts = input.maxAttempts ?? 1;
   if (!Number.isInteger(attempts) || attempts < 1 || attempts > MAX_ORCHESTRATION_ATTEMPTS) return "invalid maxAttempts";
   if (input.maxTurns !== undefined && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 100)) return "invalid maxTurns";
   if (input.work.some((item) => !item.prompt.trim())) return "work prompts must not be empty";
+  if (input.work.some((item) => item.verify !== undefined && (!item.verify.trim() || item.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS))) return "invalid verify command";
   if (Buffer.byteLength(JSON.stringify(input), "utf8") > MAX_ORCHESTRATION_INPUT_BYTES) return "serialized input exceeds limit";
   return undefined;
 }
@@ -42,12 +49,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function isVerification(value: unknown): value is OrchestrationVerification {
+  if (!isRecord(value) || typeof value.passed !== "boolean") return false;
+  if (value.exitCode !== null && !Number.isInteger(value.exitCode)) return false;
+  if (!Number.isFinite(value.durationMs) || Number(value.durationMs) < 0) return false;
+  return value.output === undefined || (typeof value.output === "string" && value.output.length <= MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS);
+}
+
 export function validatePersistedOrchestration(value: unknown): OrchestrationState {
   if (!isRecord(value) || value.version !== 1) throw new Error("Malformed orchestration state: unsupported version");
   if (!Number.isInteger(value.revision) || Number(value.revision) < 1) throw new Error("Malformed orchestration state: invalid revision");
   if (!ORCHESTRATION_STATUSES.has(String(value.status))) throw new Error("Malformed orchestration state: invalid status");
   if (typeof value.goal !== "string" || !value.goal.trim()) throw new Error("Malformed orchestration state: invalid goal");
-  if (!Number.isInteger(value.concurrency) || Number(value.concurrency) < 1 || Number(value.concurrency) > MAX_ORCHESTRATION_CONCURRENCY) throw new Error("Malformed orchestration state: invalid concurrency");
+  const concurrencyLimit = value.window === undefined ? MAX_ORCHESTRATION_CONCURRENCY : MAX_ORCHESTRATION_WORK_ITEMS;
+  if (!Number.isInteger(value.concurrency) || Number(value.concurrency) < 1 || Number(value.concurrency) > concurrencyLimit) throw new Error("Malformed orchestration state: invalid concurrency");
   if (!Number.isInteger(value.maxAttempts) || Number(value.maxAttempts) < 1 || Number(value.maxAttempts) > MAX_ORCHESTRATION_ATTEMPTS) throw new Error("Malformed orchestration state: invalid maxAttempts");
   if (value.model !== undefined && typeof value.model !== "string") throw new Error("Malformed orchestration state: invalid model");
   if (value.maxTurns !== undefined && (!Number.isInteger(value.maxTurns) || Number(value.maxTurns) < 1 || Number(value.maxTurns) > 100)) throw new Error("Malformed orchestration state: invalid maxTurns");
@@ -61,6 +76,7 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
     if (!isRecord(rawItem) || typeof rawItem.id !== "string" || !rawItem.id || ids.has(rawItem.id) || typeof rawItem.prompt !== "string" || !rawItem.prompt.trim() || (rawItem.agentType !== undefined && (typeof rawItem.agentType !== "string" || !rawItem.agentType)) || !WORK_STATUSES.has(String(rawItem.status)) || !Number.isInteger(rawItem.attemptCount) || !Array.isArray(rawItem.dispatches)) {
       throw new Error("Malformed orchestration state: invalid work item");
     }
+    if (rawItem.verify !== undefined && (typeof rawItem.verify !== "string" || !rawItem.verify.trim() || rawItem.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS)) throw new Error("Malformed orchestration state: invalid verify command");
     ids.add(rawItem.id);
     if (rawItem.status !== "completed") allWorkCompleted = false;
     if (Number(rawItem.attemptCount) < 0 || Number(rawItem.attemptCount) > Number(value.maxAttempts) || rawItem.dispatches.length !== Number(rawItem.attemptCount)) throw new Error("Malformed orchestration state: invalid attempt count");
@@ -76,6 +92,7 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
       if (typeof rawDispatch.result === "string" && rawDispatch.result.length > MAX_ORCHESTRATION_RESULT_CHARS) throw new Error("Malformed orchestration state: oversized result");
       if (rawDispatch.error !== undefined && typeof rawDispatch.error !== "string") throw new Error("Malformed orchestration state: invalid error");
       if (typeof rawDispatch.error === "string" && rawDispatch.error.length > MAX_ORCHESTRATION_ERROR_CHARS) throw new Error("Malformed orchestration state: oversized error");
+      if (rawDispatch.verify !== undefined && !isVerification(rawDispatch.verify)) throw new Error("Malformed orchestration state: invalid verification");
       if (rawDispatch.usage !== undefined) {
         if (!isRecord(rawDispatch.usage)) throw new Error("Malformed orchestration state: invalid usage");
         for (const field of ["toolUses", "durationMs"] as const) {
@@ -88,11 +105,13 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
     }
     const lastDispatch = rawItem.dispatches.at(-1);
     const shouldBeActive = rawItem.status === "active";
-    const hasActiveDispatch = isRecord(lastDispatch) && (lastDispatch.status === "spawning" || lastDispatch.status === "queued" || lastDispatch.status === "running");
+    const hasActiveDispatch = isRecord(lastDispatch) && (lastDispatch.status === "spawning" || lastDispatch.status === "queued" || lastDispatch.status === "running" || lastDispatch.status === "verifying");
+    if (isRecord(lastDispatch) && lastDispatch.status === "verifying" && (rawItem.verify === undefined || typeof lastDispatch.agentId !== "string")) throw new Error("Malformed orchestration state: verifying dispatch without verifier");
     if (shouldBeActive !== hasActiveDispatch) throw new Error("Malformed orchestration state: work/dispatch status mismatch");
   }
   if (value.status === "completed" && !allWorkCompleted) throw new Error("Malformed orchestration state: incomplete completed batch");
   if (!Number.isInteger(value.nextWakeSequence) || Number(value.nextWakeSequence) < 0 || !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt)) throw new Error("Malformed orchestration state: invalid sequence or timestamp");
+  if (value.window !== undefined && !validateAckWindow(value.window, Number(value.concurrency))) throw new Error("Malformed orchestration state: invalid window");
   if (value.pendingWake !== undefined && (!isRecord(value.pendingWake) || !Number.isInteger(value.pendingWake.sequence) || Number(value.pendingWake.sequence) < 1 || Number(value.pendingWake.sequence) > Number(value.nextWakeSequence) || !WAKE_REASONS.has(String(value.pendingWake.reason)) || !Number.isFinite(value.pendingWake.createdAt))) {
     throw new Error("Malformed orchestration state: invalid pending wake");
   }
@@ -113,7 +132,9 @@ export type OrchestrationEvent =
   | { type: "dispatch_bound"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; agentId: string }
   | { type: "cleanup_bound"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; attempt: number; agentId: string }
   | { type: "dispatch_started"; at: number; expected: ExpectedOrchestration; agentId: string }
-  | { type: "dispatch_settled"; at: number; expected: ExpectedOrchestration; agentId: string; outcome: "completed" | "failed"; result?: string; error?: string; usage?: OrchestrationUsage }
+  | { type: "dispatch_settled"; at: number; expected: ExpectedOrchestration; agentId: string; outcome: "completed" | "failed"; result?: string; error?: string; usage?: OrchestrationUsage; verify?: OrchestrationVerification }
+  | { type: "dispatch_awaiting_verify"; at: number; expected: ExpectedOrchestration; agentId: string; result?: string; usage?: OrchestrationUsage }
+  | { type: "dispatch_verified"; at: number; expected: ExpectedOrchestration; agentId: string; verify: OrchestrationVerification }
   | { type: "dispatch_spawn_failed"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
   | { type: "dispatch_interrupted"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
   | { type: "dispatch_uncertain"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
@@ -145,9 +166,11 @@ function cloneState(state: OrchestrationState): OrchestrationState {
       dispatches: item.dispatches.map((dispatch) => ({
         ...dispatch,
         usage: cloneUsage(dispatch.usage),
+        verify: dispatch.verify ? { ...dispatch.verify } : undefined,
       })),
     })),
     pendingWake: state.pendingWake ? { ...state.pendingWake } : undefined,
+    window: state.window ? { ...state.window } : undefined,
   };
 }
 
@@ -180,6 +203,57 @@ function findByAgent(state: OrchestrationState, agentId: string): { item: Orches
     if (dispatch?.agentId === agentId) return { item, dispatch };
   }
   return undefined;
+}
+
+function findVerifying(state: OrchestrationState, agentId: string): { item: OrchestrationWorkItem; dispatch: OrchestrationDispatch } | undefined {
+  for (const item of state.work) {
+    const dispatch = item.dispatches.at(-1);
+    if (dispatch?.status === "verifying" && dispatch.agentId === agentId) return { item, dispatch };
+  }
+  return undefined;
+}
+
+interface SettlementInput {
+  outcome: "completed" | "failed";
+  result?: string;
+  error?: string;
+  usage?: OrchestrationUsage;
+  verify?: OrchestrationVerification;
+}
+
+function settleDispatch(
+  next: OrchestrationState,
+  found: { item: OrchestrationWorkItem; dispatch: OrchestrationDispatch },
+  input: SettlementInput,
+  at: number,
+): void {
+  const { item, dispatch } = found;
+  dispatch.status = input.outcome;
+  dispatch.result = truncate(input.result, MAX_ORCHESTRATION_RESULT_CHARS);
+  dispatch.error = truncate(input.error, MAX_ORCHESTRATION_ERROR_CHARS);
+  dispatch.usage = input.usage;
+  dispatch.settledAt ??= at;
+  dispatch.consumeStatus = "provider_owned";
+  if (input.verify) dispatch.verify = { ...input.verify, output: truncate(input.verify.output, MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS) };
+  // A declared verifier with no passing evidence is not an ACK; the item retries within its budget.
+  const verifiedFailure = input.outcome === "completed" && item.verify !== undefined && input.verify?.passed !== true;
+  item.status = input.outcome === "completed" && !verifiedFailure ? "completed" : "failed";
+  if (verifiedFailure && !dispatch.error) dispatch.error = input.verify ? `verify failed (exit ${input.verify.exitCode ?? "killed"})` : "verify did not run";
+  if (next.window) {
+    const evidence = {
+      outcome: input.outcome,
+      result: input.result,
+      error: input.error,
+      attempt: dispatch.attempt,
+      verifyPassed: item.verify === undefined ? undefined : input.verify?.passed ?? false,
+      durationMs: input.usage?.durationMs,
+      outputTokens: input.usage?.tokens?.output,
+    };
+    recordAckSignal(next, classifySettlement(evidence, next.window), dispatch, at);
+    next.window = observeDelay(next.window!, evidence);
+  }
+  if (item.status === "failed") settleFailure(item, next);
+  refreshControllerStatus(next, at);
 }
 
 function setPendingWake(state: OrchestrationState, reason: OrchestrationWakeReason, at: number): void {
@@ -241,6 +315,15 @@ function refreshControllerStatus(state: OrchestrationState, at: number): void {
   state.status = "active";
 }
 
+/** Local dispatch capacity: `concurrency`, narrowed by the ACK window when paced. */
+export function getOrchestrationCapacity(state: OrchestrationState): number {
+  return state.window ? windowCapacity(state.window, state.concurrency) : state.concurrency;
+}
+
+function recordAckSignal(state: OrchestrationState, signal: AckSignal, dispatch: OrchestrationDispatch, at: number): void {
+  if (state.window) state.window = applyAckSignal(state.window, signal, state.concurrency, { at, requestedAt: dispatch.requestedAt });
+}
+
 function settleFailure(item: OrchestrationWorkItem, state: OrchestrationState): void {
   item.status = item.attemptCount < state.maxAttempts ? "pending" : "failed";
 }
@@ -250,12 +333,14 @@ export function createOrchestrationState(
   owner: OrchestrationActor,
   at: number,
 ): OrchestrationState {
+  // Under aimd only feedback limits the window; the batch itself is the sole bound.
+  const concurrency = input.pacing === "aimd" ? input.work.length : input.concurrency ?? 3;
   return {
     version: 1,
     revision: 1,
     status: "active",
     goal: input.goal,
-    concurrency: input.concurrency ?? 3,
+    concurrency,
     maxAttempts: input.maxAttempts ?? 1,
     model: input.model,
     maxTurns: input.maxTurns,
@@ -264,11 +349,13 @@ export function createOrchestrationState(
       id: String(index + 1),
       prompt: item.prompt,
       agentType: item.agentType,
+      ...(item.verify !== undefined ? { verify: item.verify } : {}),
       status: "pending",
       attemptCount: 0,
       dispatches: [],
     })),
     nextWakeSequence: 0,
+    ...(input.pacing === "aimd" ? { window: createAckWindow(concurrency) } : {}),
     createdAt: at,
     updatedAt: at,
   };
@@ -334,7 +421,7 @@ export function applyOrchestrationEvent(
     const item = next.work.find((candidate) => candidate.id === event.workId);
     if (!item) return rejected(state, "work_not_found");
     if (item.status !== "pending") return rejected(state, "work_not_pending");
-    if (getOrchestrationCounts(next).active >= next.concurrency) return rejected(state, "capacity_exhausted");
+    if (getOrchestrationCounts(next).active >= getOrchestrationCapacity(next)) return rejected(state, "capacity_exhausted");
     if (item.attemptCount >= next.maxAttempts) return rejected(state, "attempts_exhausted");
     item.attemptCount += 1;
     item.status = "active";
@@ -387,15 +474,27 @@ export function applyOrchestrationEvent(
   if (event.type === "dispatch_settled") {
     const found = findByAgent(next, event.agentId);
     if (!found) return rejected(state, "agent_not_active");
-    found.dispatch.status = event.outcome;
+    settleDispatch(next, found, event, event.at);
+    return applied(next, event.at);
+  }
+
+  if (event.type === "dispatch_awaiting_verify") {
+    const found = findByAgent(next, event.agentId);
+    if (!found) return rejected(state, "agent_not_active");
+    if (found.item.verify === undefined) return rejected(state, "verify_not_declared");
+    // The worker has finished; persist its evidence so a restart re-verifies instead of discarding it.
+    found.dispatch.status = "verifying";
     found.dispatch.result = truncate(event.result, MAX_ORCHESTRATION_RESULT_CHARS);
-    found.dispatch.error = truncate(event.error, MAX_ORCHESTRATION_ERROR_CHARS);
     found.dispatch.usage = event.usage;
     found.dispatch.settledAt = event.at;
     found.dispatch.consumeStatus = "provider_owned";
-    found.item.status = event.outcome === "completed" ? "completed" : "failed";
-    if (event.outcome === "failed") settleFailure(found.item, next);
-    refreshControllerStatus(next, event.at);
+    return applied(next, event.at);
+  }
+
+  if (event.type === "dispatch_verified") {
+    const found = findVerifying(next, event.agentId);
+    if (!found) return rejected(state, "dispatch_not_verifying");
+    settleDispatch(next, found, { outcome: "completed", result: found.dispatch.result, usage: found.dispatch.usage, verify: event.verify }, event.at);
     return applied(next, event.at);
   }
 
@@ -409,6 +508,8 @@ export function applyOrchestrationEvent(
     dispatch.settledAt = event.at;
     dispatch.consumeStatus = uncertain ? "unavailable" : dispatch.agentId ? "pending" : "not_applicable";
     item.status = uncertain ? "uncertain" : "failed";
+    // Uncertain termination already blocks every dispatch; a proved spawn failure is path congestion.
+    if (!uncertain) recordAckSignal(next, "congestion", dispatch, event.at);
     if (!uncertain) settleFailure(item, next);
     refreshControllerStatus(next, event.at);
     return applied(next, event.at);
@@ -435,6 +536,14 @@ export function applyOrchestrationEvent(
     next.pendingWake = undefined;
     for (const item of next.work) {
       if (item.status === "completed") continue;
+      const last = item.dispatches.at(-1);
+      if (last?.status === "verifying") {
+        // The worker already finished, so termination is confirmed; only the verdict is abandoned.
+        last.status = "completed";
+        last.error = "cancelled before verification";
+        item.status = "cancelled";
+        continue;
+      }
       const dispatch = activeDispatch(item);
       if (dispatch) {
         dispatch.status = "uncertain";

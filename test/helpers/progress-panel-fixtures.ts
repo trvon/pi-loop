@@ -1,5 +1,5 @@
 import type { TaskEntry, TaskStatus } from "../../src/task-types.js";
-import type { LoopEntry, OrchestrationState, WorkflowRunState } from "../../src/types.js";
+import type { LoopEntry, MonitorEntry, OrchestrationState, WorkflowRunState } from "../../src/types.js";
 
 export const PANEL_NOW = Date.UTC(2026, 0, 1, 12);
 
@@ -111,5 +111,22 @@ export function panelOrchestration(id: string, statuses: OrchestrationState["wor
       createdAt: PANEL_NOW - 60_000,
       updatedAt: PANEL_NOW,
     } as unknown as OrchestrationState,
+  };
+}
+
+export function panelMonitor(
+  id: string,
+  options: { status?: MonitorEntry["status"]; command?: string; description?: string; startedAt?: number; output?: string[]; lastOutputAt?: number } = {},
+): MonitorEntry {
+  return {
+    id,
+    command: options.command ?? `npm run job-${id}`,
+    description: options.description,
+    timeout: 0,
+    status: options.status ?? "running",
+    startedAt: options.startedAt ?? PANEL_NOW - 41 * 60_000,
+    outputLines: options.output?.length ?? 0,
+    outputBuffer: options.output ?? [],
+    lastOutputAt: options.lastOutputAt,
   };
 }

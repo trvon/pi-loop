@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyOrchestrationEvent,
   createOrchestrationState,
+  getOrchestrationCapacity,
   getOrchestrationCounts,
   MAX_ORCHESTRATION_ERROR_CHARS,
   MAX_ORCHESTRATION_RESULT_CHARS,
@@ -233,5 +234,241 @@ describe("subagent orchestration reducer", () => {
     expect(cancelled.applied).toBe(true);
     expect(cancelled.state.status).toBe("cancelled");
     expect(cancelled.state.work.map((item) => item.status)).toEqual(["cancelled", "cancelled"]);
+  });
+});
+
+function expectedOf(state: ReturnType<typeof create>) {
+  return { revision: state.revision, ownerRuntimeId: owner.runtimeId, generation: owner.generation };
+}
+
+interface SettleOptions {
+  outcome?: "completed" | "failed";
+  result?: string;
+  error?: string;
+  verify?: { passed: boolean; exitCode: number | null; durationMs: number; output?: string };
+  usage?: { durationMs: number; tokens: { input: number; output: number; total: number } };
+}
+
+function request(state: ReturnType<typeof create>, workId: string, key: string, at: number) {
+  const requested = dispatch(state, workId, `dispatch-${key}`, at);
+  expect(requested.applied).toBe(true);
+  return applyOrchestrationEvent(requested.state, {
+    type: "dispatch_bound", at: at + 1, expected: expectedOf(requested.state), workId, dispatchId: `dispatch-${key}`, agentId: `agent-${key}`,
+  }).state;
+}
+
+function settle(state: ReturnType<typeof create>, key: string, at: number, options: SettleOptions = {}) {
+  return applyOrchestrationEvent(state, {
+    type: "dispatch_settled", at, expected: expectedOf(state), agentId: `agent-${key}`,
+    outcome: options.outcome ?? "completed", result: options.result, error: options.error, verify: options.verify,
+    usage: options.usage,
+  }).state;
+}
+
+function runToSettled(state: ReturnType<typeof create>, workId: string, key: string, at: number, options: SettleOptions = {}) {
+  return settle(request(state, workId, key, at), key, at + 2, options);
+}
+
+const tokens = (output: number) => ({ input: 10, output, total: 10 + output });
+const pass = { passed: true, exitCode: 0, durationMs: 5 };
+const fail = { passed: false, exitCode: 1, durationMs: 5, output: "1 failing test" };
+
+function verifiedBatch(count: number, maxAttempts = 2) {
+  return createOrchestrationState({
+    goal: "verified batch",
+    work: Array.from({ length: count }, (_, index) => ({ prompt: `task ${index + 1}`, verify: `npm test -- task${index + 1}` })),
+    pacing: "aimd",
+    maxAttempts,
+  }, owner, 100);
+}
+
+describe("orchestration ACK-clocked pacing", () => {
+  it("keeps fixed pacing as the default with unchanged capacity and no window", () => {
+    const state = create(3);
+    expect(state.window).toBeUndefined();
+    expect(getOrchestrationCapacity(state)).toBe(2);
+    const first = dispatch(state, "1", "dispatch-1", 110).state;
+    expect(dispatch(first, "2", "dispatch-2", 120).applied).toBe(true);
+  });
+
+  it("rejects unknown pacing modes and malformed verify commands", () => {
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect" }], pacing: "cubic" as never })).toContain("pacing");
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect", verify: "  " }] })).toContain("verify");
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect", verify: "x".repeat(5000) }] })).toContain("verify");
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect", verify: "npm test" }], pacing: "aimd" })).toBeUndefined();
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect" }], pacing: "aimd", concurrency: 9 })).toBeUndefined();
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect" }], concurrency: 9 })).toContain("concurrency");
+  });
+
+  it("ignores concurrency under aimd: the window starts at one and is bounded only by the batch", () => {
+    const state = create(4, { concurrency: 2, pacing: "aimd" });
+    expect(state.concurrency).toBe(4);
+    expect(state.window).toEqual({ mode: "aimd", cwnd: 1, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
+    const first = dispatch(state, "1", "dispatch-1", 110);
+    expect(first.applied).toBe(true);
+    expect(dispatch(first.state, "2", "dispatch-2", 120)).toMatchObject({ applied: false, reason: "capacity_exhausted" });
+  });
+
+  it("uses a passing verifier as the ACK and retries a failing one without shrinking the window", () => {
+    let state = verifiedBatch(3);
+    state = runToSettled(state, "1", "1", 110, { result: "done", verify: pass });
+    expect(state.window).toMatchObject({ cwnd: 2, acks: 1 });
+    expect(state.work[0]?.dispatches[0]?.verify).toEqual(pass);
+
+    state = runToSettled(state, "2", "2", 120, { result: "I fixed it", verify: fail });
+    expect(state.window).toMatchObject({ cwnd: 2, acks: 1, losses: 0, taskLosses: 1 });
+    expect(state.work[1]).toMatchObject({ status: "pending", attemptCount: 1 });
+    expect(state.work[1]?.dispatches[0]).toMatchObject({ status: "completed", error: "verify failed (exit 1)", verify: fail });
+    expect(state.status).toBe("active");
+  });
+
+  it("treats a declared verifier with no evidence as unverified", () => {
+    const state = runToSettled(verifiedBatch(1, 1), "1", "1", 110, { result: "done" });
+    expect(state.work[0]).toMatchObject({ status: "failed" });
+    expect(state.work[0]?.dispatches[0]?.error).toBe("verify did not run");
+    expect(state.window).toMatchObject({ cwnd: 1, taskLosses: 1 });
+  });
+
+  it("halves on overload errors, resets on timeouts, and ignores generic task errors", () => {
+    let state = create(8, { pacing: "aimd", maxAttempts: 3 });
+    for (const [index, key] of ["1", "2", "3", "4"].entries()) state = runToSettled(state, String(index + 1), key, 100 + index * 10, { result: "ok" });
+    expect(state.window?.cwnd).toBe(5);
+
+    state = runToSettled(state, "5", "5", 200, { outcome: "failed", error: "TypeError in generated code" });
+    expect(state.window).toMatchObject({ cwnd: 5, taskLosses: 1, losses: 0 });
+
+    state = runToSettled(state, "5", "6", 210, { outcome: "failed", error: "HTTP 429 rate limit" });
+    expect(state.window).toMatchObject({ cwnd: 2, ssthresh: 2, losses: 1, recoverAt: 212 });
+
+    state = runToSettled(state, "5", "7", 220, { outcome: "failed", error: "request timed out" });
+    expect(state.window).toMatchObject({ cwnd: 1, losses: 2 });
+  });
+
+  it("cuts once per window when parallel workers report congestion together", () => {
+    let state = create(6, { pacing: "aimd", maxAttempts: 2 });
+    for (const [index, key] of ["1", "2", "3"].entries()) state = runToSettled(state, String(index + 1), key, 100 + index * 10, { result: "ok" });
+    expect(getOrchestrationCapacity(state)).toBe(4);
+    state = request(state, "4", "a", 200);
+    state = request(state, "5", "b", 201);
+    state = request(state, "6", "c", 202);
+    state = settle(state, "a", 210, { outcome: "failed", error: "503 overloaded" });
+    expect(state.window).toMatchObject({ cwnd: 2, recoverAt: 210 });
+    state = settle(state, "b", 211, { outcome: "failed", error: "503 overloaded" });
+    state = settle(state, "c", 212, { outcome: "failed", error: "503 overloaded" });
+    expect(state.window).toMatchObject({ cwnd: 2, losses: 3 });
+  });
+
+  it("treats a run of rising per-token latency on verified successes as congestion", () => {
+    let state = verifiedBatch(4);
+    state = runToSettled(state, "1", "1", 100, { verify: pass, usage: { durationMs: 2_000, tokens: tokens(100) } });
+    state = runToSettled(state, "2", "2", 110, { verify: pass, usage: { durationMs: 2_200, tokens: tokens(100) } });
+    expect(state.window).toMatchObject({ cwnd: 3, minMsPerToken: 20 });
+    state = runToSettled(state, "3", "3", 120, { verify: pass, usage: { durationMs: 6_000, tokens: tokens(100) } });
+    expect(state.window).toMatchObject({ cwnd: 4, acks: 3, delayStreak: 1 });
+    state = runToSettled(state, "4", "4", 130, { verify: pass, usage: { durationMs: 6_000, tokens: tokens(100) } });
+    expect(state.window).toMatchObject({ cwnd: 2, ssthresh: 2, losses: 1, acks: 3, delayStreak: 2, minMsPerToken: 20 });
+    expect(state.work[3]?.status).toBe("completed");
+  });
+
+  it("counts spawn failure as congestion", () => {
+    let state = create(3, { pacing: "aimd", maxAttempts: 2 });
+    state = runToSettled(state, "1", "1", 110, { result: "ok" });
+    state = runToSettled(state, "2", "2", 120, { result: "ok" });
+    const requested = dispatch(state, "3", "dispatch-3", 130).state;
+    const failed = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 131, expected: expectedOf(requested), workId: "3", dispatchId: "dispatch-3", error: "spawn rejected",
+    }).state;
+    expect(failed.window).toMatchObject({ cwnd: 1, losses: 1 });
+  });
+
+  it("does not open the window when success needed a retry", () => {
+    let state = verifiedBatch(1);
+    state = runToSettled(state, "1", "a", 110, { verify: fail });
+    state = runToSettled(state, "1", "b", 120, { verify: pass });
+    expect(state.window).toMatchObject({ cwnd: 1, acks: 1, taskLosses: 1 });
+  });
+
+  it("leaves uncertain termination blocking all dispatch regardless of window", () => {
+    let state = create(3, { pacing: "aimd" });
+    state = runToSettled(state, "1", "1", 110, { result: "ok" });
+    const requested = dispatch(state, "2", "dispatch-2", 120).state;
+    const uncertain = applyOrchestrationEvent(requested, {
+      type: "dispatch_uncertain", at: 121, expected: expectedOf(requested), workId: "2", dispatchId: "dispatch-2", error: "timeout",
+    }).state;
+    expect(uncertain.window).toEqual(state.window);
+    expect(uncertain.status).toBe("needs_attention");
+  });
+
+  it("lets an aimd window grow past the fixed-pacing safety max up to the batch size", () => {
+    let state = create(16, { pacing: "aimd", maxAttempts: 1 });
+    expect(state.concurrency).toBe(16);
+    for (let index = 1; index <= 12; index++) state = runToSettled(state, String(index), String(index), 100 + index * 10, { result: "ok" });
+    expect(getOrchestrationCapacity(state)).toBeGreaterThan(8);
+    expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
+    const fixedOver = structuredClone(create(2)) as any;
+    fixedOver.concurrency = 9;
+    expect(() => validatePersistedOrchestration(fixedOver)).toThrow("invalid concurrency");
+  });
+
+  it("round-trips persisted windows and verification evidence and rejects malformed ones", () => {
+    const state = runToSettled(verifiedBatch(2), "1", "1", 110, { verify: fail, usage: { durationMs: 1000, tokens: tokens(50) } });
+    expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
+    const badWindow = structuredClone(state) as any;
+    badWindow.window.cwnd = 9;
+    expect(() => validatePersistedOrchestration(badWindow)).toThrow("invalid window");
+    const badVerify = structuredClone(state) as any;
+    badVerify.work[0].dispatches[0].verify = { passed: "yes" };
+    expect(() => validatePersistedOrchestration(badVerify)).toThrow("invalid verification");
+    const badCommand = structuredClone(state) as any;
+    badCommand.work[0].verify = "";
+    expect(() => validatePersistedOrchestration(badCommand)).toThrow("invalid verify command");
+  });
+});
+
+describe("review regressions: persisted verification", () => {
+  function awaiting(state: ReturnType<typeof create>, key: string, at: number, result = "done") {
+    return applyOrchestrationEvent(state, {
+      type: "dispatch_awaiting_verify", at, expected: expectedOf(state), agentId: `agent-${key}`, result,
+      usage: { durationMs: 2000, tokens: tokens(100) },
+    });
+  }
+
+  it("R6: persists a completed worker as verifying, holding capacity until verified", () => {
+    let state = request(verifiedBatch(2), "1", "1", 100);
+    const pending = awaiting(state, "1", 110);
+    expect(pending.applied).toBe(true);
+    state = pending.state;
+    expect(state.work[0]).toMatchObject({ status: "active" });
+    expect(state.work[0]?.dispatches[0]).toMatchObject({ status: "verifying", result: "done", settledAt: 110, usage: { durationMs: 2000 } });
+    expect(getOrchestrationCounts(state).active).toBe(1);
+    expect(dispatch(state, "2", "dispatch-2", 115)).toMatchObject({ applied: false, reason: "capacity_exhausted" });
+    expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
+
+    const verified = applyOrchestrationEvent(state, { type: "dispatch_verified", at: 120, expected: expectedOf(state), agentId: "agent-1", verify: pass }).state;
+    expect(verified.work[0]).toMatchObject({ status: "completed" });
+    expect(verified.work[0]?.dispatches[0]).toMatchObject({ status: "completed", result: "done", verify: pass, consumeStatus: "provider_owned" });
+    expect(verified.window).toMatchObject({ cwnd: 2, acks: 1, minMsPerToken: 20 });
+  });
+
+  it("R6: rejects verification for dispatches that are not verifying", () => {
+    const state = request(verifiedBatch(1), "1", "1", 100);
+    expect(applyOrchestrationEvent(state, { type: "dispatch_verified", at: 120, expected: expectedOf(state), agentId: "agent-1", verify: pass }))
+      .toMatchObject({ applied: false, reason: "dispatch_not_verifying" });
+    const unverified = request(create(1), "1", "1", 100);
+    expect(awaiting(unverified, "1", 110)).toMatchObject({ applied: false, reason: "verify_not_declared" });
+  });
+
+  it("R6: verifying work survives foreign owner adoption and is not unconfirmed on cancel", () => {
+    const state = awaiting(request(verifiedBatch(1), "1", "1", 100), "1", 110).state;
+    const adopted = applyOrchestrationEvent(state, {
+      type: "owner_adopted", at: state.owner.leaseExpiresAt + 1, expectedRevision: state.revision,
+      owner: { sessionId: "session-a", runtimeId: "runtime-b", generation: 0 },
+    }).state;
+    expect(adopted.work[0]?.dispatches[0]?.status).toBe("verifying");
+    expect(adopted.status).toBe("active");
+
+    const cancelled = applyOrchestrationEvent(state, { type: "cancelled", at: 130, expected: expectedOf(state) }).state;
+    expect(cancelled.work[0]).toMatchObject({ status: "cancelled" });
+    expect(cancelled.work[0]?.dispatches[0]).toMatchObject({ status: "completed", consumeStatus: "provider_owned", error: "cancelled before verification" });
   });
 });

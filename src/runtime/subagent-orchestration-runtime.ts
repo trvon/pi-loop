@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getOrchestrationCounts, isUnconfirmedDispatch } from "../orchestration-reducer.js";
+import { getOrchestrationCapacity, getOrchestrationCounts, isUnconfirmedDispatch } from "../orchestration-reducer.js";
 import { RpcError, type RpcEventBus } from "../rpc/cross-extension-rpc.js";
 import type { LoopStore } from "../store.js";
 import type {
@@ -10,9 +10,11 @@ import type {
   OrchestrationPendingWake,
   OrchestrationState,
   OrchestrationUsage,
+  OrchestrationVerification,
   OrchestrationWorkItem,
 } from "../types.js";
 import type { LoopScope } from "./scope.js";
+import { runVerifyCommand, type VerifyRunner } from "./verify-runner.js";
 
 const SPAWN_RPC = "subagents:rpc:spawn";
 const STOP_RPC = "subagents:rpc:stop";
@@ -55,6 +57,9 @@ export interface SubagentOrchestrationRuntimeOptions {
   now?: () => number;
   scheduleReconcile?: (fn: () => void) => void;
   isContextCurrent?: () => boolean;
+  /** Runs a work item's verifier; injectable for tests. */
+  runVerify?: VerifyRunner;
+  getCwd?: () => string;
   debug?: (...args: unknown[]) => void;
 }
 
@@ -111,13 +116,29 @@ function normalizeLifecycle(kind: LifecycleEvent["kind"], raw: unknown): Lifecyc
   };
 }
 
+const RETRY_FEEDBACK_CHARS = 1_500;
+
 function buildWorkerPrompt(entry: LoopEntry, item: OrchestrationWorkItem): string {
-  return [
+  const sections = [
     `Orchestration goal: ${entry.orchestration?.goal ?? entry.prompt}`,
     `Work item ${item.id}: ${item.prompt}`,
+  ];
+  if (item.verify !== undefined) {
+    sections.push(`Acceptance check: after you finish, the controller runs \`${item.verify}\` in the session cwd. The work counts as done only if it exits 0.`);
+    // The reserved dispatch for this attempt may already be recorded as `spawning`.
+    const previous = [...item.dispatches].reverse().find((dispatch) => dispatch.status !== "spawning");
+    if (previous?.verify && !previous.verify.passed) {
+      const tail = previous.verify.output ? `\nOutput tail:\n${previous.verify.output.slice(-RETRY_FEEDBACK_CHARS)}` : "";
+      sections.push(`Previous attempt failed verification (exit ${previous.verify.exitCode ?? "killed"}).${tail}\nFix the cause before finishing.`);
+    } else if (previous?.error) {
+      sections.push(`Previous attempt failed: ${previous.error.slice(0, RETRY_FEEDBACK_CHARS)}`);
+    }
+  }
+  sections.push(
     "Complete only this bounded work item. Do not call TaskCreate, TaskUpdate, LoopUpdate, LoopDelete, WorkflowClaim, WorkflowRevise, or WorkflowTransition.",
     "Return concise evidence and any exact file paths or commands needed by the parent controller.",
-  ].join("\n\n");
+  );
+  return sections.join("\n\n");
 }
 
 function asSpawnReply(value: unknown): { id: string } | undefined {
@@ -149,6 +170,10 @@ export function createSubagentOrchestrationRuntime(
   const wakeQueued = new Set<string>();
   const consumeInFlight = new Set<string>();
   const dispatchesInFlight = new Map<string, Set<Promise<void>>>();
+  // Verification keeps the dispatch running, so it still holds window capacity until acknowledged.
+  const verifiesInFlight = new Map<string, { loopId: string; controller: AbortController }>();
+  const runVerify = options.runVerify ?? runVerifyCommand;
+  const getCwd = options.getCwd ?? (() => process.cwd());
   let active = true;
   let reconcileQueued = false;
   let pumpPromise: Promise<void> | undefined;
@@ -320,7 +345,28 @@ export function createSubagentOrchestrationRuntime(
       durationMs: event.durationMs,
       tokens: event.tokens,
     };
-    const result = getStore().mutateOrchestration(match.entry.id, {
+    const verifyCommand = state.work.find((item) => currentDispatch(item)?.agentId === event.id)?.verify;
+    if (event.kind === "completed" && verifyCommand !== undefined) {
+      const pending = getStore().mutateOrchestration(match.entry.id, {
+        type: "dispatch_awaiting_verify",
+        at: now(),
+        expected: expected(state),
+        agentId: event.id,
+        result: event.result,
+        usage,
+      });
+      if (!pending.applied) return false;
+      updateWidget();
+      startVerify(match.entry.id, event.id, verifyCommand);
+      return true;
+    }
+    return settleDispatch(match.entry.id, event, usage);
+  }
+
+  function settleDispatch(loopId: string, event: LifecycleEvent, usage: OrchestrationUsage): boolean {
+    const state = getStore().get(loopId)?.orchestration;
+    if (!state || !actorOwns(state)) return false;
+    const result = getStore().mutateOrchestration(loopId, {
       type: "dispatch_settled",
       at: now(),
       expected: expected(state),
@@ -334,6 +380,60 @@ export function createSubagentOrchestrationRuntime(
     updateWidget();
     schedulePump();
     return true;
+  }
+
+  function recordVerification(loopId: string, agentId: string, verify: OrchestrationVerification): void {
+    const state = getStore().get(loopId)?.orchestration;
+    if (!state || !actorOwns(state)) return;
+    const result = getStore().mutateOrchestration(loopId, { type: "dispatch_verified", at: now(), expected: expected(state), agentId, verify });
+    if (!result.applied) return;
+    updateWidget();
+    schedulePump();
+  }
+
+  function startVerify(loopId: string, agentId: string, command: string): void {
+    if (verifiesInFlight.has(agentId)) return;
+    const controller = new AbortController();
+    verifiesInFlight.set(agentId, { loopId, controller });
+    const generation = getGeneration();
+    const startedAt = now();
+    // Teardown, cancellation, or a session switch owns the dispatch after abort; a persisted
+    // `verifying` dispatch is re-verified on recovery instead of being settled here.
+    const current = () => active && !controller.signal.aborted && isContextCurrent() && getGeneration() === generation;
+    let run: Promise<OrchestrationVerification>;
+    try {
+      run = runVerify({ command, cwd: getCwd(), signal: controller.signal });
+    } catch (error) {
+      run = Promise.reject(error);
+    }
+    void run.then(
+      (verify) => {
+        verifiesInFlight.delete(agentId);
+        if (current()) recordVerification(loopId, agentId, verify);
+      },
+      (error) => {
+        verifiesInFlight.delete(agentId);
+        debug?.("orchestration verify failed to run", error);
+        if (!current()) return;
+        const message = error instanceof Error ? error.message : String(error);
+        recordVerification(loopId, agentId, { passed: false, exitCode: null, durationMs: Math.max(0, now() - startedAt), output: `verifier could not run: ${message}` });
+      },
+    );
+  }
+
+  function resumeVerifies(entry: LoopEntry): void {
+    for (const item of entry.orchestration?.work ?? []) {
+      const dispatch = item.dispatches.at(-1);
+      if (dispatch?.status === "verifying" && dispatch.agentId && item.verify !== undefined) startVerify(entry.id, dispatch.agentId, item.verify);
+    }
+  }
+
+  function abortVerifies(loopId?: string): void {
+    for (const [agentId, inFlight] of verifiesInFlight) {
+      if (loopId !== undefined && inFlight.loopId !== loopId) continue;
+      inFlight.controller.abort();
+      verifiesInFlight.delete(agentId);
+    }
   }
 
   const unsubStarted = events.on("subagents:started", (raw) => {
@@ -503,8 +603,12 @@ export function createSubagentOrchestrationRuntime(
     if (counts.pending > 0 || counts.active > 0 || counts.uncertain > 0) return false;
     return state.work.length > 0 && state.work.every((item) => {
       const dispatch = item.dispatches.at(-1);
+      // A completed worker whose item failed was rejected by its verifier; the provider
+      // reported success, so only pi-loop can tell the parent.
+      const verificationFailed = item.status === "failed" && dispatch?.status === "completed";
       return (item.status === "completed" || item.status === "failed")
-        && dispatch?.consumeStatus === "provider_owned";
+        && dispatch?.consumeStatus === "provider_owned"
+        && !verificationFailed;
     });
   }
 
@@ -534,6 +638,7 @@ export function createSubagentOrchestrationRuntime(
         expected: expected(state),
       });
     }
+    abortVerifies(current.id);
     const expired = operationStore.expireEntry(current.id, timestamp);
     if (expired) onExpired(expired.entry, expired.disposition);
     for (const key of wakeQueued) {
@@ -602,13 +707,14 @@ export function createSubagentOrchestrationRuntime(
         state = entry.orchestration!;
       }
       retryPendingConsumes(entry);
+      resumeVerifies(entry);
       if (entry.status !== "active" || state.status !== "active") continue;
 
       while (true) {
         const freshEntry = getStore().get(entry.id);
         const fresh = freshEntry?.orchestration;
         if (!freshEntry || !fresh || freshEntry.status !== "active" || !actorOwns(fresh) || fresh.status !== "active") break;
-        if (getOrchestrationCounts(fresh).active >= fresh.concurrency) break;
+        if (getOrchestrationCounts(fresh).active >= getOrchestrationCapacity(fresh)) break;
         const pending = fresh.work.find((item) => item.status === "pending");
         if (!pending) break;
         await trackDispatch(entry.id, dispatchWork(freshEntry, pending));
@@ -640,6 +746,7 @@ export function createSubagentOrchestrationRuntime(
 
   async function shutdown(): Promise<void> {
     active = false;
+    abortVerifies();
     const stops: Promise<void>[] = [];
     for (const entry of getStore().list()) {
       const state = entry.orchestration;
@@ -694,6 +801,7 @@ export function createSubagentOrchestrationRuntime(
       expected: expected(state),
     });
     if (!result.applied) return "rejected";
+    abortVerifies(id);
     operationStore.pause(id, "administrative", "orchestration cancellation recorded; inspect unconfirmed workers");
     await Promise.all(agentIds.map(requestStop));
     await drainDispatches(id);
@@ -735,6 +843,7 @@ export function createSubagentOrchestrationRuntime(
     acknowledgeWake,
     dispose() {
       active = false;
+      abortVerifies();
       unsubStarted();
       unsubCompleted();
       unsubFailed();

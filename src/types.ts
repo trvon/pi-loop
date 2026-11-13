@@ -1,3 +1,4 @@
+import type { AckWindow } from "./ack-window.js";
 export type LoopDeletionReason = "task_backlog_empty";
 
 export interface LoopDeletionTombstone {
@@ -62,7 +63,8 @@ export interface DynamicLoopState {
 
 export type OrchestrationStatus = "active" | "needs_attention" | "completed" | "cancelled";
 export type OrchestrationWorkStatus = "pending" | "active" | "completed" | "failed" | "uncertain" | "cancelled";
-export type OrchestrationDispatchStatus = "spawning" | "queued" | "running" | "completed" | "failed" | "interrupted" | "stopped" | "uncertain";
+/** `verifying`: the worker finished; its result is persisted while the item verifier runs. */
+export type OrchestrationDispatchStatus = "spawning" | "queued" | "running" | "verifying" | "completed" | "failed" | "interrupted" | "stopped" | "uncertain";
 export type OrchestrationConsumeStatus = "not_applicable" | "provider_owned" | "pending" | "consumed" | "unavailable";
 export type OrchestrationWakeReason = "completed" | "failed" | "uncertain" | "recovery";
 
@@ -98,12 +100,25 @@ export interface OrchestrationDispatch {
   consumeStatus: OrchestrationConsumeStatus;
   consumeAttempts: number;
   usage?: OrchestrationUsage;
+  /** Result of the work item's verifier, when one was declared. */
+  verify?: OrchestrationVerification;
+}
+
+export interface OrchestrationVerification {
+  passed: boolean;
+  /** null when the verifier was killed (timeout or teardown) before exiting. */
+  exitCode: number | null;
+  durationMs: number;
+  /** Bounded tail of combined stdout/stderr. */
+  output?: string;
 }
 
 export interface OrchestrationWorkItem {
   id: string;
   prompt: string;
   agentType?: string;
+  /** Shell command run after the worker completes; exit 0 is the ACK. */
+  verify?: string;
   status: OrchestrationWorkStatus;
   attemptCount: number;
   dispatches: OrchestrationDispatch[];
@@ -114,6 +129,8 @@ export interface OrchestrationPendingWake {
   sequence: number;
   createdAt: number;
 }
+
+export type OrchestrationPacing = "fixed" | "aimd";
 
 export interface OrchestrationState {
   version: 1;
@@ -128,14 +145,17 @@ export interface OrchestrationState {
   work: OrchestrationWorkItem[];
   nextWakeSequence: number;
   pendingWake?: OrchestrationPendingWake;
+  /** Present only for `pacing: "aimd"`; `concurrency` remains the hard ceiling. */
+  window?: AckWindow;
   createdAt: number;
   updatedAt: number;
 }
 
 export interface OrchestrationDefinitionInput {
   goal: string;
-  work: Array<{ prompt: string; agentType?: string }>;
+  work: Array<{ prompt: string; agentType?: string; verify?: string }>;
   concurrency?: number;
+  pacing?: OrchestrationPacing;
   maxAttempts?: number;
   model?: string;
   maxTurns?: number;
@@ -161,6 +181,13 @@ export interface WorkflowStateLoopDefinition {
   startImmediately?: boolean;
 }
 
+/** A check that must exit 0 before an outcome is admitted. */
+export interface WorkflowOutcomeVerification {
+  command: string;
+  /** Outcome the harness takes, with the failure as evidence, when the check fails. */
+  onFail?: string;
+}
+
 export interface WorkflowStateDefinition {
   prompt: string;
   task?: WorkflowTaskDefinition;
@@ -168,6 +195,8 @@ export interface WorkflowStateDefinition {
   on?: Record<string, string>;
   terminal?: WorkflowTerminalStatus;
   maxAttempts?: number;
+  /** Per-outcome checks run by the harness before the transition is admitted. */
+  verify?: Record<string, WorkflowOutcomeVerification>;
 }
 
 export interface WorkflowDefinition {

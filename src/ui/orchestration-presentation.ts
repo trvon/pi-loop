@@ -36,6 +36,7 @@ export function orchestrationWorkStatusLabel(status: OrchestrationWorkStatus): s
 function orchestrationDispatchStatusLabel(status: OrchestrationDispatchStatus): string {
   if (status === "spawning") return "starting";
   if (status === "running") return "reported running";
+  if (status === "verifying") return "verifying";
   if (status === "completed") return "complete";
   return status;
 }
@@ -54,7 +55,7 @@ export function orchestrationProgressLabel(state: OrchestrationState): string {
     `${counts.completed}/${state.work.length} complete`,
     `${counts.active} reserved`,
   ];
-  for (const status of ["spawning", "queued", "running"] as const) {
+  for (const status of ["spawning", "queued", "running", "verifying"] as const) {
     const count = state.work.filter((item) => item.status === "active" && item.dispatches.at(-1)?.status === status).length;
     if (count > 0) parts.push(`${count} ${orchestrationDispatchStatusLabel(status)}`);
   }
@@ -97,7 +98,9 @@ export function orchestrationControllerText(entry: LoopEntry): string {
     `Orchestration #${entry.id} · ${orchestrationStatusLabel(state.status)}`,
     `Goal: ${state.goal}`,
     `Progress: ${orchestrationProgressLabel(state)}`,
-    `Limits: concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`,
+    state.window
+      ? `Limits: aimd window=${Math.floor(state.window.cwnd)}/${state.concurrency} losses=${state.window.losses} taskLosses=${state.window.taskLosses} maxAttempts=${state.maxAttempts}`
+      : `Limits: concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`,
     "Reserved: local capacity; dispatch state is last reported, not proof of current execution.",
     ...state.work.map(orchestrationWorkSummary),
   ].join("\n");

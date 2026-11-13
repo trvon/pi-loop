@@ -98,6 +98,24 @@ Wake delivery is idle-driven. A due timer or event mutates loop state, emits `lo
 
 The parent `agent_end`, existing 30-second heartbeat, session recovery, and direct `subagents:started|completed|failed` events drive reconciliation. Before each spawn, LoopStore records a generated dispatch ID and consumes local capacity. Spawn forces background execution, disables inherited extension tools, and leaves global queue/concurrency authority with `pi-subagents`. `spawning`, `queued`, and `running` all count against the local limit.
 
+### ACK-clocked pacing (opt-in)
+
+`pacing: "aimd"` replaces fixed local capacity with a persisted window modelled on TCP Reno. `concurrency` and the eight-worker fixed-pacing limit do not apply; the window starts at one dispatch in flight and is bounded only by feedback and the batch size (at most 32 items). Beyond pi-subagents' own background pool, workers queue in the provider; that queue time may not appear in worker duration, so the delay signal can be blind to it. Without per-dispatch output-token usage there is no delay signal at all, and only errors and timeouts limit growth. The default `fixed` pacing is unchanged and persists no window.
+
+Work items may declare `verify`, a command run through `sh` in the session cwd after the worker reports completion (same authority as `MonitorCreate`; five-minute timeout; bounded output tail). Workers are told the check in their prompt. On completion the dispatch becomes `verifying`: the worker's result and usage are persisted and the dispatch keeps holding window capacity until the verifier exits; exit 0 is the ACK. The verdict follows the shell's exit status even if a background child keeps output open. A declared verifier that fails, is killed, or cannot start makes the item fail and retry within `maxAttempts`; the retry prompt includes the failing exit status and output tail. A final verification failure always wakes the parent, because the provider has already reported the worker as successful. Cancellation, expiry, and shutdown abort in-flight verifiers; after shutdown or owner adoption, a `verifying` dispatch is re-verified rather than marked uncertain, and cancelling it records the completed worker without a verdict.
+
+Each settlement is classified before it reaches the window:
+
+| Signal | Evidence | Window |
+|---|---|---|
+| ACK | verifier passed; without a verifier, a non-empty completion | slow start below `ssthresh`, then about `1/cwnd` per ACK |
+| retry ACK | success on attempt > 1 | counted, never grows (Karn) |
+| task loss | verifier failed, empty result, other worker errors | counted, unchanged |
+| congestion | overload errors (429, 503, rate limit, connection reset), spawn failure, or two consecutive first-attempt completions above twice the observed per-output-token floor | halve, once per window: work dispatched before the last cut cannot cut again |
+| timeout | timeout errors | collapse to one; `ssthresh` halves once per window (RFC 5681) |
+
+Uncertain dispatches do not change the window; they already block all dispatch. Signals come only from lifecycle and verifier evidence, never from the parent model, so identical event sequences produce identical capacity. Error classification is pattern-based on provider error text and can misclassify. Worker duration includes the task's own tool time, so the delay signal needs a run of slow samples and remains a heuristic. `npm run sim:ack-window` compares both modes in a synthetic model, including scenarios where aimd is slower than a well-chosen fixed value; `benchmarks/live-pacing.mjs` runs the comparison against a real model server.
+
 Lifecycle callbacks CAS loop revision, owner runtime/generation, work ID, dispatch ID, attempt, and agent ID. Normal terminal evidence is bounded and persisted with `provider_owned` completion status; pi-loop does not call `subagents:rpc:consume`, so the provider retains its native completion surface. Protocol-v2 stop replies and `stopped`/`aborted` lifecycle statuses acknowledge cancellation, not quiescence. They become non-retryable, non-consumable `uncertain` dispatches before stop RPCs run. A late spawn reply may attach its exact cleanup identity without restoring execution. Proved failures retry only within `maxAttempts`; a spawn timeout is ambiguous without upstream status/list or idempotent dispatch keys, so it becomes `uncertain` and is never retried automatically.
 
 Completion bursts refill capacity without a pi-loop parent wake. When every terminal dispatch is provider-owned, pi-loop pauses the controller and acknowledges its aggregate wake internally so only the provider's native completion path runs. Uncertain dispatches and failures without a provider-owned terminal result retain the durable hidden wake until `pi.sendMessage` succeeds, unless cancelled or retired by expiry; a crash before acknowledgement may duplicate that delivery. Completed/attention controllers pause for `OrchestrationGet` inspection and explicit deletion. Presentation labels controller status as `active`, `needs attention`, `complete`, or `cancelled` while preserving reducer vocabulary in persisted state. Progress separates local `reserved` capacity from pending work and last-reported dispatch observations (`starting`, `queued`, `reported running`); none proves current worker liveness. Paused terminal controllers remain visible in the status line until deletion. Provider-native `SubagentWorkflow` UI and execution remain a separate provider-owned surface.
@@ -144,6 +162,11 @@ Every accepted revision retains its full prior definition and patch; history is 
 The public `revision_limit_reached` failure-code literal is retained for TypeScript source compatibility but is deprecated and no longer emitted.
 
 Revision and transition race through the same LoopStore lock. Revision-first makes a stale transition fail its definition CAS; transition-first makes a stale revision fail state/sequence CAS.
+
+
+### Verified outcomes
+
+A state may declare `verify: { <outcome>: { command, onFail? } }`. `WorkflowTransition` for a verified outcome runs `command` through `sh` in the session cwd (same authority as `MonitorCreate`) before the LoopStore mutation, then applies the transition with the same state/sequence/revision/execution CAS as blocker admission. Exit 0 records an `environmental` admission (`provider: "verify"`, `fact: "exit_code"`, `expected: 0`). On failure, without `onFail` the transition is rejected and state is preserved; with `onFail` the harness takes that outcome, subject to its target's `maxAttempts`, with the exit status and output tail as evidence. The tool result shows the verdict and output tail either way. A verifier that cannot start counts as a failure; a context change during the check leaves the transition unresolved. Constraints: verified outcomes must be declared in `on`, cannot target a paused terminal (use blocker admission), and `onFail` must be a different declared outcome that is not itself verified. `revise_state` does not change `verify`; `add_state` may declare it.
 
 ## Standalone tasks
 

@@ -35,6 +35,7 @@ import { isStaleExtensionContextError } from "./runtime/stale-context.js";
 import { createSubagentOrchestrationRuntime, type SubagentOrchestrationRuntime } from "./runtime/subagent-orchestration-runtime.js";
 import { createTaskBacklogRuntime } from "./runtime/task-backlog-runtime.js";
 import { createTaskProviderRuntime, type TaskProviderRuntime } from "./runtime/task-provider-runtime.js";
+import { createWorkflowVerifier } from "./runtime/verify-runner.js";
 import { createMonitorWorkflowAdmissionProvider } from "./runtime/workflow-admission-providers.js";
 import { CronScheduler } from "./scheduler.js";
 import { LoopStore } from "./store.js";
@@ -446,6 +447,7 @@ export default function (pi: ExtensionAPI) {
     debug,
   });
 
+  const workflowVerifier = createWorkflowVerifier(() => process.cwd());
   registerSessionRuntimeHooks({
     pi,
     getLoopScope: () => loopScope,
@@ -489,7 +491,10 @@ export default function (pi: ExtensionAPI) {
     },
     recoverOrchestrations: () => orchestrationRuntime!.recover(),
     pumpOrchestrations: () => orchestrationRuntime!.pump(),
-    shutdownOrchestrations: () => orchestrationRuntime!.shutdown(),
+    shutdownOrchestrations: () => {
+      workflowVerifier.abortAll();
+      return orchestrationRuntime!.shutdown();
+    },
     shutdownMonitors: () => monitorManager.shutdown(),
     hasPendingTasks,
     cleanDoneTasks,
@@ -582,6 +587,7 @@ export default function (pi: ExtensionAPI) {
       ?? `memory:${process.cwd()}:${_sessionId ?? "unbound"}`,
     getSessionGeneration: () => sessionGeneration,
     getAdmissionProviders: () => [monitorWorkflowAdmissionProvider],
+    runVerify: (command) => workflowVerifier.run(command),
   });
 
   function handleMonitorDoneLoop(doneLoop: LoopEntry, monitorId: string): void {

@@ -15,6 +15,7 @@ function setup() {
   const onDynamicLoopActivated = vi.fn();
   const admissionProviders: import("../src/workflow-admission.js").WorkflowAdmissionProvider[] = [];
   const maybeBootstrapTaskLoop = vi.fn(async () => false);
+  const runVerify = vi.fn(async (_command: string): Promise<import("../src/types.js").OrchestrationVerification> => ({ passed: true, exitCode: 0, durationMs: 1 }));
   const isTaskSystemReady = vi.fn(() => true);
   const cancelOrchestration = vi.fn(async (id: string, action: "pause" | "delete") => {
     if (action === "delete") return store.delete(id) ? "deleted" as const : "retained" as const;
@@ -39,12 +40,13 @@ function setup() {
     getActor: () => ({ sessionId: "test-session", runtimeId: "test-runtime" }),
     getAdmissionContextDigest: () => "workspace-A",
     getAdmissionProviders: () => admissionProviders,
+    runVerify: (command: string) => runVerify(command),
     updateWidget: vi.fn(),
     onDynamicLoopActivated,
   });
   const result = async (name: string, args: any) => await toolMap.get(name)!.execute!("t", args);
   const text = async (name: string, args: any) => (await result(name, args)).content[0].text as string;
-  return { store, triggerSystem, text, result, toolMap, admissionProviders, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated, cancelOrchestration };
+  return { store, triggerSystem, text, result, toolMap, admissionProviders, maybeBootstrapTaskLoop, isTaskSystemReady, onDynamicLoopActivated, cancelOrchestration, runVerify };
 }
 
 describe("LoopCreate", () => {
@@ -1462,5 +1464,38 @@ describe("Workflow tool runtime fencing", () => {
       commit.mockRestore();
       triggers.stop();
     }
+  });
+});
+
+describe("WorkflowTransition verified outcomes", () => {
+  const definition = {
+    version: 1,
+    initialState: "build",
+    states: {
+      build: { prompt: "Build it.", on: { done: "ship", rework: "build" }, maxAttempts: 3, verify: { done: { command: "npm test", onFail: "rework" } } },
+      ship: { prompt: "Ship.", terminal: "completed" },
+    },
+  };
+
+  it("reports a failed check, its output, and the onFail outcome the harness took", async () => {
+    const h = setup();
+    await h.text("WorkflowCreate", { goal: "Build", definition: JSON.stringify(definition) });
+    h.runVerify.mockResolvedValueOnce({ passed: false, exitCode: 1, durationMs: 3, output: "AssertionError: 2 !== 3" });
+    const out = await h.text("WorkflowTransition", { id: "1", outcome: "done", evidence: "All tests pass." });
+    expect(h.runVerify).toHaveBeenCalledWith("npm test");
+    expect(out).toContain("advanced: build → build");
+    expect(out).toContain('Verification: failed (exit 1); took onFail outcome "rework"');
+    expect(out).toContain("AssertionError: 2 !== 3");
+    expect(h.store.get("1")?.workflow?.lastTransition?.outcome).toBe("rework");
+  });
+
+  it("advances on a passing check", async () => {
+    const h = setup();
+    const created = await h.text("WorkflowCreate", { goal: "Build", definition: JSON.stringify(definition) });
+    expect(created).toContain("Workflow #1");
+    const out = await h.text("WorkflowTransition", { id: "1", outcome: "done" });
+    expect(out).toContain("completed and deleted");
+    expect(out).toContain("Verification: passed (exit 0)");
+    expect(h.runVerify).toHaveBeenCalledTimes(1);
   });
 });

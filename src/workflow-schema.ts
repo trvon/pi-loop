@@ -18,6 +18,10 @@ export const WorkflowStateSchema = Type.Object({
   on: Type.Optional(Type.Record(Type.String(), Type.String())),
   terminal: Type.Optional(Type.Union([Type.Literal("completed"), Type.Literal("paused")])),
   maxAttempts: Type.Optional(Type.Integer({ minimum: 1 })),
+  verify: Type.Optional(Type.Record(Type.String(), Type.Object({
+    command: Type.String({ minLength: 1 }),
+    onFail: Type.Optional(Type.String({ minLength: 1 })),
+  }))),
 });
 
 export const WorkflowDefinitionSchema = Type.Object({

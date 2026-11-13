@@ -135,4 +135,18 @@ describe("orchestration presentation", () => {
     expect(inspection).toContain("Progress: 2/2 complete · 0 reserved");
     expect(inspection).not.toContain('Trigger: {"type":"dynamic"}');
   });
+
+  it("reports the aimd window instead of a fixed concurrency limit", () => {
+    const store = new LoopStore();
+    const entry = store.create({ type: "dynamic" }, "Paced batch", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "session", runtimeId: "runtime", generation: 1 },
+        definition: { goal: "Paced batch", work: [{ prompt: "a" }, { prompt: "b" }, { prompt: "c" }], pacing: "aimd", maxAttempts: 2 },
+      },
+    });
+    const text = orchestrationControllerText(entry);
+    expect(text).toContain("Limits: aimd window=1/3 losses=0 taskLosses=0 maxAttempts=2");
+    expect(text).not.toContain("concurrency=");
+  });
 });

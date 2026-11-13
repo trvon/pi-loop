@@ -50,6 +50,7 @@ A workflow is one dynamic `LoopEntry` with a version-1 named-state definition.
 - Every destination/retry execution starts unowned and requires `WorkflowClaim`.
 - `WorkflowTransition` validates the live owner, settles source work, records evidence, advances state, and creates destination work in one locked write.
 - Paused terminal outcomes require a typed blocker claim; trusted providers run outside the LoopStore lock, then the transition uses exact state/revision/execution CAS.
+- A state's `verify` map gates outcomes on a command exiting 0. The check runs outside the lock like a provider; a pass records an `environmental` admission, a failure either rejects state-preservingly or takes the declared `onFail` outcome (attempt-bounded) with the failure as evidence. Model evidence alone never admits a verified outcome.
 - Machine observations never grant user authority. Rejected, stale, or contradicted claims are state-preserving; restart recovery is explicit resubmission, not a persisted proposal.
 - `WorkflowRevise` applies typed definition changes with definition/state/sequence CAS and immutable prior-definition history; it never touches TaskStore.
 - Active instructions are never mutated in place. `reissue_state` cancels the prior execution into history, creates fresh current work under the still-valid lease, and wakes the replacement after the locked write; through an administrative pause it parks the replacement instead of waking it. Current outgoing edges and future state content remain directly revisable.
@@ -163,7 +164,7 @@ Lint has two established optional-chain warnings; do not add new warnings. Workf
 - 25 active loops
 - 25 running monitors
 - 32 orchestration work items
-- 8 local orchestration workers
+- 8 local orchestration workers under fixed pacing; `pacing: "aimd"` is bounded only by its feedback window and batch size (pi-subagents' provider-owned pool still queues beyond its own limit)
 - 3 orchestration attempts per item
 - seven-day default loop lifetime; explicit `PI_LOOP_EXPIRES_IN` or per-loop `expiresIn` may be longer
 - five-minute self-paced default interval
