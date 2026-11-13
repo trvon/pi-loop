@@ -193,9 +193,10 @@ function monitorLines(monitors: readonly MonitorEntry[], now: number): PanelLine
       seg(`${formatCompactWorkflowDuration(now - monitor.startedAt)} `, "muted"),
       seg(label),
     ]);
-    const quietMs = monitor.lastOutputAt === undefined ? undefined : now - monitor.lastOutputAt;
+    // A monitor that never printed has been silent since it started.
+    const quietMs = now - (monitor.lastOutputAt ?? monitor.startedAt);
     const lastLine = plainPanelText(monitor.outputBuffer?.at(-1) ?? "");
-    if (quietMs !== undefined && quietMs > MONITOR_QUIET_MS) {
+    if (quietMs >= MONITOR_QUIET_MS) {
       lines.push([seg(`    quiet ${formatCompactWorkflowDuration(quietMs)} `, "warning"), seg(lastLine, "dim")]);
     } else if (lastLine) {
       lines.push([seg("    ", "dim"), seg(lastLine, "dim")]);

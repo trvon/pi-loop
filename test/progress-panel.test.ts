@@ -395,6 +395,30 @@ describe("progress panel monitors (issue #181)", () => {
     expect(lines[1]).toContain("quiet 12m");
   });
 
+  it("R1: flags a monitor that never produced output, and one silent exactly five minutes", () => {
+    const silentSinceStart = text(layoutProgressPanel({
+      loops: [],
+      tasks: [],
+      monitors: [panelMonitor("2", { command: "make silent", startedAt: PANEL_NOW - 8 * 60_000 })],
+      now: PANEL_NOW,
+    }, 40, 18));
+    expect(silentSinceStart[1]).toContain("quiet 8m");
+    const atThreshold = text(layoutProgressPanel({
+      loops: [],
+      tasks: [],
+      monitors: [panelMonitor("3", { output: ["tick"], lastOutputAt: PANEL_NOW - 5 * 60_000 })],
+      now: PANEL_NOW,
+    }, 40, 18));
+    expect(atThreshold[1]).toContain("quiet 5m");
+    const fresh = text(layoutProgressPanel({
+      loops: [],
+      tasks: [],
+      monitors: [panelMonitor("4", { startedAt: PANEL_NOW - 60_000 })],
+      now: PANEL_NOW,
+    }, 40, 18));
+    expect(fresh.join("\n")).not.toContain("quiet");
+  });
+
   it("never lets monitor output reach the terminal with control bytes", () => {
     const lines = text(layoutProgressPanel({
       loops: [],
