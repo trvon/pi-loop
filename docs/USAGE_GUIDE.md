@@ -171,6 +171,21 @@ Work items must be independent. The controller does not model dependencies or pr
 
 Local `concurrency` bounds spawning/queued/running dispatches while pi-subagents keeps its own global concurrency ceiling. A proved worker failure retries up to `maxAttempts`. A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
 
+#### Verified work and adaptive pacing
+
+A work item may declare `verify`, a shell command that must exit 0 before the item counts as complete. The worker is told the check; a failing check retries the item with the exit status and output tail in the next prompt:
+
+```text
+OrchestrationCreate goal="Port the parsers" pacing="aimd" work='[
+  {"prompt":"Port the CSV parser to the new API","verify":"npm test -- csv"},
+  {"prompt":"Port the TOML parser to the new API","verify":"npm test -- toml"}
+]' maxAttempts=2
+```
+
+`verify` runs in the session cwd with the same authority as `MonitorCreate`. While it runs, the dispatch shows as `verifying` and still holds capacity.
+
+`pacing="aimd"` replaces fixed `concurrency` with a window that starts at one worker, grows on verified completions, halves on overload errors or sustained slowdown, and collapses to one on timeouts. It is bounded only by the batch size, so use it when the real limit (a local model server, a provider rate limit) is unknown. Task failures do not shrink the window. The default `pacing="fixed"` is unchanged. Signal classification, the delay heuristic, and its limits are in [REFERENCE.md](REFERENCE.md#ack-clocked-pacing-opt-in).
+
 Inspect compact progress with `LoopList` and durable evidence with:
 
 ```text
@@ -333,4 +348,4 @@ Workflow tool cards, `LoopList`, and `TaskList` stay at two lines while collapse
 
 On terminals at least 110 columns wide, a narrow progress panel docks at the top-right while a workflow, orchestration, or native task is in progress. It never takes keyboard focus and disappears when nothing is in progress. Each workflow is a vertical state trail (`✓` visited, `▶` current with derived activity and attempt, `○` not yet entered) followed by its available outcomes; workflows that are paused or unclaimed are listed first. Native tasks show `done/total`, in-progress work first, and flag a claim whose lease has expired. The panel is presentation only: it reads the same LoopStore and TaskStore snapshots as the status line and never claims work, resumes a controller, or schedules a wake. Task rows come only from standalone tasks and workflow rows only from LoopStore. Durations refresh on state changes and the existing 30-second heartbeat. Because it overlays the transcript's right edge, hide it with `/loop panel off` (or `/loop panel` to toggle), or start pi with `PI_LOOP_PANEL=off`.
 
-The runtime allows at most 25 active loops and 25 running monitors. Each orchestration batch allows up to 32 work items, 8 local workers, and 3 attempts per item.
+The runtime allows at most 25 active loops and 25 running monitors. Each orchestration batch allows up to 32 work items, 8 local workers under fixed pacing (the batch size under `aimd`), and 3 attempts per item.
