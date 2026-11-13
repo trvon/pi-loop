@@ -80,6 +80,7 @@
     "bench": "TZ=UTC vitest bench --run --maxWorkers=1 --no-file-parallelism --passWithNoTests",
     "bench:baseline": "BENCH_BASELINE_OUT=.artifacts/benchmarks/baseline.json npm run bench",
     "bench:compare": "BENCH_BASELINE_IN=.artifacts/benchmarks/baseline.json npm run bench",
+    "sim:ack-window": "TZ=UTC node --import tsx benchmarks/ack-window-sim.ts",
     "profile:core": "node -e \"const fs=require('node:fs');fs.mkdirSync('.artifacts/profiles',{recursive:true});fs.rmSync('.artifacts/profiles/core.cpuprofile',{force:true})\" && TZ=UTC node --import tsx --cpu-prof --cpu-prof-interval=1000 --cpu-prof-dir=.artifacts/profiles --cpu-prof-name=core.cpuprofile benchmarks/profile-core.ts",
     "profile:startup": "node --import tsx benchmarks/profile-startup.ts",
     "profile:tools": "node --import tsx benchmarks/profile-tool-context.ts",
