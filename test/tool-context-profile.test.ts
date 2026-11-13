@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { access, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -161,7 +162,9 @@ describe("tool-context profile expectations", () => {
     expect(result).not.toBeNull();
     const { metadata, out } = result!;
     expect(metadata.complete).toBe(true);
-    expect(metadata.sdk).toBe("1.4.0");
+    // The profile must run against the exact SDK this package pins.
+    const pinnedSdk = JSON.parse(readFileSync(resolve("package.json"), "utf8")).devDependencies["@earendil-works/pi-coding-agent"];
+    expect(metadata.sdk).toBe(pinnedSdk);
     expect(metadata.fixture).toEqual({ nativeModelsApi: false, sdkDefaultTools: true, externalExtensions: false, operatorContext: false });
     expect(metadata.source.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(metadata.source.files.some(file => file.path === "src/index.ts")).toBe(true);
