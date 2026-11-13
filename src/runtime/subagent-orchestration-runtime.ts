@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getOrchestrationCounts, isUnconfirmedDispatch } from "../orchestration-reducer.js";
+import { getOrchestrationCapacity, getOrchestrationCounts, isUnconfirmedDispatch } from "../orchestration-reducer.js";
 import { RpcError, type RpcEventBus } from "../rpc/cross-extension-rpc.js";
 import type { LoopStore } from "../store.js";
 import type {
@@ -608,7 +608,7 @@ export function createSubagentOrchestrationRuntime(
         const freshEntry = getStore().get(entry.id);
         const fresh = freshEntry?.orchestration;
         if (!freshEntry || !fresh || freshEntry.status !== "active" || !actorOwns(fresh) || fresh.status !== "active") break;
-        if (getOrchestrationCounts(fresh).active >= fresh.concurrency) break;
+        if (getOrchestrationCounts(fresh).active >= getOrchestrationCapacity(fresh)) break;
         const pending = fresh.work.find((item) => item.status === "pending");
         if (!pending) break;
         await trackDispatch(entry.id, dispatchWork(freshEntry, pending));

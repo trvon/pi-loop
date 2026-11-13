@@ -33,6 +33,7 @@ interface CreateParams {
   model?: string;
   maxTurns?: number;
   concurrency?: number;
+  pacing?: "fixed" | "aimd";
   maxAttempts?: number;
   expiresIn?: string;
 }
@@ -52,6 +53,7 @@ function validateCreate(params: CreateParams): string | undefined {
   if (params.work.length < 1 || params.work.length > MAX_WORK_ITEMS) return `Orchestration requires between 1 and ${MAX_WORK_ITEMS} work items.`;
   const concurrency = params.concurrency ?? 3;
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_CONCURRENCY) return `concurrency must be between 1 and ${MAX_CONCURRENCY}`;
+  if (params.pacing !== undefined && params.pacing !== "fixed" && params.pacing !== "aimd") return "pacing must be fixed or aimd";
   const maxAttempts = params.maxAttempts ?? 1;
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > MAX_ATTEMPTS) return `maxAttempts must be between 1 and ${MAX_ATTEMPTS}`;
   if (params.maxTurns !== undefined && (!Number.isInteger(params.maxTurns) || params.maxTurns < 1 || params.maxTurns > MAX_TURNS)) {
@@ -82,6 +84,7 @@ function definitionFrom(params: CreateParams): OrchestrationDefinitionInput {
       agentType: item.agentType ?? params.agentType ?? "general-purpose",
     })),
     concurrency: params.concurrency ?? 3,
+    ...(params.pacing === "aimd" ? { pacing: "aimd" as const } : {}),
     maxAttempts: params.maxAttempts ?? 1,
     model: params.model,
     maxTurns: params.maxTurns,
@@ -108,6 +111,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
       maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
       concurrency: Type.Optional(Type.Integer({ description: "Local worker capacity (default: 3)", minimum: 1, maximum: MAX_CONCURRENCY, default: 3 })),
+      pacing: Type.Optional(Type.String({ description: "aimd: grow on results, halve on loss", enum: ["fixed", "aimd"] })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
       expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new batch, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
     }),
@@ -150,7 +154,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       updateWidget();
       const message = [
         `Orchestration #${entry.id} created`,
-        `${definition.work.length} work items · concurrency ${definition.concurrency}`,
+        `${definition.work.length} work items · concurrency ${definition.concurrency}${definition.pacing === "aimd" ? " · aimd" : ""}`,
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {
@@ -158,7 +162,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         action: "create",
         tone: "success",
         summary: `Orchestration #${entry.id} active · ${orchestrationProgressLabel(entry.orchestration!)}`,
-        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
+        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, `Concurrency: ${definition.concurrency}${definition.pacing === "aimd" ? " (aimd window starts at 1)" : ""}`, `Attempts: ${definition.maxAttempts}`],
       });
     },
   });

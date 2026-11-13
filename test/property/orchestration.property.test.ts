@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { OrchestrationEvent } from "../../src/orchestration-reducer.js";
-import { applyOrchestrationEvent, createOrchestrationState, getOrchestrationCounts } from "../../src/orchestration-reducer.js";
+import { applyOrchestrationEvent, createOrchestrationState, getOrchestrationCapacity, getOrchestrationCounts, validatePersistedOrchestration } from "../../src/orchestration-reducer.js";
 import type { OrchestrationState } from "../../src/types.js";
 import { propertyOptions } from "./config.js";
 
@@ -104,6 +104,63 @@ describe("orchestration reducer properties", () => {
       }
       expect(state.work.every((item) => item.attemptCount === 1 && item.dispatches[0]?.consumeStatus === "unavailable")).toBe(true);
     }), propertyOptions());
+  });
+
+  it("keeps aimd dispatch inside the ACK window and the window inside concurrency", () => {
+    type Step = "fill" | "complete" | "empty" | "failed" | "spawn_failed";
+    fc.assert(fc.property(
+      fc.integer({ min: 1, max: 12 }),
+      fc.integer({ min: 1, max: 8 }),
+      fc.integer({ min: 1, max: 3 }),
+      fc.array(fc.constantFrom<Step>("fill", "complete", "empty", "failed", "spawn_failed"), { minLength: 1, maxLength: 60 }),
+      (workCount, concurrency, maxAttempts, steps) => {
+        let state = createOrchestrationState({
+          goal: "aimd property",
+          work: Array.from({ length: workCount }, (_, index) => ({ prompt: `work ${index + 1}` })),
+          concurrency,
+          maxAttempts,
+          pacing: "aimd",
+        }, owner, 0);
+        const expected = () => ({ revision: state.revision, ownerRuntimeId: owner.runtimeId, generation: owner.generation });
+        let at = 1;
+        let signals = 0;
+        for (const step of steps) {
+          if (state.status !== "active") break;
+          if (step === "fill") {
+            for (const item of state.work.filter((candidate) => candidate.status === "pending")) {
+              const before = getOrchestrationCounts(state).active;
+              const capacity = getOrchestrationCapacity(state);
+              const dispatchId = `d${at}`;
+              const requested = applyOrchestrationEvent(state, { type: "dispatch_requested", at: at++, expected: expected(), workId: item.id, dispatchId });
+              expect(requested.applied).toBe(before < capacity && item.attemptCount < maxAttempts);
+              if (!requested.applied) break;
+              state = applyChecked(state, { type: "dispatch_bound", at: at++, expected: expected(), workId: item.id, dispatchId, agentId: `a${dispatchId}` });
+            }
+            continue;
+          }
+          const active = state.work.find((candidate) => candidate.status === "active");
+          const dispatch = active?.dispatches.at(-1);
+          if (!active || !dispatch?.agentId) continue;
+          state = step === "spawn_failed"
+            ? applyChecked(state, { type: "dispatch_spawn_failed", at: at++, expected: expected(), workId: active.id, dispatchId: dispatch.dispatchId, error: "spawn" })
+            : applyChecked(state, {
+                type: "dispatch_settled",
+                at: at++,
+                expected: expected(),
+                agentId: dispatch.agentId,
+                outcome: step === "failed" ? "failed" : "completed",
+                result: step === "complete" ? "done" : step === "empty" ? " " : undefined,
+              });
+          signals += 1;
+          const window = state.window!;
+          expect(window.cwnd).toBeGreaterThanOrEqual(1);
+          expect(window.cwnd).toBeLessThanOrEqual(concurrency);
+          expect(window.acks + window.losses).toBe(signals);
+          expect(getOrchestrationCounts(state).active).toBeLessThanOrEqual(concurrency);
+          expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
+        }
+      },
+    ), propertyOptions());
   });
 
   it("rejects arbitrary stale revisions without mutation", () => {

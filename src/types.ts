@@ -1,3 +1,4 @@
+import type { AckWindow } from "./ack-window.js";
 export type LoopDeletionReason = "task_backlog_empty";
 
 export interface LoopDeletionTombstone {
@@ -115,6 +116,8 @@ export interface OrchestrationPendingWake {
   createdAt: number;
 }
 
+export type OrchestrationPacing = "fixed" | "aimd";
+
 export interface OrchestrationState {
   version: 1;
   revision: number;
@@ -128,6 +131,8 @@ export interface OrchestrationState {
   work: OrchestrationWorkItem[];
   nextWakeSequence: number;
   pendingWake?: OrchestrationPendingWake;
+  /** Present only for `pacing: "aimd"`; `concurrency` remains the hard ceiling. */
+  window?: AckWindow;
   createdAt: number;
   updatedAt: number;
 }
@@ -136,6 +141,7 @@ export interface OrchestrationDefinitionInput {
   goal: string;
   work: Array<{ prompt: string; agentType?: string }>;
   concurrency?: number;
+  pacing?: OrchestrationPacing;
   maxAttempts?: number;
   model?: string;
   maxTurns?: number;

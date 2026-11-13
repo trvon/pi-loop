@@ -112,6 +112,28 @@ describe("subagent orchestration tools", () => {
     expect(h.store.list()).toHaveLength(0);
   });
 
+  it("creates an opt-in aimd batch that starts with one dispatch slot", async () => {
+    const out = await h.text("OrchestrationCreate", {
+      goal: "Review release readiness",
+      work: [{ prompt: "Inspect API compatibility" }, { prompt: "Review rollout risks" }],
+      concurrency: 4,
+      pacing: "aimd",
+    });
+
+    expect(out).toContain("2 work items · concurrency 4 · aimd");
+    expect(h.store.get("1")?.orchestration).toMatchObject({
+      concurrency: 4,
+      window: { mode: "aimd", cwnd: 1, ssthresh: 4, acks: 0, losses: 0 },
+    });
+    expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], pacing: "cubic" })).toContain("pacing must be fixed or aimd");
+    expect(h.store.list()).toHaveLength(1);
+  });
+
+  it("keeps fixed pacing without a persisted window", async () => {
+    await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], pacing: "fixed" });
+    expect(h.store.get("1")?.orchestration?.window).toBeUndefined();
+  });
+
   it("requires pi-subagents protocol v2 before persisting", async () => {
     h = setup({ protocol: 1 });
 

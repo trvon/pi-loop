@@ -1,3 +1,4 @@
+import { applyAckSignal, classifySettlement, createAckWindow, validateAckWindow, windowCapacity } from "./ack-window.js";
 import type {
   OrchestrationActor,
   OrchestrationDefinitionInput,
@@ -30,6 +31,7 @@ export function validateOrchestrationDefinition(input: OrchestrationDefinitionIn
   }
   const concurrency = input.concurrency ?? 3;
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > MAX_ORCHESTRATION_CONCURRENCY) return "invalid concurrency";
+  if (input.pacing !== undefined && input.pacing !== "fixed" && input.pacing !== "aimd") return "invalid pacing";
   const attempts = input.maxAttempts ?? 1;
   if (!Number.isInteger(attempts) || attempts < 1 || attempts > MAX_ORCHESTRATION_ATTEMPTS) return "invalid maxAttempts";
   if (input.maxTurns !== undefined && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 100)) return "invalid maxTurns";
@@ -93,6 +95,7 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
   }
   if (value.status === "completed" && !allWorkCompleted) throw new Error("Malformed orchestration state: incomplete completed batch");
   if (!Number.isInteger(value.nextWakeSequence) || Number(value.nextWakeSequence) < 0 || !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt)) throw new Error("Malformed orchestration state: invalid sequence or timestamp");
+  if (value.window !== undefined && !validateAckWindow(value.window, Number(value.concurrency))) throw new Error("Malformed orchestration state: invalid window");
   if (value.pendingWake !== undefined && (!isRecord(value.pendingWake) || !Number.isInteger(value.pendingWake.sequence) || Number(value.pendingWake.sequence) < 1 || Number(value.pendingWake.sequence) > Number(value.nextWakeSequence) || !WAKE_REASONS.has(String(value.pendingWake.reason)) || !Number.isFinite(value.pendingWake.createdAt))) {
     throw new Error("Malformed orchestration state: invalid pending wake");
   }
@@ -148,6 +151,7 @@ function cloneState(state: OrchestrationState): OrchestrationState {
       })),
     })),
     pendingWake: state.pendingWake ? { ...state.pendingWake } : undefined,
+    window: state.window ? { ...state.window } : undefined,
   };
 }
 
@@ -241,6 +245,15 @@ function refreshControllerStatus(state: OrchestrationState, at: number): void {
   state.status = "active";
 }
 
+/** Local dispatch capacity: `concurrency`, narrowed by the ACK window when paced. */
+export function getOrchestrationCapacity(state: OrchestrationState): number {
+  return state.window ? windowCapacity(state.window, state.concurrency) : state.concurrency;
+}
+
+function recordAckSignal(state: OrchestrationState, signal: Parameters<typeof applyAckSignal>[1]): void {
+  if (state.window) state.window = applyAckSignal(state.window, signal, state.concurrency);
+}
+
 function settleFailure(item: OrchestrationWorkItem, state: OrchestrationState): void {
   item.status = item.attemptCount < state.maxAttempts ? "pending" : "failed";
 }
@@ -250,12 +263,13 @@ export function createOrchestrationState(
   owner: OrchestrationActor,
   at: number,
 ): OrchestrationState {
+  const concurrency = input.concurrency ?? 3;
   return {
     version: 1,
     revision: 1,
     status: "active",
     goal: input.goal,
-    concurrency: input.concurrency ?? 3,
+    concurrency,
     maxAttempts: input.maxAttempts ?? 1,
     model: input.model,
     maxTurns: input.maxTurns,
@@ -269,6 +283,7 @@ export function createOrchestrationState(
       dispatches: [],
     })),
     nextWakeSequence: 0,
+    ...(input.pacing === "aimd" ? { window: createAckWindow(concurrency) } : {}),
     createdAt: at,
     updatedAt: at,
   };
@@ -334,7 +349,7 @@ export function applyOrchestrationEvent(
     const item = next.work.find((candidate) => candidate.id === event.workId);
     if (!item) return rejected(state, "work_not_found");
     if (item.status !== "pending") return rejected(state, "work_not_pending");
-    if (getOrchestrationCounts(next).active >= next.concurrency) return rejected(state, "capacity_exhausted");
+    if (getOrchestrationCounts(next).active >= getOrchestrationCapacity(next)) return rejected(state, "capacity_exhausted");
     if (item.attemptCount >= next.maxAttempts) return rejected(state, "attempts_exhausted");
     item.attemptCount += 1;
     item.status = "active";
@@ -394,6 +409,7 @@ export function applyOrchestrationEvent(
     found.dispatch.settledAt = event.at;
     found.dispatch.consumeStatus = "provider_owned";
     found.item.status = event.outcome === "completed" ? "completed" : "failed";
+    recordAckSignal(next, classifySettlement(event.outcome, event.result, found.dispatch.attempt));
     if (event.outcome === "failed") settleFailure(found.item, next);
     refreshControllerStatus(next, event.at);
     return applied(next, event.at);
@@ -409,6 +425,8 @@ export function applyOrchestrationEvent(
     dispatch.settledAt = event.at;
     dispatch.consumeStatus = uncertain ? "unavailable" : dispatch.agentId ? "pending" : "not_applicable";
     item.status = uncertain ? "uncertain" : "failed";
+    // Uncertain termination already blocks every dispatch; only proved spawn failure is a loss.
+    if (!uncertain) recordAckSignal(next, "loss");
     if (!uncertain) settleFailure(item, next);
     refreshControllerStatus(next, event.at);
     return applied(next, event.at);

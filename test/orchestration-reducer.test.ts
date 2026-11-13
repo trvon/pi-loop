@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyOrchestrationEvent,
   createOrchestrationState,
+  getOrchestrationCapacity,
   getOrchestrationCounts,
   MAX_ORCHESTRATION_ERROR_CHARS,
   MAX_ORCHESTRATION_RESULT_CHARS,
@@ -233,5 +234,105 @@ describe("subagent orchestration reducer", () => {
     expect(cancelled.applied).toBe(true);
     expect(cancelled.state.status).toBe("cancelled");
     expect(cancelled.state.work.map((item) => item.status)).toEqual(["cancelled", "cancelled"]);
+  });
+});
+
+function expectedOf(state: ReturnType<typeof create>) {
+  return { revision: state.revision, ownerRuntimeId: owner.runtimeId, generation: owner.generation };
+}
+
+function runToSettled(
+  state: ReturnType<typeof create>,
+  workId: string,
+  key: string,
+  at: number,
+  outcome: "completed" | "failed",
+  result?: string,
+) {
+  const requested = dispatch(state, workId, `dispatch-${key}`, at);
+  expect(requested.applied).toBe(true);
+  const bound = applyOrchestrationEvent(requested.state, {
+    type: "dispatch_bound", at: at + 1, expected: expectedOf(requested.state), workId, dispatchId: `dispatch-${key}`, agentId: `agent-${key}`,
+  }).state;
+  return applyOrchestrationEvent(bound, {
+    type: "dispatch_settled", at: at + 2, expected: expectedOf(bound), agentId: `agent-${key}`, outcome, result,
+  }).state;
+}
+
+describe("orchestration ACK-clocked pacing", () => {
+  it("keeps fixed pacing as the default with unchanged capacity and no window", () => {
+    const state = create(3);
+    expect(state.window).toBeUndefined();
+    expect(getOrchestrationCapacity(state)).toBe(2);
+    const first = dispatch(state, "1", "dispatch-1", 110).state;
+    expect(dispatch(first, "2", "dispatch-2", 120).applied).toBe(true);
+  });
+
+  it("rejects unknown pacing modes", () => {
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect" }], pacing: "cubic" as never })).toContain("pacing");
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect" }], pacing: "aimd" })).toBeUndefined();
+  });
+
+  it("starts aimd pacing at one dispatch in flight regardless of concurrency", () => {
+    const state = create(4, { concurrency: 4, pacing: "aimd" });
+    expect(state.window).toEqual({ mode: "aimd", cwnd: 1, ssthresh: 4, acks: 0, losses: 0 });
+    expect(getOrchestrationCapacity(state)).toBe(1);
+    const first = dispatch(state, "1", "dispatch-1", 110);
+    expect(first.applied).toBe(true);
+    const second = dispatch(first.state, "2", "dispatch-2", 120);
+    expect(second).toMatchObject({ applied: false, reason: "capacity_exhausted" });
+    expect(second.state).toBe(first.state);
+  });
+
+  it("opens the window on non-empty completion and halves it on failure, empty result, or spawn failure", () => {
+    // Final failure already halts the batch (needs_attention); window losses matter while retries remain.
+    let state = create(6, { concurrency: 4, pacing: "aimd", maxAttempts: 2 });
+    state = runToSettled(state, "1", "1", 110, "completed", "ok");
+    expect(getOrchestrationCapacity(state)).toBe(2);
+    state = runToSettled(state, "2", "2", 120, "completed", "ok");
+    expect(getOrchestrationCapacity(state)).toBe(3);
+
+    state = runToSettled(state, "3", "3", 130, "failed");
+    expect(state.window).toMatchObject({ cwnd: 1, ssthresh: 1, losses: 1, acks: 2 });
+    expect(state.work[2]?.status).toBe("pending");
+
+    state = runToSettled(state, "4", "4", 140, "completed", "ok");
+    expect(state.window?.cwnd).toBe(2);
+    state = runToSettled(state, "5", "5", 150, "completed", "   ");
+    expect(state.window).toMatchObject({ cwnd: 1, losses: 2 });
+    expect(state.work[4]?.status).toBe("completed");
+
+    const requested = dispatch(state, "6", "dispatch-6", 160).state;
+    const spawnFailed = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 161, expected: expectedOf(requested), workId: "6", dispatchId: "dispatch-6", error: "spawn rejected",
+    }).state;
+    expect(spawnFailed.window).toMatchObject({ cwnd: 1, losses: 3 });
+  });
+
+  it("does not open the window when success needed a retry", () => {
+    let state = create(1, { concurrency: 4, pacing: "aimd", maxAttempts: 2 });
+    state = runToSettled(state, "1", "a", 110, "failed");
+    expect(state.work[0]?.status).toBe("pending");
+    state = runToSettled(state, "1", "b", 120, "completed", "ok");
+    expect(state.window).toMatchObject({ cwnd: 1, acks: 1, losses: 1 });
+  });
+
+  it("leaves uncertain termination blocking all dispatch regardless of window", () => {
+    let state = create(3, { concurrency: 4, pacing: "aimd" });
+    state = runToSettled(state, "1", "1", 110, "completed", "ok");
+    const requested = dispatch(state, "2", "dispatch-2", 120).state;
+    const uncertain = applyOrchestrationEvent(requested, {
+      type: "dispatch_uncertain", at: 121, expected: expectedOf(requested), workId: "2", dispatchId: "dispatch-2", error: "timeout",
+    }).state;
+    expect(uncertain.window).toEqual(state.window);
+    expect(uncertain.status).toBe("needs_attention");
+  });
+
+  it("round-trips a persisted window and rejects a malformed one", () => {
+    const state = runToSettled(create(2, { concurrency: 4, pacing: "aimd" }), "1", "1", 110, "completed", "ok");
+    expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
+    const malformed = structuredClone(state) as any;
+    malformed.window.cwnd = 9;
+    expect(() => validatePersistedOrchestration(malformed)).toThrow("invalid window");
   });
 });
