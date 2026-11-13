@@ -10,7 +10,8 @@ import { validateWorkflowDefinition } from "../src/workflow-definition.js";
 
 const directories: string[] = [];
 afterEach(() => {
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  // Windows locks a killed check's cwd until taskkill finishes reaping it; retry like test/index.test.ts.
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function definition(verify: WorkflowDefinition["states"][string]["verify"]): WorkflowDefinition {
