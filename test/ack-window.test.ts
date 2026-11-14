@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   type AckSignal,
   type AckWindow,
+  ADMISSION_BACKOFF,
   applyAckSignal,
+  CONGESTION_BACKOFF,
   classifySettlement,
   createAckWindow,
   DELAY_CONGESTION_FACTOR,
@@ -170,5 +172,24 @@ describe("review regressions", () => {
     const primed = { ...createAckWindow(8), minMsPerToken: 20, delayStreak: 5 };
     expect(classifySettlement({ outcome: "completed", attempt: 2, verifyPassed: true, outputTokens: 100, durationMs: 999_999 }, primed)).toBe("retry_ack");
     expect(observeDelay(primed, { attempt: 2, outputTokens: 100, durationMs: 999_999 }).delayStreak).toBe(5);
+  });
+});
+
+describe("split multiplicative decrease", () => {
+  const grown = { ...createAckWindow(16), cwnd: 10, ssthresh: 16 };
+
+  it("S1: a rejection at admission cuts the window by ADMISSION_BACKOFF; no work was lost", () => {
+    expect(ADMISSION_BACKOFF).toBe(0.7);
+    expect(applyAckSignal(grown, "congestion", 16, { at: 100, requestedAt: 50, rejected: true })).toMatchObject({ cwnd: 7, ssthresh: 7, losses: 1 });
+  });
+
+  it("S2: congestion that lost work in flight still halves", () => {
+    expect(CONGESTION_BACKOFF).toBe(0.5);
+    expect(applyAckSignal(grown, "congestion", 16, { at: 100, requestedAt: 50 })).toMatchObject({ cwnd: 5, ssthresh: 5 });
+  });
+
+  it("S3: a rejected timeout still collapses to one and a rejection never cuts below one", () => {
+    expect(applyAckSignal(grown, "timeout", 16, { at: 100, requestedAt: 50, rejected: true })).toMatchObject({ cwnd: 1, ssthresh: 5 });
+    expect(applyAckSignal({ ...grown, cwnd: 1 }, "congestion", 16, { at: 100, requestedAt: 50, rejected: true })).toMatchObject({ cwnd: 1, ssthresh: 1 });
   });
 });

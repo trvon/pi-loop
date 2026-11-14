@@ -392,7 +392,8 @@ describe("orchestration ACK-clocked pacing", () => {
     const failed = applyOrchestrationEvent(requested, {
       type: "dispatch_spawn_failed", at: 131, expected: expectedOf(requested), workId: "3", dispatchId: "dispatch-3", error: "spawn rejected",
     }).state;
-    expect(failed.window).toMatchObject({ cwnd: 1, losses: 1 });
+    // A spawn failure is an admission rejection: 3 x ADMISSION_BACKOFF, floored.
+    expect(failed.window).toMatchObject({ cwnd: 2, losses: 1 });
   });
 
   it("does not open the window when success needed a retry", () => {
@@ -576,5 +577,30 @@ describe("unverified aimd growth", () => {
   it("G3: a fully verified aimd batch is bounded by its size", () => {
     expect(batch(20, (index) => `npm test -- t${index}`).concurrency).toBe(20);
     expect(batch(5, () => undefined).concurrency).toBe(5);
+  });
+});
+
+describe("admission rejections cut gently", () => {
+  const grownBatch = () => {
+    const state = verifiedBatch(16, 3);
+    return { ...state, window: { ...state.window!, cwnd: 10 } };
+  };
+
+  it("S4: an overload from a worker that ran no tools cuts to 0.7x", () => {
+    const state = runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests", usage: { toolUses: 0 } });
+    expect(state.window).toMatchObject({ cwnd: 7, ssthresh: 7 });
+  });
+
+  it("S5: an overload after the worker ran tools, or with unknown tool use, halves", () => {
+    expect(runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests", usage: { toolUses: 2 } }).window).toMatchObject({ cwnd: 5 });
+    expect(runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests" }).window).toMatchObject({ cwnd: 5 });
+  });
+
+  it("S6: a proved spawn failure is an admission rejection", () => {
+    const requested = dispatch(grownBatch(), "1", "dispatch-1", 110).state;
+    const failed = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 111, expected: expectedOf(requested), workId: "1", dispatchId: "dispatch-1", error: "spawn rejected",
+    }).state;
+    expect(failed.window).toMatchObject({ cwnd: 7 });
   });
 });

@@ -258,7 +258,8 @@ function settleDispatch(
   // Fixed pacing has no window but still tells congestion from task failure.
   const signal = classifySettlement(evidence, next.window ?? {});
   if (next.window) {
-    recordAckSignal(next, signal, dispatch, at);
+    // A failure before any tool ran is an admission rejection.
+    recordAckSignal(next, signal, dispatch, at, input.outcome === "failed" && input.usage?.toolUses === 0);
     next.window = observeDelay(next.window, evidence);
   }
   if (item.status === "failed") {
@@ -332,8 +333,8 @@ export function getOrchestrationCapacity(state: OrchestrationState): number {
   return state.window ? windowCapacity(state.window, state.concurrency) : state.concurrency;
 }
 
-function recordAckSignal(state: OrchestrationState, signal: AckSignal, dispatch: OrchestrationDispatch, at: number): void {
-  if (state.window) state.window = applyAckSignal(state.window, signal, state.concurrency, { at, requestedAt: dispatch.requestedAt });
+function recordAckSignal(state: OrchestrationState, signal: AckSignal, dispatch: OrchestrationDispatch, at: number, rejected = false): void {
+  if (state.window) state.window = applyAckSignal(state.window, signal, state.concurrency, { at, requestedAt: dispatch.requestedAt, rejected });
 }
 
 /** Attempts charged against maxAttempts: congestion losses re-sent for free are excluded. */
@@ -553,7 +554,7 @@ export function applyOrchestrationEvent(
     item.status = uncertain ? "uncertain" : "failed";
     // Uncertain termination already blocks every dispatch; a proved spawn failure is path congestion.
     if (!uncertain) {
-      recordAckSignal(next, "congestion", dispatch, event.at);
+      recordAckSignal(next, "congestion", dispatch, event.at, true);
       // A proved spawn failure never started a worker.
       forgiveCongestion(item, next, "congestion", 0);
       settleFailure(item, next);
