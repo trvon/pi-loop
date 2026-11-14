@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { INITIAL_WINDOW } from "../ack-window.js";
 import { MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
 import type { LoopScope } from "../runtime/scope.js";
 import type { LoopStore } from "../store.js";
@@ -176,9 +175,12 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         return errorResult(error instanceof Error ? error.message : String(error));
       }
       updateWidget();
+      // Report what was stored: the reducer owns the window and its ceiling.
+      const stored = entry.orchestration!;
+      const pacingLabel = stored.window ? `aimd window ${Math.floor(stored.window.cwnd)}-${stored.concurrency}` : `concurrency ${stored.concurrency}`;
       const message = [
         `Orchestration #${entry.id} created`,
-        definition.pacing === "aimd" ? `${definition.work.length} work items · aimd window ${Math.min(INITIAL_WINDOW, definition.work.length)}-${definition.work.length}` : `${definition.work.length} work items · concurrency ${definition.concurrency}`,
+        `${definition.work.length} work items · ${pacingLabel}`,
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {
@@ -186,7 +188,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         action: "create",
         tone: "success",
         summary: `Orchestration #${entry.id} active · ${orchestrationProgressLabel(entry.orchestration!)}`,
-        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, definition.pacing === "aimd" ? `Pacing: aimd (window ${Math.min(INITIAL_WINDOW, definition.work.length)}-${definition.work.length})` : `Concurrency: ${definition.concurrency}`, `Attempts: ${definition.maxAttempts}`],
+        expanded: [`Goal: ${definition.goal}`, `Status: active`, `Progress: ${orchestrationProgressLabel(entry.orchestration!)}`, stored.window ? `Pacing: ${pacingLabel}` : `Concurrency: ${stored.concurrency}`, `Attempts: ${definition.maxAttempts}`],
       });
     },
   });

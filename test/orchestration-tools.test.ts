@@ -141,6 +141,14 @@ describe("subagent orchestration tools", () => {
       expect(h.store.get("1")?.orchestration).toMatchObject({ concurrency: 4, window: { mode: "aimd", cwnd: 3, ssthresh: 4 } });
     });
 
+    it("reports the stored aimd window, capped at eight for unverified work", async () => {
+      h = setup();
+      const work = Array.from({ length: 20 }, (_, index) => ({ prompt: `task ${index + 1}` }));
+      expect(await h.text("OrchestrationCreate", { goal: "Review", work })).toContain("20 work items · aimd window 3-8");
+      const verified = work.map((item) => ({ ...item, verify: "npm test" }));
+      expect(await h.text("OrchestrationCreate", { goal: "Review", work: verified })).toContain("20 work items · aimd window 3-20");
+    });
+
     it("treats an explicit concurrency as a request for fixed pacing", async () => {
       h = setup();
       await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "A" }], concurrency: 2 });
