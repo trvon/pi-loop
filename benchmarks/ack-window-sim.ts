@@ -18,8 +18,8 @@
  *
  * Run: npm run sim:ack-window
  */
-import { applyOrchestrationEvent, createOrchestrationState, getOrchestrationCapacity, getOrchestrationCounts } from "../src/orchestration-reducer.js";
-import type { OrchestrationPacing, OrchestrationState } from "../src/types.js";
+import { applyOrchestrationEvent, createOrchestrationState, getOrchestrationCapacity, getOrchestrationCounts, learnWindowSeed } from "../src/orchestration-reducer.js";
+import type { OrchestrationPacing, OrchestrationState, WindowSeed } from "../src/types.js";
 
 interface Scenario {
   name: string;
@@ -71,7 +71,7 @@ interface Job {
   /** Admission rejections fail on the next tick and hold no share of the bottleneck. */
   rejected: boolean;
 }
-interface Outcome { completed: number; ticks: number; dispatches: number; halted: boolean }
+interface Outcome { completed: number; ticks: number; dispatches: number; halted: boolean; state: OrchestrationState }
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -84,7 +84,7 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: number, seed: number): Outcome {
+function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: number, seed: number, initialWindow?: WindowSeed): Outcome {
   const random = mulberry32(seed);
   const workItems = scenario.workItems ?? WORK_ITEMS;
   let state: OrchestrationState = createOrchestrationState({
@@ -93,6 +93,7 @@ function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: numbe
     concurrency,
     maxAttempts: scenario.maxAttempts ?? MAX_ATTEMPTS,
     pacing,
+    ...(initialWindow ? { initialWindow } : {}),
   }, owner, 0);
   const expected = () => ({ revision: state.revision, ownerRuntimeId: owner.runtimeId, generation: owner.generation });
   const apply = (event: Parameters<typeof applyOrchestrationEvent>[1]) => {
@@ -161,7 +162,7 @@ function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: numbe
     }
     if (jobs.length === 0 && (state.status !== "active" || !state.work.some((candidate) => candidate.status === "pending"))) break;
   }
-  return { completed: getOrchestrationCounts(state).completed, ticks: tick, dispatches, halted: state.status === "needs_attention" };
+  return { completed: getOrchestrationCounts(state).completed, ticks: tick, dispatches, halted: state.status === "needs_attention", state };
 }
 
 function percentile(values: number[], q: number): number {
@@ -190,4 +191,22 @@ for (const scenario of SCENARIOS) {
       String(percentile(outcomes.map((o) => o.dispatches), 0.5)).padStart(10),
     ].join(" | "));
   }
+}
+
+// A second batch in the same session, seeded from the window the first left
+// (the learner OrchestrationCreate uses), against the same batch unseeded.
+console.log("\nsecond aimd batch in the same session: median seconds [p10-p90], batch finished %");
+console.log("scenario                                       | unseeded               | learned from batch 1");
+for (const scenario of SCENARIOS) {
+  const row = (learn: boolean) => {
+    const outcomes = Array.from({ length: SEEDS }, (_, index) => {
+      const first = run(scenario, "aimd", 8, index + 1);
+      const learned = learn ? learnWindowSeed([{ id: "1", state: { ...first.state, updatedAt: first.ticks * TICK_MS } }], undefined, first.ticks * TICK_MS) : undefined;
+      return run(scenario, "aimd", 8, index + 10_001, learned ? { cwnd: learned.cwnd, ...(learned.ssthresh ? { ssthresh: learned.ssthresh } : {}) } : undefined);
+    });
+    const finished = outcomes.filter((o) => !o.halted && o.completed === (scenario.workItems ?? WORK_ITEMS)).length / SEEDS;
+    const ticks = outcomes.map((o) => o.ticks);
+    return `${percentile(ticks, 0.5)} [${percentile(ticks, 0.1)}-${percentile(ticks, 0.9)}] ${(finished * 100).toFixed(0)}%`;
+  };
+  console.log(`${scenario.name.slice(0, 46).padEnd(46)} | ${row(false).padEnd(22)} | ${row(true)}`);
 }
