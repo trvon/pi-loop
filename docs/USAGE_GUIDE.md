@@ -184,7 +184,7 @@ This surface requires the default file-backed session scope and `@tintinweb/pi-s
 
 Work items must be independent. The controller does not model dependencies or protect overlapping filesystem writes. Each spawned worker is background, does not inherit parent context, and is isolated from extension tools, so it cannot call pi-loop task/workflow/controller tools. The optional `agentType`, `model`, and `maxTurns` fields are the only invocation overrides.
 
-Batches are paced adaptively by default (see below). Passing `concurrency` selects fixed pacing: it bounds spawning/queued/running dispatches to that many, while pi-subagents keeps its own global concurrency ceiling. A proved worker failure retries up to `maxAttempts`. An overload or failed spawn that struck before the worker ran any tool is re-sent without spending an attempt (at most 3 times per item and once per item across the batch). A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
+Batches are paced adaptively by default (see below). Passing `concurrency` selects fixed pacing: it bounds spawning/queued/running dispatches to that many, while pi-subagents keeps its own global concurrency ceiling. A proved worker failure retries up to `maxAttempts`. An overload that struck before the worker ran any tool, or a spawn that failed on a dropped connection, is re-sent without spending an attempt (at most 3 times per item and once per item across the batch). A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
 
 #### Verified work and adaptive pacing
 

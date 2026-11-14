@@ -1,4 +1,4 @@
-import { type AckSignal, applyAckSignal, classifySettlement, createAckWindow, observeDelay, validateAckWindow, windowCapacity } from "./ack-window.js";
+import { type AckSignal, applyAckSignal, classifySettlement, createAckWindow, isCongestionError, observeDelay, validateAckWindow, windowCapacity } from "./ack-window.js";
 import type {
   OrchestrationActor,
   OrchestrationDefinitionInput,
@@ -250,7 +250,9 @@ function settleDispatch(
     outcome: input.outcome,
     result: input.result,
     error: input.error,
-    attempt: dispatch.attempt,
+    // Karn: only charged retries are ambiguous. A re-send after a free congestion
+    // loss is the first time the work ran, so its success is a first-attempt ACK.
+    attempt: dispatch.attempt - (item.congestionRetries ?? 0),
     verifyPassed: item.verify === undefined ? undefined : input.verify?.passed ?? false,
     durationMs: input.usage?.durationMs,
     outputTokens: input.usage?.tokens?.output,
@@ -554,8 +556,10 @@ export function applyOrchestrationEvent(
     // Uncertain termination already blocks every dispatch; a proved spawn failure is path congestion.
     if (!uncertain) {
       recordAckSignal(next, "congestion", dispatch, event.at);
-      // A proved spawn failure never started a worker.
-      forgiveCongestion(item, next, "congestion", 0);
+      // A proved spawn failure never started a worker, but only congestion is
+      // worth re-sending: pi-subagents' own spawn errors (bad cwd, unknown type,
+      // nested limit) recur on every attempt.
+      if (isCongestionError(event.error)) forgiveCongestion(item, next, "congestion", 0);
       settleFailure(item, next);
     }
     refreshControllerStatus(next, event.at);
