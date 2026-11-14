@@ -533,10 +533,10 @@ describe("congestion retries do not spend task attempts", () => {
     expect(state.work[1]).toMatchObject({ status: "failed" });
   });
 
-  it("A6: a proved spawn failure is retried without spending the attempt", () => {
+  it("A6: a spawn failure from congestion is retried without spending the attempt", () => {
     const requested = dispatch(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "dispatch-1", 110).state;
     const failed = applyOrchestrationEvent(requested, {
-      type: "dispatch_spawn_failed", at: 111, expected: expectedOf(requested), workId: "1", dispatchId: "dispatch-1", error: "spawn rejected",
+      type: "dispatch_spawn_failed", at: 111, expected: expectedOf(requested), workId: "1", dispatchId: "dispatch-1", error: "socket hang up",
     }).state;
     expect(failed.work[0]).toMatchObject({ status: "pending", congestionRetries: 1 });
     expect(dispatch(failed, "1", "dispatch-2", 120).applied).toBe(true);
@@ -689,5 +689,26 @@ describe("session-learned initial window", () => {
       expect(validateOrchestrationDefinition(definition(bad))).toContain("initialWindow");
     }
     expect(validateOrchestrationDefinition(definition({ cwnd: 4, ssthresh: 4 }))).toBeUndefined();
+  });
+});
+
+describe("review regressions: congestion re-sends", () => {
+  it("D2: a deterministic spawn failure spends its attempt and the batch budget is untouched", () => {
+    let state = create(2, { maxAttempts: 1, pacing: "aimd" });
+    const requested = dispatch(state, "1", "dispatch-1", 110).state;
+    state = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 111, expected: expectedOf(requested), workId: "1", dispatchId: "dispatch-1", error: "Unknown agent type \"Explroe\"",
+    }).state;
+    expect(state.work[0]).toMatchObject({ status: "failed" });
+    expect(state.work[0]?.congestionRetries).toBeUndefined();
+  });
+
+  it("D4: success after a free congestion re-send is a first-attempt ACK and grows the window", () => {
+    let state = verifiedBatch(2, 1);
+    state = runToSettled(state, "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests", usage: { toolUses: 0 } });
+    const cut = state.window!;
+    state = runToSettled(state, "1", "2", 200, { result: "done", verify: pass });
+    expect(state.window!.acks).toBe(cut.acks + 1);
+    expect(state.window!.cwnd).toBeGreaterThan(cut.cwnd);
   });
 });

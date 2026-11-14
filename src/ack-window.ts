@@ -128,6 +128,11 @@ export interface SettlementEvidence {
   outputTokens?: number;
 }
 
+/** Error text that names overload or a dropped connection rather than the task. */
+export function isCongestionError(error: string): boolean {
+  return CONGESTION_ERROR.test(error);
+}
+
 export function msPerToken(evidence: Pick<SettlementEvidence, "durationMs" | "outputTokens">): number | undefined {
   const { durationMs, outputTokens } = evidence;
   if (durationMs === undefined || outputTokens === undefined || !Number.isFinite(durationMs) || durationMs <= 0 || outputTokens < 1) return undefined;

@@ -214,6 +214,25 @@ describe("subagent orchestration runtime", () => {
     }
   });
 
+  it("D1: a spawn reply that cannot be recorded is uncertain and never re-sent", async () => {
+    const h = setup({ workCount: 1, concurrency: 1, maxAttempts: 1 });
+    const original = h.store.mutateOrchestration.bind(h.store);
+    let thrown = false;
+    vi.spyOn(h.store, "mutateOrchestration").mockImplementation((id, event) => {
+      if (event.type === "dispatch_bound" && !thrown) {
+        thrown = true;
+        throw new Error("LoopStore write failed");
+      }
+      return original(id, event);
+    });
+    await h.runtime.pump();
+    await h.runtime.pump();
+    expect(spawnCalls(h.rpc)).toHaveLength(1);
+    expect(h.store.get(h.entry.id)?.orchestration?.work[0]).toMatchObject({ status: "uncertain", attemptCount: 1 });
+    expect(h.rpc.mock.calls.some(([channel]) => channel !== "subagents:rpc:spawn")).toBe(true);
+    h.runtime.dispose();
+  });
+
   it("retires an expired batch before dispatching workers", async () => {
     const h = setup();
     h.entry.expiresAt = 1_000;

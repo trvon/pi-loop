@@ -512,6 +512,9 @@ export function createSubagentOrchestrationRuntime(
       }
       await stopUnboundSpawn(agentId);
     };
+    // Set once pi-subagents has replied with a worker: from then on a failure
+    // cannot prove the worker never started.
+    let spawnedId: string | undefined;
     try {
       const rawReply = await rpcCall(SPAWN_RPC, {
         type: item.agentType ?? "general-purpose",
@@ -527,6 +530,7 @@ export function createSubagentOrchestrationRuntime(
       }, SPAWN_TIMEOUT_MS);
       const reply = asSpawnReply(rawReply);
       if (!reply) throw new AmbiguousSpawnReplyError("Invalid subagent spawn reply; the worker start outcome is unknown");
+      spawnedId = reply.id;
       if (!sourceIsCurrent()) {
         await stopUnboundSpawn(reply.id);
         return;
@@ -576,15 +580,17 @@ export function createSubagentOrchestrationRuntime(
       const fresh = freshEntry.orchestration;
       if (!fresh || !actorOwns(fresh)) return;
       const message = error instanceof Error ? error.message : String(error);
-      const uncertain = error instanceof AmbiguousSpawnReplyError || (error instanceof RpcError && error.timedOut);
+      const uncertain = spawnedId !== undefined || error instanceof AmbiguousSpawnReplyError || (error instanceof RpcError && error.timedOut);
       getStore().mutateOrchestration(entry.id, {
         type: uncertain ? "dispatch_uncertain" : "dispatch_spawn_failed",
         at: now(),
         expected: expected(fresh),
         workId: item.id,
         dispatchId,
-        error: message,
+        error: spawnedId === undefined ? message : `Spawn reply could not be recorded: ${message}`,
       });
+      // Best effort: the dispatch is already uncertain, so a failed stop only leaves it for review.
+      if (spawnedId !== undefined) await cleanupReply(spawnedId).catch(() => undefined);
     }
   }
 
