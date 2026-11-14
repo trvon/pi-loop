@@ -598,6 +598,13 @@ describe("admission rejections cut gently", () => {
     expect(runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests" }).window).toMatchObject({ cwnd: 5 });
   });
 
+  it("R3: a tool-less worker that produced output before the overload lost work, so the window halves", () => {
+    const streamed = runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "503 overloaded", usage: { toolUses: 0, tokens: tokens(4_000) } });
+    expect(streamed.window).toMatchObject({ cwnd: 5 });
+    const refused = runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "503 overloaded", usage: { toolUses: 0, tokens: tokens(0) } });
+    expect(refused.window).toMatchObject({ cwnd: 7 });
+  });
+
   it("S6: a proved spawn failure is an admission rejection", () => {
     const requested = dispatch(grownBatch(), "1", "dispatch-1", 110).state;
     const failed = applyOrchestrationEvent(requested, {
@@ -610,7 +617,8 @@ describe("admission rejections cut gently", () => {
 describe("session-learned initial window", () => {
   const aimdState = (window: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
     const base = createOrchestrationState({ goal: "prior", work: Array.from({ length: 12 }, (_, i) => ({ prompt: `t${i}`, verify: "true" })), pacing: "aimd" }, owner, 100);
-    return { ...base, window: { ...base.window!, ...window }, updatedAt: 1_000, ...overrides };
+    // A settled prior batch: running ones are excluded (R1).
+    return { ...base, status: "completed" as const, window: { ...base.window!, ...window }, updatedAt: 1_000, ...overrides };
   };
   const now = 1_000 + 60_000;
 
@@ -644,6 +652,25 @@ describe("session-learned initial window", () => {
     expect(learnWindowSeed([{ id: "3", state: aimdState({ cwnd: 5, ssthresh: 5, acks: 4, losses: 1 }, { model: "m" }) }], "m", now)?.source).toBe("3");
     expect(learnWindowSeed([latest], undefined, 1_000 + LEARNED_WINDOW_TTL_MS + 1)).toBeUndefined();
     expect(learnWindowSeed([{ id: "4", state: aimdState({}) }], undefined, now)).toBeUndefined();
+  });
+
+  it("R1: a batch still running is not a learning source; its window is in use on the same path", () => {
+    const running = aimdState({ cwnd: 8, ssthresh: 12, acks: 8 }, { status: "active" });
+    expect(learnWindowSeed([{ id: "1", state: running }], undefined, now)).toBeUndefined();
+    const busy = { ...aimdState({ cwnd: 5, ssthresh: 5, acks: 6, losses: 1 }, { status: "needs_attention" }) };
+    busy.work = busy.work.map((item, index) => index === 0 ? { ...item, status: "active" as const } : item);
+    expect(learnWindowSeed([{ id: "2", state: busy }], undefined, now)).toBeUndefined();
+    const settled = aimdState({ cwnd: 5, ssthresh: 5, acks: 6, losses: 1 }, { status: "completed" });
+    expect(learnWindowSeed([{ id: "3", state: settled }, { id: "1", state: running }], undefined, now)?.source).toBe("3");
+  });
+
+  it("R2: the input size limit is measured without the injected seed", () => {
+    const base = { goal: "g", work: [{ prompt: "a" }], pacing: "aimd" as const };
+    const overhead = Buffer.byteLength(JSON.stringify(base), "utf8");
+    const atLimit = { ...base, goal: "g".repeat(65_536 - overhead + 1) };
+    expect(Buffer.byteLength(JSON.stringify(atLimit), "utf8")).toBe(65_536);
+    expect(validateOrchestrationDefinition(atLimit)).toBeUndefined();
+    expect(validateOrchestrationDefinition({ ...atLimit, initialWindow: { cwnd: 4, ssthresh: 4 } })).toBeUndefined();
   });
 
   it("L5: a seed is clamped to the new batch's ceiling and ignored under fixed pacing", () => {

@@ -47,7 +47,9 @@ export function validateOrchestrationDefinition(input: OrchestrationDefinitionIn
   if (input.work.some((item) => !item.prompt.trim())) return "work prompts must not be empty";
   if (input.work.some((item) => item.verify !== undefined && (!item.verify.trim() || item.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS))) return "invalid verify command";
   if (input.initialWindow !== undefined && !isWindowSeed(input.initialWindow)) return "invalid initialWindow";
-  if (Buffer.byteLength(JSON.stringify(input), "utf8") > MAX_ORCHESTRATION_INPUT_BYTES) return "serialized input exceeds limit";
+  // The limit bounds what the caller sent; a seed injected by OrchestrationCreate does not count.
+  const { initialWindow: _seed, ...callerInput } = input;
+  if (Buffer.byteLength(JSON.stringify(callerInput), "utf8") > MAX_ORCHESTRATION_INPUT_BYTES) return "serialized input exceeds limit";
   return undefined;
 }
 
@@ -267,8 +269,9 @@ function settleDispatch(
   // Fixed pacing has no window but still tells congestion from task failure.
   const signal = classifySettlement(evidence, next.window ?? {});
   if (next.window) {
-    // A failure before any tool ran is an admission rejection.
-    recordAckSignal(next, signal, dispatch, at, input.outcome === "failed" && input.usage?.toolUses === 0);
+    // A failure before any tool ran or any output streamed is an admission rejection.
+    const refused = input.outcome === "failed" && input.usage?.toolUses === 0 && !((input.usage.tokens?.output ?? 0) > 0);
+    recordAckSignal(next, signal, dispatch, at, refused);
     next.window = observeDelay(next.window, evidence);
   }
   if (item.status === "failed") {
@@ -395,7 +398,10 @@ export function learnWindowSeed(
   model: string | undefined,
   now: number,
 ): (WindowSeed & { source: string }) | undefined {
+  // A batch still running holds its window on the same path; seeding from it would double the load.
   const candidates = previous.filter(({ state }) => state.window !== undefined
+    && state.status !== "active"
+    && !state.work.some((item) => item.status === "active")
     && state.model === model
     && now - state.updatedAt <= LEARNED_WINDOW_TTL_MS
     && state.window.acks + state.window.losses > 0);
