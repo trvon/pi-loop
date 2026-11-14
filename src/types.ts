@@ -121,6 +121,11 @@ export interface OrchestrationWorkItem {
   verify?: string;
   status: OrchestrationWorkStatus;
   attemptCount: number;
+  /**
+   * Dispatches lost to congestion that were re-sent without spending an
+   * attempt. `attemptCount - congestionRetries` is charged against maxAttempts.
+   */
+  congestionRetries?: number;
   dispatches: OrchestrationDispatch[];
 }
 

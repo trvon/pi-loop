@@ -17,6 +17,8 @@ export const ORCHESTRATION_OWNER_LEASE_MS = 120_000;
 export const MAX_ORCHESTRATION_WORK_ITEMS = 32;
 export const MAX_ORCHESTRATION_CONCURRENCY = 8;
 export const MAX_ORCHESTRATION_ATTEMPTS = 3;
+/** Congestion losses one item may re-send without spending an attempt. */
+export const MAX_CONGESTION_RETRIES_PER_ITEM = 3;
 export const MAX_ORCHESTRATION_INPUT_BYTES = 65_536;
 export const MAX_ORCHESTRATION_VERIFY_CHARS = 2_048;
 export const MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS = 2_048;
@@ -79,7 +81,12 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
     if (rawItem.verify !== undefined && (typeof rawItem.verify !== "string" || !rawItem.verify.trim() || rawItem.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS)) throw new Error("Malformed orchestration state: invalid verify command");
     ids.add(rawItem.id);
     if (rawItem.status !== "completed") allWorkCompleted = false;
-    if (Number(rawItem.attemptCount) < 0 || Number(rawItem.attemptCount) > Number(value.maxAttempts) || rawItem.dispatches.length !== Number(rawItem.attemptCount)) throw new Error("Malformed orchestration state: invalid attempt count");
+    const congestionRetries = rawItem.congestionRetries ?? 0;
+    if (rawItem.congestionRetries !== undefined && (!Number.isInteger(rawItem.congestionRetries) || Number(rawItem.congestionRetries) < 1 || Number(rawItem.congestionRetries) > MAX_CONGESTION_RETRIES_PER_ITEM || Number(rawItem.congestionRetries) > Number(rawItem.attemptCount))) {
+      throw new Error("Malformed orchestration state: invalid congestion retries");
+    }
+    const chargedAttempts = Number(rawItem.attemptCount) - Number(congestionRetries);
+    if (Number(rawItem.attemptCount) < 0 || chargedAttempts > Number(value.maxAttempts) || rawItem.dispatches.length !== Number(rawItem.attemptCount)) throw new Error("Malformed orchestration state: invalid attempt count");
     for (const [dispatchIndex, rawDispatch] of rawItem.dispatches.entries()) {
       if (!isRecord(rawDispatch) || typeof rawDispatch.dispatchId !== "string" || rawDispatch.attempt !== dispatchIndex + 1 || typeof rawDispatch.ownerRuntimeId !== "string" || !Number.isInteger(rawDispatch.ownerGeneration) || !Number.isFinite(rawDispatch.requestedAt) || !DISPATCH_STATUSES.has(String(rawDispatch.status)) || !CONSUME_STATUSES.has(String(rawDispatch.consumeStatus)) || !Number.isInteger(rawDispatch.consumeAttempts) || Number(rawDispatch.consumeAttempts) < 0 || Number(rawDispatch.consumeAttempts) > 3) {
         throw new Error("Malformed orchestration state: invalid dispatch");
@@ -239,20 +246,25 @@ function settleDispatch(
   const verifiedFailure = input.outcome === "completed" && item.verify !== undefined && input.verify?.passed !== true;
   item.status = input.outcome === "completed" && !verifiedFailure ? "completed" : "failed";
   if (verifiedFailure && !dispatch.error) dispatch.error = input.verify ? `verify failed (exit ${input.verify.exitCode ?? "killed"})` : "verify did not run";
+  const evidence = {
+    outcome: input.outcome,
+    result: input.result,
+    error: input.error,
+    attempt: dispatch.attempt,
+    verifyPassed: item.verify === undefined ? undefined : input.verify?.passed ?? false,
+    durationMs: input.usage?.durationMs,
+    outputTokens: input.usage?.tokens?.output,
+  };
+  // Fixed pacing has no window but still tells congestion from task failure.
+  const signal = classifySettlement(evidence, next.window ?? {});
   if (next.window) {
-    const evidence = {
-      outcome: input.outcome,
-      result: input.result,
-      error: input.error,
-      attempt: dispatch.attempt,
-      verifyPassed: item.verify === undefined ? undefined : input.verify?.passed ?? false,
-      durationMs: input.usage?.durationMs,
-      outputTokens: input.usage?.tokens?.output,
-    };
-    recordAckSignal(next, classifySettlement(evidence, next.window), dispatch, at);
-    next.window = observeDelay(next.window!, evidence);
+    recordAckSignal(next, signal, dispatch, at);
+    next.window = observeDelay(next.window, evidence);
   }
-  if (item.status === "failed") settleFailure(item, next);
+  if (item.status === "failed") {
+    forgiveCongestion(item, next, signal, input.usage?.toolUses);
+    settleFailure(item, next);
+  }
   refreshControllerStatus(next, at);
 }
 
@@ -324,8 +336,31 @@ function recordAckSignal(state: OrchestrationState, signal: AckSignal, dispatch:
   if (state.window) state.window = applyAckSignal(state.window, signal, state.concurrency, { at, requestedAt: dispatch.requestedAt });
 }
 
+/** Attempts charged against maxAttempts: congestion losses re-sent for free are excluded. */
+function chargedAttempts(item: OrchestrationWorkItem): number {
+  return item.attemptCount - (item.congestionRetries ?? 0);
+}
+
+/**
+ * A dispatch lost to congestion is the path's failure, not the task's: like a
+ * dropped segment it is re-sent without spending one of the item's attempts.
+ * Only a worker that ran no tools is re-sent for free; one that did may have
+ * changed the workspace, so a re-run is an ordinary, charged retry.
+ * The batch budget (one per item) and per-item cap keep these re-sends from
+ * sustaining the overload that caused them (retry amplification; metastable
+ * failures). Timeouts are excluded: a worker past its own deadline may be the
+ * task's fault.
+ */
+function forgiveCongestion(item: OrchestrationWorkItem, state: OrchestrationState, signal: AckSignal, toolUses: number | undefined): void {
+  if (signal !== "congestion" || toolUses !== 0) return;
+  const itemRetries = item.congestionRetries ?? 0;
+  const batchRetries = state.work.reduce((sum, candidate) => sum + (candidate.congestionRetries ?? 0), 0);
+  if (itemRetries >= MAX_CONGESTION_RETRIES_PER_ITEM || batchRetries >= state.work.length) return;
+  item.congestionRetries = itemRetries + 1;
+}
+
 function settleFailure(item: OrchestrationWorkItem, state: OrchestrationState): void {
-  item.status = item.attemptCount < state.maxAttempts ? "pending" : "failed";
+  item.status = chargedAttempts(item) < state.maxAttempts ? "pending" : "failed";
 }
 
 export function createOrchestrationState(
@@ -422,7 +457,7 @@ export function applyOrchestrationEvent(
     if (!item) return rejected(state, "work_not_found");
     if (item.status !== "pending") return rejected(state, "work_not_pending");
     if (getOrchestrationCounts(next).active >= getOrchestrationCapacity(next)) return rejected(state, "capacity_exhausted");
-    if (item.attemptCount >= next.maxAttempts) return rejected(state, "attempts_exhausted");
+    if (chargedAttempts(item) >= next.maxAttempts) return rejected(state, "attempts_exhausted");
     item.attemptCount += 1;
     item.status = "active";
     item.dispatches.push({
@@ -509,8 +544,12 @@ export function applyOrchestrationEvent(
     dispatch.consumeStatus = uncertain ? "unavailable" : dispatch.agentId ? "pending" : "not_applicable";
     item.status = uncertain ? "uncertain" : "failed";
     // Uncertain termination already blocks every dispatch; a proved spawn failure is path congestion.
-    if (!uncertain) recordAckSignal(next, "congestion", dispatch, event.at);
-    if (!uncertain) settleFailure(item, next);
+    if (!uncertain) {
+      recordAckSignal(next, "congestion", dispatch, event.at);
+      // A proved spawn failure never started a worker.
+      forgiveCongestion(item, next, "congestion", 0);
+      settleFailure(item, next);
+    }
     refreshControllerStatus(next, event.at);
     return applied(next, event.at);
   }

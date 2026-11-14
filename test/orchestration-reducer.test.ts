@@ -4,6 +4,7 @@ import {
   createOrchestrationState,
   getOrchestrationCapacity,
   getOrchestrationCounts,
+  MAX_CONGESTION_RETRIES_PER_ITEM,
   MAX_ORCHESTRATION_ERROR_CHARS,
   MAX_ORCHESTRATION_RESULT_CHARS,
   validateOrchestrationDefinition,
@@ -246,7 +247,7 @@ interface SettleOptions {
   result?: string;
   error?: string;
   verify?: { passed: boolean; exitCode: number | null; durationMs: number; output?: string };
-  usage?: { durationMs: number; tokens: { input: number; output: number; total: number } };
+  usage?: { toolUses?: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
 }
 
 function request(state: ReturnType<typeof create>, workId: string, key: string, at: number) {
@@ -484,3 +485,75 @@ describe("review regressions: persisted verification", () => {
     expect(cancelled.work[0]?.dispatches[0]).toMatchObject({ status: "completed", consumeStatus: "provider_owned", error: "cancelled before verification" });
   });
 });
+
+describe("congestion retries do not spend task attempts", () => {
+  // Rejected before the worker ran a tool: nothing in the workspace changed.
+  const overloaded = { outcome: "failed" as const, error: "503 overloaded", usage: { toolUses: 0 } };
+
+  it.each(["fixed", "aimd"] as const)("A1 (%s): a congestion failure is retried without spending the item's attempt", (pacing) => {
+    let state = create(1, { maxAttempts: 1, pacing });
+    state = runToSettled(state, "1", "1", 110, overloaded);
+    expect(state.work[0]).toMatchObject({ status: "pending", attemptCount: 1, congestionRetries: 1 });
+    state = runToSettled(state, "1", "2", 120, { result: "done" });
+    expect(state.work[0]).toMatchObject({ status: "completed", attemptCount: 2 });
+    expect(getOrchestrationCounts(state).completed).toBe(1);
+  });
+
+  it("A2: a task failure still spends its attempt", () => {
+    const state = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, { outcome: "failed", error: "assertion failed in generated code" });
+    expect(state.work[0]).toMatchObject({ status: "failed" });
+    expect(state.work[0]?.congestionRetries).toBeUndefined();
+  });
+
+  it("A3: a timeout still spends its attempt; a worker past its own deadline may be the task's fault", () => {
+    const state = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, { outcome: "failed", error: "worker timed out" });
+    expect(state.work[0]).toMatchObject({ status: "failed" });
+  });
+
+  it("A4: one item forgives at most MAX_CONGESTION_RETRIES_PER_ITEM congestion failures", () => {
+    let state = create(4, { maxAttempts: 1, pacing: "aimd" });
+    for (let index = 0; index < MAX_CONGESTION_RETRIES_PER_ITEM; index++) {
+      state = runToSettled(state, "1", `r${index}`, 110 + index * 10, overloaded);
+      expect(state.work[0]?.status).toBe("pending");
+    }
+    state = runToSettled(state, "1", "last", 200, overloaded);
+    expect(state.work[0]).toMatchObject({ status: "failed", congestionRetries: MAX_CONGESTION_RETRIES_PER_ITEM });
+  });
+
+  it("A5: the batch shares a budget of one forgiven congestion retry per work item", () => {
+    let state = create(2, { maxAttempts: 1, pacing: "aimd" });
+    state = runToSettled(state, "1", "a", 110, overloaded);
+    state = runToSettled(state, "1", "b", 120, overloaded);
+    expect(state.work[0]).toMatchObject({ status: "pending", congestionRetries: 2 });
+    state = runToSettled(state, "2", "c", 130, overloaded);
+    expect(state.work[1]).toMatchObject({ status: "failed" });
+  });
+
+  it("A6: a proved spawn failure is retried without spending the attempt", () => {
+    const requested = dispatch(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "dispatch-1", 110).state;
+    const failed = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 111, expected: expectedOf(requested), workId: "1", dispatchId: "dispatch-1", error: "spawn rejected",
+    }).state;
+    expect(failed.work[0]).toMatchObject({ status: "pending", congestionRetries: 1 });
+    expect(dispatch(failed, "1", "dispatch-2", 120).applied).toBe(true);
+  });
+
+  it("A8: a congestion loss after the worker ran tools spends the attempt; a re-run could repeat its side effects", () => {
+    const afterTools = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, { ...overloaded, usage: { toolUses: 4 } });
+    expect(afterTools.work[0]).toMatchObject({ status: "failed" });
+    const unknown = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, { ...overloaded, usage: undefined });
+    expect(unknown.work[0]).toMatchObject({ status: "failed" });
+  });
+
+  it("A7: persisted state with forgiven retries round-trips, and inconsistent counts are rejected", () => {
+    const state = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, overloaded);
+    const persisted = JSON.parse(JSON.stringify(state));
+    expect(validatePersistedOrchestration(persisted).work[0]).toMatchObject({ congestionRetries: 1 });
+    const withItem = (patch: Record<string, unknown>) => ({ ...persisted, work: [{ ...persisted.work[0], ...patch }] });
+    expect(() => validatePersistedOrchestration(withItem({ congestionRetries: 2 }))).toThrow("congestion retries");
+    expect(() => validatePersistedOrchestration(withItem({ congestionRetries: 1.5 }))).toThrow("congestion retries");
+    expect(() => validatePersistedOrchestration(withItem({ congestionRetries: MAX_CONGESTION_RETRIES_PER_ITEM + 1 }))).toThrow("congestion retries");
+    expect(() => validatePersistedOrchestration(withItem({ congestionRetries: 0 }))).toThrow("congestion retries");
+  });
+});
+

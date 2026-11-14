@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { OrchestrationEvent } from "../../src/orchestration-reducer.js";
-import { applyOrchestrationEvent, createOrchestrationState, getOrchestrationCapacity, getOrchestrationCounts, validatePersistedOrchestration } from "../../src/orchestration-reducer.js";
+import { applyOrchestrationEvent, createOrchestrationState, getOrchestrationCapacity, getOrchestrationCounts, MAX_CONGESTION_RETRIES_PER_ITEM, validatePersistedOrchestration } from "../../src/orchestration-reducer.js";
 import type { OrchestrationState } from "../../src/types.js";
 import { propertyOptions } from "./config.js";
 
@@ -106,12 +106,12 @@ describe("orchestration reducer properties", () => {
     }), propertyOptions());
   });
 
-  it("keeps aimd dispatch inside the ACK window, counts every signal once, and never cuts for task failures", () => {
-    type Step = "fill" | "complete" | "empty" | "task_error" | "overload" | "timeout" | "spawn_failed";
+  it("keeps aimd dispatch inside the ACK window, counts every signal once, never cuts for task failures, and bounds free congestion retries", () => {
+    type Step = "fill" | "complete" | "empty" | "task_error" | "overload" | "overload_idle" | "timeout" | "spawn_failed";
     fc.assert(fc.property(
       fc.integer({ min: 1, max: 32 }),
       fc.integer({ min: 1, max: 3 }),
-      fc.array(fc.constantFrom<Step>("fill", "complete", "empty", "task_error", "overload", "timeout", "spawn_failed"), { minLength: 1, maxLength: 60 }),
+      fc.array(fc.constantFrom<Step>("fill", "complete", "empty", "task_error", "overload", "overload_idle", "timeout", "spawn_failed"), { minLength: 1, maxLength: 60 }),
       (workCount, maxAttempts, steps) => {
         let state = createOrchestrationState({
           goal: "aimd property",
@@ -152,7 +152,8 @@ describe("orchestration reducer properties", () => {
                 agentId: dispatch.agentId,
                 outcome: step === "complete" || step === "empty" ? "completed" : "failed",
                 result: step === "complete" ? "done" : step === "empty" ? " " : undefined,
-                error: step === "overload" ? "503 overloaded" : step === "timeout" ? "timed out" : step === "task_error" ? "assertion failed" : undefined,
+                error: step === "overload" || step === "overload_idle" ? "503 overloaded" : step === "timeout" ? "timed out" : step === "task_error" ? "assertion failed" : undefined,
+                usage: step === "overload_idle" ? { toolUses: 0 } : step === "overload" ? { toolUses: 2 } : undefined,
               });
           signals += 1;
           const window = state.window!;
@@ -162,8 +163,12 @@ describe("orchestration reducer properties", () => {
           }
           if (step === "timeout") expect(window.cwnd).toBe(1);
           expect(window.cwnd).toBeGreaterThanOrEqual(1);
-          expect(window.cwnd).toBeLessThanOrEqual(workCount);
+          expect(window.cwnd).toBeLessThanOrEqual(state.concurrency);
           expect(window.acks + window.losses + window.taskLosses).toBe(signals);
+          const freeRetries = state.work.map((candidate) => candidate.congestionRetries ?? 0);
+          expect(freeRetries.every((count) => count <= MAX_CONGESTION_RETRIES_PER_ITEM)).toBe(true);
+          expect(freeRetries.reduce((sum, count) => sum + count, 0)).toBeLessThanOrEqual(workCount);
+          expect(state.work.every((candidate) => candidate.attemptCount - (candidate.congestionRetries ?? 0) <= maxAttempts)).toBe(true);
           expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
         }
       },
