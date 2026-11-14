@@ -5,7 +5,11 @@
  * The environment is synthetic. A hidden shared bottleneck (one local GPU, a
  * rate-limited provider) serves `bottleneck` workers at full speed; past that,
  * every worker slows proportionally and may fail with an overload error.
- * Independently, some tasks simply fail their own check. The controller is
+ * An overload is an admission rejection by default: it fails fast, before the
+ * worker runs a tool, so it may be re-sent without spending an attempt. In the
+ * mid-run scenario it strikes after the worker has used tools, so a re-run is
+ * an ordinary charged retry. Independently, some tasks simply fail their own
+ * check. The controller is
  * never told the bottleneck. Scenarios include ones where AIMD should lose;
  * results describe this model only, not live Pi sessions.
  *
@@ -20,6 +24,9 @@ interface Scenario {
   overloadFailure: number;
   taskFailure: number;
   heterogeneous: boolean;
+  /** Overload strikes after tool use instead of at admission. */
+  midRunOverload?: boolean;
+  maxAttempts?: number;
 }
 
 const SCENARIOS: Scenario[] = [
@@ -29,6 +36,8 @@ const SCENARIOS: Scenario[] = [
   { name: "hard tasks + severe overload", bottleneck: 4, overloadFailure: 0.45, taskFailure: 0.25, heterogeneous: false },
   { name: "variable task sizes", bottleneck: 4, overloadFailure: 0.45, taskFailure: 0.03, heterogeneous: true },
   { name: "tight bottleneck", bottleneck: 2, overloadFailure: 0.45, taskFailure: 0.03, heterogeneous: false },
+  { name: "severe overload, maxAttempts=1 (tool default)", bottleneck: 4, overloadFailure: 0.45, taskFailure: 0.03, heterogeneous: false, maxAttempts: 1 },
+  { name: "severe mid-run overload (after tool use)", bottleneck: 4, overloadFailure: 0.45, taskFailure: 0.03, heterogeneous: false, midRunOverload: true },
 ];
 
 const owner = { sessionId: "sim", runtimeId: "sim", generation: 1 };
@@ -40,7 +49,7 @@ const TICK_MS = 1_000;
 const SEEDS = 200;
 const MAX_TICKS = 50_000;
 
-interface Job { agentId: string; finishAt: number; durationMs: number; outputTokens: number; error?: string }
+interface Job { agentId: string; finishAt: number; durationMs: number; outputTokens: number; toolUses: number; error?: string }
 interface Outcome { completed: number; ticks: number; dispatches: number; halted: boolean }
 
 function mulberry32(seed: number): () => number {
@@ -60,7 +69,7 @@ function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: numbe
     goal: "sim",
     work: Array.from({ length: WORK_ITEMS }, (_, i) => ({ prompt: `item ${i + 1}` })),
     concurrency,
-    maxAttempts: MAX_ATTEMPTS,
+    maxAttempts: scenario.maxAttempts ?? MAX_ATTEMPTS,
     pacing,
   }, owner, 0);
   const expected = () => ({ revision: state.revision, ownerRuntimeId: owner.runtimeId, generation: owner.generation });
@@ -85,7 +94,7 @@ function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: numbe
         outcome: job.error ? "failed" : "completed",
         result: job.error ? undefined : "ok",
         error: job.error,
-        usage: { durationMs: job.durationMs, tokens: { input: 100, output: job.outputTokens, total: 100 + job.outputTokens } },
+        usage: { toolUses: job.toolUses, durationMs: job.durationMs, tokens: { input: 100, output: job.outputTokens, total: 100 + job.outputTokens } },
       });
     }
     while (state.status === "active" && getOrchestrationCounts(state).active < getOrchestrationCapacity(state)) {
@@ -103,7 +112,11 @@ function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: numbe
       const error = inFlight > scenario.bottleneck && overloadRoll < scenario.overloadFailure
         ? "503 overloaded"
         : taskRoll < scenario.taskFailure ? "assertion failed in generated code" : undefined;
-      jobs.push({ agentId: `a${dispatchId}`, finishAt: tick + Math.max(1, Math.ceil(durationMs / TICK_MS)), durationMs, outputTokens, error });
+      if (error === "503 overloaded" && !scenario.midRunOverload) {
+        jobs.push({ agentId: `a${dispatchId}`, finishAt: tick + 1, durationMs: TICK_MS, outputTokens: 0, toolUses: 0, error });
+        continue;
+      }
+      jobs.push({ agentId: `a${dispatchId}`, finishAt: tick + Math.max(1, Math.ceil(durationMs / TICK_MS)), durationMs, outputTokens, toolUses: 3, error });
     }
     if (jobs.length === 0 && (state.status !== "active" || !state.work.some((candidate) => candidate.status === "pending"))) break;
   }
