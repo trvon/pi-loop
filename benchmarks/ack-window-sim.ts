@@ -107,8 +107,9 @@ function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: numbe
 
   for (; tick < MAX_TICKS; tick++) {
     const at = tick * TICK_MS;
-    // Processor sharing: every running job slows while more than `bottleneck` share it.
-    const sharing = jobs.filter((job) => !job.rejected).length;
+    // Processor sharing: inference slows while more than `bottleneck` jobs share it.
+    // Jobs still in local tool time hold no share.
+    const sharing = jobs.filter((job) => !job.rejected && job.toolMs <= 0).length;
     const rate = 1 / Math.max(1, sharing / scenario.bottleneck);
     for (const job of jobs) {
       job.elapsedMs += TICK_MS;
