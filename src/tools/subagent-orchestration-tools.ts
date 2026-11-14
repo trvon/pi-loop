@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
+import { learnWindowSeed, MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
 import type { LoopScope } from "../runtime/scope.js";
 import type { LoopStore } from "../store.js";
 import type { OrchestrationActor, OrchestrationDefinitionInput, OrchestrationPacing } from "../types.js";
@@ -163,6 +163,11 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       }
 
       const definition = definitionFrom(params);
+      // Session-local memory: start where this session's last aimd batch left the window.
+      const seed = definition.pacing === "aimd"
+        ? learnWindowSeed(store.list().flatMap((candidate) => candidate.orchestration ? [{ id: candidate.id, state: candidate.orchestration }] : []), definition.model, Date.now())
+        : undefined;
+      if (seed) definition.initialWindow = seed.ssthresh === undefined ? { cwnd: seed.cwnd } : { cwnd: seed.cwnd, ssthresh: seed.ssthresh };
       let entry: ReturnType<LoopStore["create"]>;
       try {
         entry = store.create({ type: "dynamic" }, definition.goal, {
@@ -177,7 +182,9 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       updateWidget();
       // Report what was stored: the reducer owns the window and its ceiling.
       const stored = entry.orchestration!;
-      const pacingLabel = stored.window ? `aimd window ${Math.floor(stored.window.cwnd)}-${stored.concurrency}` : `concurrency ${stored.concurrency}`;
+      const pacingLabel = stored.window
+        ? `aimd window ${Math.floor(stored.window.cwnd)}-${stored.concurrency}${seed ? ` (learned from orchestration #${seed.source})` : ""}`
+        : `concurrency ${stored.concurrency}`;
       const message = [
         `Orchestration #${entry.id} created`,
         `${definition.work.length} work items · ${pacingLabel}`,

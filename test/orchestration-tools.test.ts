@@ -149,6 +149,23 @@ describe("subagent orchestration tools", () => {
       expect(await h.text("OrchestrationCreate", { goal: "Review", work: verified })).toContain("20 work items · aimd window 3-20");
     });
 
+    it("L7: seeds a new aimd batch from the window the session's last batch learned", async () => {
+      h = setup();
+      const work = [{ prompt: "A" }, { prompt: "B" }, { prompt: "C" }, { prompt: "D" }];
+      await h.text("OrchestrationCreate", { goal: "First", work });
+      const expected = () => {
+        const state = h.store.get("1")!.orchestration!;
+        return { revision: state.revision, ownerRuntimeId: "runtime-a", generation: 1 };
+      };
+      h.store.mutateOrchestration("1", { type: "dispatch_requested", at: Date.now(), expected: expected(), workId: "1", dispatchId: "d1" });
+      h.store.mutateOrchestration("1", { type: "dispatch_bound", at: Date.now(), expected: expected(), workId: "1", dispatchId: "d1", agentId: "a1" });
+      h.store.mutateOrchestration("1", { type: "dispatch_settled", at: Date.now(), expected: expected(), agentId: "a1", outcome: "failed", error: "503 overloaded", usage: { toolUses: 2 } });
+      expect(h.store.get("1")?.orchestration?.window).toMatchObject({ cwnd: 1, ssthresh: 1 });
+      const out = await h.text("OrchestrationCreate", { goal: "Second", work });
+      expect(out).toContain("aimd window 1-4 (learned from orchestration #1)");
+      expect(h.store.get("2")?.orchestration?.window).toMatchObject({ cwnd: 1, ssthresh: 1 });
+    });
+
     it("treats an explicit concurrency as a request for fixed pacing", async () => {
       h = setup();
       await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "A" }], concurrency: 2 });

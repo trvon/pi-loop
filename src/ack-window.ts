@@ -1,3 +1,5 @@
+import type { WindowSeed } from "./types.js";
+
 /**
  * ACK-clocked AIMD window modelled on TCP Reno (Jacobson & Karels 1988;
  * RFC 5681; Chiu & Jain 1989).
@@ -63,8 +65,15 @@ const TIMEOUT_ERROR = /\b(timed? ?out|timeout|ETIMEDOUT|deadline exceeded)\b/i;
  */
 export const INITIAL_WINDOW = 3;
 
-export function createAckWindow(ceiling: number): AckWindow {
-  return { mode: "aimd", cwnd: Math.min(INITIAL_WINDOW, ceiling), ssthresh: ceiling, acks: 0, losses: 0, taskLosses: 0 };
+export function createAckWindow(ceiling: number, seed?: WindowSeed): AckWindow {
+  return {
+    mode: "aimd",
+    cwnd: Math.min(seed?.cwnd ?? INITIAL_WINDOW, ceiling),
+    ssthresh: Math.min(seed?.ssthresh ?? ceiling, ceiling),
+    acks: 0,
+    losses: 0,
+    taskLosses: 0,
+  };
 }
 
 export function windowCapacity(window: AckWindow, ceiling: number): number {

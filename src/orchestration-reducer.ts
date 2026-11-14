@@ -1,4 +1,4 @@
-import { type AckSignal, applyAckSignal, classifySettlement, createAckWindow, observeDelay, validateAckWindow, windowCapacity } from "./ack-window.js";
+import { type AckSignal, applyAckSignal, classifySettlement, createAckWindow, INITIAL_WINDOW, observeDelay, validateAckWindow, windowCapacity } from "./ack-window.js";
 import type {
   OrchestrationActor,
   OrchestrationDefinitionInput,
@@ -9,6 +9,7 @@ import type {
   OrchestrationWakeReason,
   OrchestrationWorkItem,
   OrchestrationWorkStatus,
+  WindowSeed,
 } from "./types.js";
 
 export const MAX_ORCHESTRATION_RESULT_CHARS = 8_192;
@@ -17,6 +18,8 @@ export const ORCHESTRATION_OWNER_LEASE_MS = 120_000;
 export const MAX_ORCHESTRATION_WORK_ITEMS = 32;
 export const MAX_ORCHESTRATION_CONCURRENCY = 8;
 export const MAX_ORCHESTRATION_ATTEMPTS = 3;
+/** An earlier batch's window informs a new one only while the path is likely unchanged. */
+export const LEARNED_WINDOW_TTL_MS = 30 * 60_000;
 /** Congestion losses one item may re-send without spending an attempt. */
 export const MAX_CONGESTION_RETRIES_PER_ITEM = 3;
 export const MAX_ORCHESTRATION_INPUT_BYTES = 65_536;
@@ -43,8 +46,14 @@ export function validateOrchestrationDefinition(input: OrchestrationDefinitionIn
   if (input.maxTurns !== undefined && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 100)) return "invalid maxTurns";
   if (input.work.some((item) => !item.prompt.trim())) return "work prompts must not be empty";
   if (input.work.some((item) => item.verify !== undefined && (!item.verify.trim() || item.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS))) return "invalid verify command";
+  if (input.initialWindow !== undefined && !isWindowSeed(input.initialWindow)) return "invalid initialWindow";
   if (Buffer.byteLength(JSON.stringify(input), "utf8") > MAX_ORCHESTRATION_INPUT_BYTES) return "serialized input exceeds limit";
   return undefined;
+}
+
+function isWindowSeed(value: unknown): value is WindowSeed {
+  const units = (field: unknown) => Number.isInteger(field) && Number(field) >= 1 && Number(field) <= MAX_ORCHESTRATION_WORK_ITEMS;
+  return isRecord(value) && units(value.cwnd) && (value.ssthresh === undefined || units(value.ssthresh));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -373,12 +382,40 @@ function aimdCeiling(work: OrchestrationDefinitionInput["work"]): number {
   return work.every((item) => item.verify !== undefined) ? work.length : Math.min(work.length, MAX_ORCHESTRATION_CONCURRENCY);
 }
 
+/**
+ * The window a new aimd batch should start from, learned from the most recent
+ * aimd batch in this session for the same model (RFC 9040's TCB sharing, kept
+ * to one session). After a loss the window has found the path's limit: the
+ * batch starts where it settled (never below the last cut point) and grows
+ * additively. Without a loss the window was only a lower bound, so the batch
+ * starts there and keeps slow start.
+ */
+export function learnWindowSeed(
+  previous: ReadonlyArray<{ id: string; state: OrchestrationState }>,
+  model: string | undefined,
+  now: number,
+): (WindowSeed & { source: string }) | undefined {
+  const candidates = previous.filter(({ state }) => state.window !== undefined
+    && state.model === model
+    && now - state.updatedAt <= LEARNED_WINDOW_TTL_MS
+    && state.window.acks + state.window.losses > 0);
+  const latest = candidates.reduce<(typeof candidates)[number] | undefined>((best, candidate) => !best || candidate.state.updatedAt > best.state.updatedAt ? candidate : best, undefined);
+  if (!latest?.state.window) return undefined;
+  const { window } = latest.state;
+  if (window.losses > 0) {
+    const settled = Math.max(window.ssthresh, Math.floor(window.cwnd));
+    return { cwnd: settled, ssthresh: settled, source: latest.id };
+  }
+  return { cwnd: Math.max(INITIAL_WINDOW, Math.floor(window.cwnd)), source: latest.id };
+}
+
 export function createOrchestrationState(
   input: OrchestrationDefinitionInput,
   owner: OrchestrationActor,
   at: number,
 ): OrchestrationState {
   const concurrency = input.pacing === "aimd" ? aimdCeiling(input.work) : input.concurrency ?? 3;
+  const seed = input.pacing === "aimd" ? input.initialWindow : undefined;
   return {
     version: 1,
     revision: 1,
@@ -399,7 +436,7 @@ export function createOrchestrationState(
       dispatches: [],
     })),
     nextWakeSequence: 0,
-    ...(input.pacing === "aimd" ? { window: createAckWindow(concurrency) } : {}),
+    ...(input.pacing === "aimd" ? { window: createAckWindow(concurrency, seed) } : {}),
     createdAt: at,
     updatedAt: at,
   };

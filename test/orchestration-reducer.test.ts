@@ -4,6 +4,8 @@ import {
   createOrchestrationState,
   getOrchestrationCapacity,
   getOrchestrationCounts,
+  LEARNED_WINDOW_TTL_MS,
+  learnWindowSeed,
   MAX_CONGESTION_RETRIES_PER_ITEM,
   MAX_ORCHESTRATION_CONCURRENCY,
   MAX_ORCHESTRATION_ERROR_CHARS,
@@ -602,5 +604,63 @@ describe("admission rejections cut gently", () => {
       type: "dispatch_spawn_failed", at: 111, expected: expectedOf(requested), workId: "1", dispatchId: "dispatch-1", error: "spawn rejected",
     }).state;
     expect(failed.window).toMatchObject({ cwnd: 7 });
+  });
+});
+
+describe("session-learned initial window", () => {
+  const aimdState = (window: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
+    const base = createOrchestrationState({ goal: "prior", work: Array.from({ length: 12 }, (_, i) => ({ prompt: `t${i}`, verify: "true" })), pacing: "aimd" }, owner, 100);
+    return { ...base, window: { ...base.window!, ...window }, updatedAt: 1_000, ...overrides };
+  };
+  const now = 1_000 + 60_000;
+
+  it("L1: with no earlier aimd batch there is nothing to learn", () => {
+    expect(learnWindowSeed([], undefined, now)).toBeUndefined();
+    expect(learnWindowSeed([{ id: "1", state: create(3) }], undefined, now)).toBeUndefined();
+  });
+
+  it("L2: after a loss, the next batch starts where the window settled and grows additively", () => {
+    const prior = aimdState({ cwnd: 4.5, ssthresh: 4, acks: 9, losses: 1 });
+    expect(learnWindowSeed([{ id: "7", state: prior }], undefined, now)).toEqual({ cwnd: 4, ssthresh: 4, source: "7" });
+    // Additive growth since the cut is evidence too: start from the regrown window.
+    const regrown = aimdState({ cwnd: 6.2, ssthresh: 4, acks: 14, losses: 1 });
+    expect(learnWindowSeed([{ id: "8", state: regrown }], undefined, now)).toEqual({ cwnd: 6, ssthresh: 6, source: "8" });
+    // A window still collapsed by a timeout starts no lower than the cut point.
+    const collapsed = aimdState({ cwnd: 1, ssthresh: 3, acks: 5, losses: 2 });
+    expect(learnWindowSeed([{ id: "9", state: collapsed }], undefined, now)).toEqual({ cwnd: 3, ssthresh: 3, source: "9" });
+  });
+
+  it("L3: without a loss the window was only a lower bound, so slow start is kept", () => {
+    expect(learnWindowSeed([{ id: "1", state: aimdState({ cwnd: 6.4, ssthresh: 12, acks: 8 }) }], undefined, now)).toEqual({ cwnd: 6, source: "1" });
+    expect(learnWindowSeed([{ id: "1", state: aimdState({ cwnd: 2, ssthresh: 12, acks: 1 }) }], undefined, now)).toEqual({ cwnd: 3, source: "1" });
+  });
+
+  it("L4: learns only from recent aimd batches for the same model with evidence, preferring the latest", () => {
+    const older = { id: "1", state: aimdState({ cwnd: 2, ssthresh: 2, acks: 3, losses: 1 }, { updatedAt: 900 }) };
+    const latest = { id: "2", state: aimdState({ cwnd: 5, ssthresh: 5, acks: 6, losses: 1 }) };
+    expect(learnWindowSeed([latest, older], undefined, now)?.source).toBe("2");
+    expect(learnWindowSeed([older, latest], undefined, now)?.source).toBe("2");
+    expect(learnWindowSeed([latest], "other-model", now)).toBeUndefined();
+    expect(learnWindowSeed([{ id: "3", state: aimdState({ cwnd: 5, ssthresh: 5, acks: 4, losses: 1 }, { model: "m" }) }], "m", now)?.source).toBe("3");
+    expect(learnWindowSeed([latest], undefined, 1_000 + LEARNED_WINDOW_TTL_MS + 1)).toBeUndefined();
+    expect(learnWindowSeed([{ id: "4", state: aimdState({}) }], undefined, now)).toBeUndefined();
+  });
+
+  it("L5: a seed is clamped to the new batch's ceiling and ignored under fixed pacing", () => {
+    const unverified = createOrchestrationState({ goal: "next", work: Array.from({ length: 20 }, (_, i) => ({ prompt: `t${i}` })), pacing: "aimd", initialWindow: { cwnd: 12, ssthresh: 12 } }, owner, 100);
+    expect(unverified.window).toMatchObject({ cwnd: 8, ssthresh: 8 });
+    const small = createOrchestrationState({ goal: "next", work: [{ prompt: "a" }, { prompt: "b" }, { prompt: "c" }, { prompt: "d" }], pacing: "aimd", initialWindow: { cwnd: 2, ssthresh: 2 } }, owner, 100);
+    expect(small.window).toMatchObject({ cwnd: 2, ssthresh: 2 });
+    const slowStart = createOrchestrationState({ goal: "next", work: [{ prompt: "a" }, { prompt: "b" }, { prompt: "c" }, { prompt: "d" }], pacing: "aimd", initialWindow: { cwnd: 6 } }, owner, 100);
+    expect(slowStart.window).toMatchObject({ cwnd: 4, ssthresh: 4 });
+    expect(createOrchestrationState({ goal: "next", work: [{ prompt: "a" }], initialWindow: { cwnd: 2 } }, owner, 100).window).toBeUndefined();
+  });
+
+  it("L6: rejects a malformed seed", () => {
+    const definition = (initialWindow: unknown) => ({ goal: "g", work: [{ prompt: "a" }], pacing: "aimd" as const, initialWindow: initialWindow as never });
+    for (const bad of [{ cwnd: 0 }, { cwnd: 1.5 }, { cwnd: 33 }, { cwnd: 2, ssthresh: 0 }, { cwnd: 2, ssthresh: 2.5 }, { ssthresh: 2 }]) {
+      expect(validateOrchestrationDefinition(definition(bad))).toContain("initialWindow");
+    }
+    expect(validateOrchestrationDefinition(definition({ cwnd: 4, ssthresh: 4 }))).toBeUndefined();
   });
 });
