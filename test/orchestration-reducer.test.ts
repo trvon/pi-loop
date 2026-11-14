@@ -5,6 +5,7 @@ import {
   getOrchestrationCapacity,
   getOrchestrationCounts,
   MAX_CONGESTION_RETRIES_PER_ITEM,
+  MAX_ORCHESTRATION_CONCURRENCY,
   MAX_ORCHESTRATION_ERROR_CHARS,
   MAX_ORCHESTRATION_RESULT_CHARS,
   validateOrchestrationDefinition,
@@ -412,10 +413,10 @@ describe("orchestration ACK-clocked pacing", () => {
     expect(uncertain.status).toBe("needs_attention");
   });
 
-  it("lets an aimd window grow past the fixed-pacing safety max up to the batch size", () => {
-    let state = create(16, { pacing: "aimd", maxAttempts: 1 });
+  it("lets a verified aimd window grow past the fixed-pacing safety max up to the batch size", () => {
+    let state = verifiedBatch(16, 1);
     expect(state.concurrency).toBe(16);
-    for (let index = 1; index <= 12; index++) state = runToSettled(state, String(index), String(index), 100 + index * 10, { result: "ok" });
+    for (let index = 1; index <= 12; index++) state = runToSettled(state, String(index), String(index), 100 + index * 10, { result: "ok", verify: pass });
     expect(getOrchestrationCapacity(state)).toBeGreaterThan(8);
     expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
     const fixedOver = structuredClone(create(2)) as any;
@@ -557,3 +558,23 @@ describe("congestion retries do not spend task attempts", () => {
   });
 });
 
+describe("unverified aimd growth", () => {
+  const batch = (count: number, verify: (index: number) => string | undefined) => createOrchestrationState({
+    goal: "batch",
+    work: Array.from({ length: count }, (_, index) => ({ prompt: `task ${index + 1}`, verify: verify(index) })),
+    pacing: "aimd",
+  }, owner, 100);
+
+  it("G1: an unverified aimd batch is capped at the fixed-pacing maximum", () => {
+    expect(batch(20, () => undefined).concurrency).toBe(MAX_ORCHESTRATION_CONCURRENCY);
+  });
+
+  it("G2: one verified item does not lift the cap for the rest", () => {
+    expect(batch(20, (index) => index === 0 ? "true" : undefined).concurrency).toBe(MAX_ORCHESTRATION_CONCURRENCY);
+  });
+
+  it("G3: a fully verified aimd batch is bounded by its size", () => {
+    expect(batch(20, (index) => `npm test -- t${index}`).concurrency).toBe(20);
+    expect(batch(5, () => undefined).concurrency).toBe(5);
+  });
+});

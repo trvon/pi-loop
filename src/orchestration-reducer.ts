@@ -363,13 +363,21 @@ function settleFailure(item: OrchestrationWorkItem, state: OrchestrationState): 
   item.status = chargedAttempts(item) < state.maxAttempts ? "pending" : "failed";
 }
 
+/**
+ * Under aimd only feedback limits the window. A fully verified batch is bounded
+ * by its size; otherwise any non-empty answer is an ACK, so growth stops at the
+ * fixed-pacing maximum.
+ */
+function aimdCeiling(work: OrchestrationDefinitionInput["work"]): number {
+  return work.every((item) => item.verify !== undefined) ? work.length : Math.min(work.length, MAX_ORCHESTRATION_CONCURRENCY);
+}
+
 export function createOrchestrationState(
   input: OrchestrationDefinitionInput,
   owner: OrchestrationActor,
   at: number,
 ): OrchestrationState {
-  // Under aimd only feedback limits the window; the batch itself is the sole bound.
-  const concurrency = input.pacing === "aimd" ? input.work.length : input.concurrency ?? 3;
+  const concurrency = input.pacing === "aimd" ? aimdCeiling(input.work) : input.concurrency ?? 3;
   return {
     version: 1,
     revision: 1,

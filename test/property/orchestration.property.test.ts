@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { OrchestrationEvent } from "../../src/orchestration-reducer.js";
-import { applyOrchestrationEvent, createOrchestrationState, getOrchestrationCapacity, getOrchestrationCounts, MAX_CONGESTION_RETRIES_PER_ITEM, validatePersistedOrchestration } from "../../src/orchestration-reducer.js";
+import { applyOrchestrationEvent, createOrchestrationState, getOrchestrationCapacity, getOrchestrationCounts, MAX_CONGESTION_RETRIES_PER_ITEM, MAX_ORCHESTRATION_CONCURRENCY, validatePersistedOrchestration } from "../../src/orchestration-reducer.js";
 import type { OrchestrationState } from "../../src/types.js";
 import { propertyOptions } from "./config.js";
 
@@ -120,7 +120,8 @@ describe("orchestration reducer properties", () => {
           maxAttempts,
           pacing: "aimd",
         }, owner, 0);
-        expect(state.concurrency).toBe(workCount);
+        // Unverified work cannot be ACKed by evidence, so growth stops at the fixed maximum.
+        expect(state.concurrency).toBe(Math.min(workCount, MAX_ORCHESTRATION_CONCURRENCY));
         const expected = () => ({ revision: state.revision, ownerRuntimeId: owner.runtimeId, generation: owner.generation });
         let at = 1;
         let signals = 0;
