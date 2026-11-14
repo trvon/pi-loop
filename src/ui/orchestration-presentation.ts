@@ -113,7 +113,7 @@ export function orchestrationWorkText(entry: LoopEntry, item: OrchestrationWorkI
     `Orchestration #${entry.id} · Work #${item.id} · ${orchestrationWorkStatusLabel(item.status)}`,
     `Agent type: ${item.agentType ?? "general-purpose"}`,
     `Prompt: ${item.prompt}`,
-    `Attempts: ${item.attemptCount}/${state.maxAttempts}`,
+    `Attempts: ${item.attemptCount - (item.congestionRetries ?? 0)}/${state.maxAttempts}${item.congestionRetries ? ` (+${item.congestionRetries} congestion re-send${item.congestionRetries === 1 ? "" : "s"})` : ""}`,
   ];
   for (const dispatch of item.dispatches) {
     lines.push(`Dispatch ${dispatch.attempt}: ${orchestrationDispatchStatusLabel(dispatch.status)}${dispatch.agentId ? ` · agent=${dispatch.agentId}` : ""}`);

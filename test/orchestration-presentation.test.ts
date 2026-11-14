@@ -150,3 +150,17 @@ describe("orchestration presentation", () => {
     expect(text).not.toContain("concurrency=");
   });
 });
+
+describe("review regressions: attempts label", () => {
+  it("D3: counts charged attempts and reports free congestion re-sends separately", () => {
+    const entry = createEntry();
+    const item = entry.orchestration!.work[0]!;
+    item.attemptCount = 3;
+    item.congestionRetries = 2;
+    expect(orchestrationWorkText(entry, item)).toContain("Attempts: 1/2 (+2 congestion re-sends)");
+    item.congestionRetries = undefined;
+    item.attemptCount = 1;
+    expect(orchestrationWorkText(entry, item)).toContain("Attempts: 1/2");
+    expect(orchestrationWorkText(entry, item)).not.toContain("re-send");
+  });
+});
