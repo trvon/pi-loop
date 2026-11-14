@@ -1,6 +1,6 @@
 /**
- * Deterministic simulation: fixed orchestration concurrency vs. the opt-in
- * Reno-style ACK window, driven through the real orchestration reducer.
+ * Deterministic simulation: fixed orchestration concurrency vs. the
+ * ACK-clocked window, driven through the real orchestration reducer.
  *
  * The environment is synthetic. A hidden shared bottleneck (one local GPU, a
  * rate-limited provider) serves `bottleneck` workers at full speed; past that,
@@ -9,8 +9,11 @@
  * worker runs a tool, so it may be re-sent without spending an attempt. In the
  * mid-run scenario it strikes after the worker has used tools, so a re-run is
  * an ordinary charged retry. Independently, some tasks simply fail their own
- * check. The controller is
- * never told the bottleneck. Scenarios include ones where AIMD should lose;
+ * check. Running workers share the bottleneck each tick (processor sharing),
+ * so a slowdown reaches work already in flight. Each worker also spends local
+ * tool time that the bottleneck does not slow and output tokens do not
+ * measure, which is the noise the delay signal faces in real sessions. The
+ * controller is never told the bottleneck. Scenarios include ones where AIMD should lose;
  * results describe this model only, not live Pi sessions.
  *
  * Run: npm run sim:ack-window
@@ -27,6 +30,9 @@ interface Scenario {
   /** Overload strikes after tool use instead of at admission. */
   midRunOverload?: boolean;
   maxAttempts?: number;
+  /** Every item declares a verifier, so aimd may grow to the batch size. */
+  verified?: boolean;
+  workItems?: number;
 }
 
 const SCENARIOS: Scenario[] = [
@@ -38,6 +44,8 @@ const SCENARIOS: Scenario[] = [
   { name: "tight bottleneck", bottleneck: 2, overloadFailure: 0.45, taskFailure: 0.03, heterogeneous: false },
   { name: "severe overload, maxAttempts=1 (tool default)", bottleneck: 4, overloadFailure: 0.45, taskFailure: 0.03, heterogeneous: false, maxAttempts: 1 },
   { name: "severe mid-run overload (after tool use)", bottleneck: 4, overloadFailure: 0.45, taskFailure: 0.03, heterogeneous: false, midRunOverload: true },
+  { name: "verified, severe overload", bottleneck: 4, overloadFailure: 0.45, taskFailure: 0.03, heterogeneous: false, verified: true },
+  { name: "verified, large capacity", bottleneck: 12, overloadFailure: 0.45, taskFailure: 0.03, heterogeneous: true, verified: true, workItems: 32 },
 ];
 
 const owner = { sessionId: "sim", runtimeId: "sim", generation: 1 };
@@ -45,11 +53,24 @@ const WORK_ITEMS = 24;
 const MAX_ATTEMPTS = 3;
 const MS_PER_TOKEN = 20;
 const BASE_TOKENS = 500;
+/** Mean local tool time per worker: not slowed by the bottleneck, invisible in tokens. */
+const MEAN_TOOL_MS = 4_000;
 const TICK_MS = 1_000;
 const SEEDS = 200;
 const MAX_TICKS = 50_000;
 
-interface Job { agentId: string; finishAt: number; durationMs: number; outputTokens: number; toolUses: number; error?: string }
+interface Job {
+  agentId: string;
+  /** Inference work left, in milliseconds at full speed. */
+  remainingMs: number;
+  toolMs: number;
+  elapsedMs: number;
+  outputTokens: number;
+  toolUses: number;
+  error?: string;
+  /** Admission rejections fail on the next tick and hold no share of the bottleneck. */
+  rejected: boolean;
+}
 interface Outcome { completed: number; ticks: number; dispatches: number; halted: boolean }
 
 function mulberry32(seed: number): () => number {
@@ -65,9 +86,10 @@ function mulberry32(seed: number): () => number {
 
 function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: number, seed: number): Outcome {
   const random = mulberry32(seed);
+  const workItems = scenario.workItems ?? WORK_ITEMS;
   let state: OrchestrationState = createOrchestrationState({
     goal: "sim",
-    work: Array.from({ length: WORK_ITEMS }, (_, i) => ({ prompt: `item ${i + 1}` })),
+    work: Array.from({ length: workItems }, (_, i) => ({ prompt: `item ${i + 1}`, ...(scenario.verified ? { verify: "true" } : {}) })),
     concurrency,
     maxAttempts: scenario.maxAttempts ?? MAX_ATTEMPTS,
     pacing,
@@ -84,17 +106,31 @@ function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: numbe
 
   for (; tick < MAX_TICKS; tick++) {
     const at = tick * TICK_MS;
-    for (const job of jobs.filter((candidate) => candidate.finishAt <= tick)) {
+    // Processor sharing: every running job slows while more than `bottleneck` share it.
+    const sharing = jobs.filter((job) => !job.rejected).length;
+    const rate = 1 / Math.max(1, sharing / scenario.bottleneck);
+    for (const job of jobs) {
+      job.elapsedMs += TICK_MS;
+      if (job.rejected) continue;
+      if (job.toolMs > 0) job.toolMs = Math.max(0, job.toolMs - TICK_MS);
+      else job.remainingMs -= TICK_MS * rate;
+    }
+    for (const job of jobs.filter((candidate) => candidate.rejected || (candidate.remainingMs <= 0 && candidate.toolMs <= 0))) {
       jobs.splice(jobs.indexOf(job), 1);
+      const usage = { toolUses: job.toolUses, durationMs: job.elapsedMs, tokens: { input: 100, output: job.outputTokens, total: 100 + job.outputTokens } };
+      const taskFailed = job.error !== undefined && job.error !== "503 overloaded";
+      const verify = scenario.verified && !job.error ? { passed: true, exitCode: 0, durationMs: 1 } : undefined;
       apply({
         type: "dispatch_settled",
         at,
         expected: expected(),
         agentId: job.agentId,
-        outcome: job.error ? "failed" : "completed",
-        result: job.error ? undefined : "ok",
-        error: job.error,
-        usage: { toolUses: job.toolUses, durationMs: job.durationMs, tokens: { input: 100, output: job.outputTokens, total: 100 + job.outputTokens } },
+        // A verified task failure completes but fails its check; otherwise the worker reports the error.
+        outcome: job.error && !(scenario.verified && taskFailed) ? "failed" : "completed",
+        result: job.error && !(scenario.verified && taskFailed) ? undefined : "ok",
+        error: job.error && !(scenario.verified && taskFailed) ? job.error : undefined,
+        verify: scenario.verified && taskFailed ? { passed: false, exitCode: 1, durationMs: 1 } : verify,
+        usage,
       });
     }
     while (state.status === "active" && getOrchestrationCounts(state).active < getOrchestrationCapacity(state)) {
@@ -103,20 +139,25 @@ function run(scenario: Scenario, pacing: OrchestrationPacing, concurrency: numbe
       const dispatchId = `d${++dispatches}`;
       apply({ type: "dispatch_requested", at, expected: expected(), workId: item.id, dispatchId });
       apply({ type: "dispatch_bound", at, expected: expected(), workId: item.id, dispatchId, agentId: `a${dispatchId}` });
-      const inFlight = jobs.length + 1;
-      const slowdown = Math.max(1, inFlight / scenario.bottleneck);
+      const inFlight = jobs.filter((job) => !job.rejected).length + 1;
       const outputTokens = Math.round(BASE_TOKENS * (scenario.heterogeneous ? 0.3 + random() * 3 : 1));
-      const durationMs = outputTokens * MS_PER_TOKEN * slowdown;
+      const toolMs = Math.round(-Math.log(1 - random()) * MEAN_TOOL_MS);
       const overloadRoll = random();
       const taskRoll = random();
       const error = inFlight > scenario.bottleneck && overloadRoll < scenario.overloadFailure
         ? "503 overloaded"
         : taskRoll < scenario.taskFailure ? "assertion failed in generated code" : undefined;
-      if (error === "503 overloaded" && !scenario.midRunOverload) {
-        jobs.push({ agentId: `a${dispatchId}`, finishAt: tick + 1, durationMs: TICK_MS, outputTokens: 0, toolUses: 0, error });
-        continue;
-      }
-      jobs.push({ agentId: `a${dispatchId}`, finishAt: tick + Math.max(1, Math.ceil(durationMs / TICK_MS)), durationMs, outputTokens, toolUses: 3, error });
+      const rejected = error === "503 overloaded" && !scenario.midRunOverload;
+      jobs.push({
+        agentId: `a${dispatchId}`,
+        remainingMs: outputTokens * MS_PER_TOKEN,
+        toolMs,
+        elapsedMs: 0,
+        outputTokens: rejected ? 0 : outputTokens,
+        toolUses: rejected ? 0 : 3,
+        error,
+        rejected,
+      });
     }
     if (jobs.length === 0 && (state.status !== "active" || !state.work.some((candidate) => candidate.status === "pending"))) break;
   }
@@ -133,13 +174,13 @@ const configs: Array<{ label: string; pacing: OrchestrationPacing; concurrency: 
   { label: "aimd", pacing: "aimd", concurrency: 8 },
 ];
 
-console.log(`work=${WORK_ITEMS} maxAttempts=${MAX_ATTEMPTS} seeds=${SEEDS}; seconds are median [p10-p90]`);
+console.log(`work=${WORK_ITEMS} (unless noted) maxAttempts=${MAX_ATTEMPTS} seeds=${SEEDS}; seconds are median [p10-p90]`);
 for (const scenario of SCENARIOS) {
-  console.log(`\n${scenario.name}: bottleneck=${scenario.bottleneck} overloadFail=${scenario.overloadFailure} taskFail=${scenario.taskFailure}${scenario.heterogeneous ? " heterogeneous" : ""}`);
+  console.log(`\n${scenario.name}: bottleneck=${scenario.bottleneck} overloadFail=${scenario.overloadFailure} taskFail=${scenario.taskFailure}${scenario.heterogeneous ? " heterogeneous" : ""}${scenario.workItems ? ` work=${scenario.workItems}` : ""}`);
   console.log("config      | batch finished | items done | seconds            | dispatches");
   for (const config of configs) {
     const outcomes = Array.from({ length: SEEDS }, (_, seed) => run(scenario, config.pacing, config.concurrency, seed + 1));
-    const finished = outcomes.filter((o) => !o.halted && o.completed === WORK_ITEMS).length / SEEDS;
+    const finished = outcomes.filter((o) => !o.halted && o.completed === (scenario.workItems ?? WORK_ITEMS)).length / SEEDS;
     const ticks = outcomes.map((o) => o.ticks);
     console.log([
       config.label.padEnd(11),
