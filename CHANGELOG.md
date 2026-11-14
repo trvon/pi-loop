@@ -6,6 +6,33 @@
 
 * **tasks:** register the native task tools at `session_start` instead of six seconds after startup. A prompt sent inside that window used to go out with the pre-registration tool set, and the next request carried four more tools plus their prompt guidelines, so the request prefix changed once per session and every provider-side prompt cache missed (a full ~22k-token re-prefill on llama-server). The timer stays as a backstop and an external `pi-tasks` that answered the startup ping still wins.
 
+## [0.8.0](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.21...pi-loop-v0.8.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **orchestration:** cap unverified aimd growth at eight workers
+* **orchestration:** batches that set neither pacing nor concurrency now use the aimd window (3 to batch size, up to 32 workers) instead of 3 fixed workers. Set PI_LOOP_PACING=fixed or pass concurrency to keep the previous behaviour.
+
+### Features
+
+* **orchestration:** cap unverified aimd growth at eight workers ([cd60623](https://github.com/trvon/pi-loop/commit/cd606235547a8f03919dfc8762ae15f04fad1709))
+* **orchestration:** cut the window gently on admission rejections ([961a22e](https://github.com/trvon/pi-loop/commit/961a22e0888be5cb3aa0d574a346f04187550a24))
+* **orchestration:** gentle cut on admission rejections and session-learned initial window ([189dd22](https://github.com/trvon/pi-loop/commit/189dd223fc9dc2ab05135a385418288141eec333))
+* **orchestration:** pace batches with aimd by default ([293ce43](https://github.com/trvon/pi-loop/commit/293ce43cad441bd88803206f566f2136d4438caf))
+* **orchestration:** re-send congestion losses without spending attempts ([a8ede04](https://github.com/trvon/pi-loop/commit/a8ede043c9cb2563a95ab594738ad0342467aaf8))
+* **orchestration:** start aimd batches from the session's learned window ([4e34b67](https://github.com/trvon/pi-loop/commit/4e34b678f1ccd8449284f47384c7df54650c57c9))
+
+
+### Bug Fixes
+
+* **orchestration:** describe the configured default pacing in the schema ([bd48cca](https://github.com/trvon/pi-loop/commit/bd48ccaeb78dc661332a0bbc7ae12d2d7c601f0a))
+* **orchestration:** learn only from settled batches; keep the seed out of the size limit ([dfdae48](https://github.com/trvon/pi-loop/commit/dfdae483103cf2388203a09cd59ff55986bae890))
+* **orchestration:** mark a spawn reply that cannot be recorded uncertain ([415f073](https://github.com/trvon/pi-loop/commit/415f0735bd0ef7228327147d849e4012951c8143))
+* **orchestration:** re-send only congestion spawn failures; ACK a successful re-send ([d8a5867](https://github.com/trvon/pi-loop/commit/d8a586730f4b77001b4d587671ffa660519a461c))
+* **orchestration:** report the stored aimd window at creation ([b10dadb](https://github.com/trvon/pi-loop/commit/b10dadb4f61c40f6adcafec662c4ceb0541c4f65))
+* **ui:** show charged attempts and congestion re-sends separately ([a12cdde](https://github.com/trvon/pi-loop/commit/a12cdde29a721caa4111121236a26197951cc0e8))
+
 ## [0.7.21](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.20...pi-loop-v0.7.21) (2026-11-13)
 
 
