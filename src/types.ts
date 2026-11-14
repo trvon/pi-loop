@@ -121,6 +121,11 @@ export interface OrchestrationWorkItem {
   verify?: string;
   status: OrchestrationWorkStatus;
   attemptCount: number;
+  /**
+   * Dispatches lost to congestion that were re-sent without spending an
+   * attempt. `attemptCount - congestionRetries` is charged against maxAttempts.
+   */
+  congestionRetries?: number;
   dispatches: OrchestrationDispatch[];
 }
 
@@ -159,6 +164,14 @@ export interface OrchestrationDefinitionInput {
   maxAttempts?: number;
   model?: string;
   maxTurns?: number;
+  /** aimd only: start from a window an earlier batch in this session learned. */
+  initialWindow?: WindowSeed;
+}
+
+/** Without `ssthresh` the batch keeps slow start above `cwnd`. */
+export interface WindowSeed {
+  cwnd: number;
+  ssthresh?: number;
 }
 
 export type WorkflowTerminalStatus = "completed" | "paused";

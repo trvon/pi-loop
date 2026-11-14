@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   type AckSignal,
   type AckWindow,
+  ADMISSION_BACKOFF,
   applyAckSignal,
+  CONGESTION_BACKOFF,
   classifySettlement,
   createAckWindow,
   DELAY_CONGESTION_FACTOR,
@@ -20,14 +22,21 @@ function apply(window: AckWindow, ceiling: number, ...signals: AckSignal[]): Ack
 }
 
 describe("ACK-clocked Reno window", () => {
-  it("starts at one unit in flight and treats the ceiling as the slow-start threshold", () => {
+  it("treats the ceiling as the slow-start threshold", () => {
     const window = createAckWindow(4);
-    expect(window).toEqual({ mode: "aimd", cwnd: 1, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
-    expect(windowCapacity(window, 4)).toBe(1);
+    expect(window).toEqual({ mode: "aimd", cwnd: 3, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
+    expect(windowCapacity(window, 4)).toBe(3);
+  });
+
+  it("starts at the fixed-pacing default of three, or the batch size if smaller (RFC 6928 initial window)", () => {
+    expect(createAckWindow(8)).toMatchObject({ cwnd: 3, ssthresh: 8 });
+    expect(createAckWindow(2)).toMatchObject({ cwnd: 2, ssthresh: 2 });
+    expect(createAckWindow(1)).toMatchObject({ cwnd: 1, ssthresh: 1 });
+    expect(windowCapacity(createAckWindow(32), 32)).toBe(3);
   });
 
   it("grows one unit per ACK in slow start, then about one unit per window", () => {
-    const slowStart = apply(createAckWindow(8), 8, "ack", "ack", "ack");
+    const slowStart = apply({ ...createAckWindow(8), cwnd: 1 }, 8, "ack", "ack", "ack");
     expect(slowStart.cwnd).toBe(4);
     const avoidance = apply({ ...createAckWindow(8), cwnd: 4, ssthresh: 4 }, 8, "ack", "ack", "ack", "ack");
     expect(avoidance.cwnd).toBeGreaterThan(4.9);
@@ -36,7 +45,7 @@ describe("ACK-clocked Reno window", () => {
   });
 
   it("halves on congestion and resets to one on timeout, like Reno", () => {
-    const grown = apply(createAckWindow(8), 8, "ack", "ack", "ack", "ack", "ack");
+    const grown = apply({ ...createAckWindow(8), cwnd: 1 }, 8, "ack", "ack", "ack", "ack", "ack");
     expect(grown.cwnd).toBe(6);
     expect(apply(grown, 8, "congestion")).toMatchObject({ cwnd: 3, ssthresh: 3, losses: 1 });
     expect(apply(grown, 8, "timeout")).toMatchObject({ cwnd: 1, ssthresh: 3, losses: 1 });
@@ -163,5 +172,24 @@ describe("review regressions", () => {
     const primed = { ...createAckWindow(8), minMsPerToken: 20, delayStreak: 5 };
     expect(classifySettlement({ outcome: "completed", attempt: 2, verifyPassed: true, outputTokens: 100, durationMs: 999_999 }, primed)).toBe("retry_ack");
     expect(observeDelay(primed, { attempt: 2, outputTokens: 100, durationMs: 999_999 }).delayStreak).toBe(5);
+  });
+});
+
+describe("split multiplicative decrease", () => {
+  const grown = { ...createAckWindow(16), cwnd: 10, ssthresh: 16 };
+
+  it("S1: a rejection at admission cuts the window by ADMISSION_BACKOFF; no work was lost", () => {
+    expect(ADMISSION_BACKOFF).toBe(0.7);
+    expect(applyAckSignal(grown, "congestion", 16, { at: 100, requestedAt: 50, rejected: true })).toMatchObject({ cwnd: 7, ssthresh: 7, losses: 1 });
+  });
+
+  it("S2: congestion that lost work in flight still halves", () => {
+    expect(CONGESTION_BACKOFF).toBe(0.5);
+    expect(applyAckSignal(grown, "congestion", 16, { at: 100, requestedAt: 50 })).toMatchObject({ cwnd: 5, ssthresh: 5 });
+  });
+
+  it("S3: a rejected timeout still collapses to one and a rejection never cuts below one", () => {
+    expect(applyAckSignal(grown, "timeout", 16, { at: 100, requestedAt: 50, rejected: true })).toMatchObject({ cwnd: 1, ssthresh: 5 });
+    expect(applyAckSignal({ ...grown, cwnd: 1 }, "congestion", 16, { at: 100, requestedAt: 50, rejected: true })).toMatchObject({ cwnd: 1, ssthresh: 1 });
   });
 });
