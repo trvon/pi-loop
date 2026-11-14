@@ -696,7 +696,7 @@ describe("subagent orchestration runtime wiring", () => {
     try {
       vi.stubEnv("PI_LOOP_PACING", "fixed");
       const fixed = await createWithDefaultPacing();
-      expect(fixed.text).toContain("4 work items · concurrency 3");
+      expect(fixed.text).toContain("4 work items · fixed concurrency 3");
       expect(fixed.pacingDescription).toContain("fixed");
       clearTestLoopStore(sessionId);
       vi.stubEnv("PI_LOOP_PACING", "");
