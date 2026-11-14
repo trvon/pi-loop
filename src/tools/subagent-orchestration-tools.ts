@@ -133,7 +133,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
       maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
       concurrency: Type.Optional(Type.Integer({ description: "Sets fixed pacing: 1-8 workers", minimum: 1 })),
-      pacing: Type.Optional(Type.String({ description: "Default aimd adapts", enum: ["fixed", "aimd"] })),
+      pacing: Type.Optional(Type.String({ description: `Omitted: ${defaultPacing} (PI_LOOP_PACING)`, enum: ["fixed", "aimd"] })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
       expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new batch, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
     }),
