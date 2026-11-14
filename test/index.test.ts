@@ -682,6 +682,42 @@ describe("subagent orchestration runtime wiring", () => {
   beforeEach(() => clearTestLoopStore(sessionId));
   afterEach(() => clearTestLoopStore(sessionId));
 
+  async function createWithDefaultPacing(): Promise<{ text: string; pacingDescription: string }> {
+    const { pi, toolMap, emitExtension } = createMockPi({ respondToSubagentPing: 2 });
+    extension(pi as any);
+    await flushAsync();
+    await emitExtension("turn_start", null, createCtx({ sessionId }));
+    const tool = toolMap.get("OrchestrationCreate")!;
+    const created = await tool.execute!("create", { goal: "Review", work: [{ prompt: "A" }, { prompt: "B" }, { prompt: "C" }, { prompt: "D" }] });
+    return { text: created.content[0].text, pacingDescription: (tool.parameters as any).properties.pacing.description };
+  }
+
+  it("C1: PI_LOOP_PACING reaches OrchestrationCreate and its schema through activation", async () => {
+    try {
+      vi.stubEnv("PI_LOOP_PACING", "fixed");
+      const fixed = await createWithDefaultPacing();
+      expect(fixed.text).toContain("4 work items · concurrency 3");
+      expect(fixed.pacingDescription).toContain("fixed");
+      clearTestLoopStore(sessionId);
+      vi.stubEnv("PI_LOOP_PACING", "");
+      const aimd = await createWithDefaultPacing();
+      expect(aimd.text).toContain("4 work items · aimd window 3-4");
+      expect(aimd.pacingDescription).toContain("aimd");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("C1: fails extension activation on invalid PI_LOOP_PACING", () => {
+    vi.stubEnv("PI_LOOP_PACING", "cubic");
+    try {
+      const { pi } = createMockPi();
+      expect(() => extension(pi as any)).toThrow("Invalid PI_LOOP_PACING");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("dispatches a bounded batch, preserves provider completion, and wakes the idle parent once", async () => {
     let nextAgent = 0;
     const { pi, toolMap, emittedEvents, sentMessages, emitExtension } = createMockPi({

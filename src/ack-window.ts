@@ -1,3 +1,5 @@
+import type { WindowSeed } from "./types.js";
+
 /**
  * ACK-clocked AIMD window modelled on TCP Reno (Jacobson & Karels 1988;
  * RFC 5681; Chiu & Jain 1989).
@@ -25,7 +27,7 @@ export interface AckWindow {
   taskLosses: number;
   /**
    * Time of the last reduction. Congestion from work dispatched at or before
-   * it belongs to the same window and is not cut again (Reno fast recovery).
+   * it belongs to the same window and is not cut again (NewReno, RFC 6582).
    */
   recoverAt?: number;
   /** Lowest observed milliseconds per output token: the uncongested floor. */
@@ -56,8 +58,22 @@ export const DELAY_CONGESTION_STREAK = 2;
 const CONGESTION_ERROR = /\b(429|503|rate.?limit|overload(ed)?|too many requests|capacity|server busy|ECONNRESET|ECONNREFUSED|socket hang up)\b/i;
 const TIMEOUT_ERROR = /\b(timed? ?out|timeout|ETIMEDOUT|deadline exceeded)\b/i;
 
-export function createAckWindow(ceiling: number): AckWindow {
-  return { mode: "aimd", cwnd: 1, ssthresh: ceiling, acks: 0, losses: 0, taskLosses: 0 };
+/**
+ * Initial window: the fixed-pacing default, so an aimd batch is never slower
+ * to start than a default fixed one (cf. RFC 6928's larger initial window).
+ * Timeouts still collapse to one.
+ */
+export const INITIAL_WINDOW = 3;
+
+export function createAckWindow(ceiling: number, seed?: WindowSeed): AckWindow {
+  return {
+    mode: "aimd",
+    cwnd: Math.min(seed?.cwnd ?? INITIAL_WINDOW, ceiling),
+    ssthresh: Math.min(seed?.ssthresh ?? ceiling, ceiling),
+    acks: 0,
+    losses: 0,
+    taskLosses: 0,
+  };
 }
 
 export function windowCapacity(window: AckWindow, ceiling: number): number {
@@ -68,7 +84,17 @@ export interface SignalContext {
   at: number;
   /** When the settling work was dispatched; ties a loss to the window it was sent in. */
   requestedAt: number;
+  /** The provider refused the work before it ran: the slot was lost, not the work. */
+  rejected?: boolean;
 }
+
+/** Window kept after congestion that lost work in flight (Reno). */
+export const CONGESTION_BACKOFF = 0.5;
+/**
+ * Window kept after an admission rejection. Nothing ran, so the loss is cheap
+ * and a gentler cut (CUBIC's beta, RFC 9438) holds more of the probed window.
+ */
+export const ADMISSION_BACKOFF = 0.7;
 
 export function applyAckSignal(window: AckWindow, signal: AckSignal, ceiling: number, context: SignalContext): AckWindow {
   if (signal === "task_loss") return { ...window, taskLosses: window.taskLosses + 1 };
@@ -81,7 +107,7 @@ export function applyAckSignal(window: AckWindow, signal: AckSignal, ceiling: nu
   if (signal === "congestion" && sameWindow) return { ...window, losses: window.losses + 1 };
   // RFC 5681: repeated timeouts for the same flight reset the window but hold ssthresh.
   if (signal === "timeout" && sameWindow) return { ...window, cwnd: 1, losses: window.losses + 1 };
-  const half = Math.max(1, Math.floor(window.cwnd / 2));
+  const half = Math.max(1, Math.floor(window.cwnd * (signal === "congestion" && context.rejected ? ADMISSION_BACKOFF : CONGESTION_BACKOFF)));
   return {
     ...window,
     cwnd: signal === "timeout" ? 1 : half,
@@ -100,6 +126,11 @@ export interface SettlementEvidence {
   verifyPassed?: boolean;
   durationMs?: number;
   outputTokens?: number;
+}
+
+/** Error text that names overload or a dropped connection rather than the task. */
+export function isCongestionError(error: string): boolean {
+  return CONGESTION_ERROR.test(error);
 }
 
 export function msPerToken(evidence: Pick<SettlementEvidence, "durationMs" | "outputTokens">): number | undefined {

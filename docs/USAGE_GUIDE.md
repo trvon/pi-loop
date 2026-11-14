@@ -184,14 +184,14 @@ This surface requires the default file-backed session scope and `@tintinweb/pi-s
 
 Work items must be independent. The controller does not model dependencies or protect overlapping filesystem writes. Each spawned worker is background, does not inherit parent context, and is isolated from extension tools, so it cannot call pi-loop task/workflow/controller tools. The optional `agentType`, `model`, and `maxTurns` fields are the only invocation overrides.
 
-Local `concurrency` bounds spawning/queued/running dispatches while pi-subagents keeps its own global concurrency ceiling. A proved worker failure retries up to `maxAttempts`. A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
+Batches are paced adaptively by default (see below). Passing `concurrency` selects fixed pacing: it bounds spawning/queued/running dispatches to that many, while pi-subagents keeps its own global concurrency ceiling. A proved worker failure retries up to `maxAttempts`. An overload that struck before the worker ran any tool, or a spawn that failed on a dropped connection, is re-sent without spending an attempt (at most 3 times per item and once per item across the batch). A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
 
 #### Verified work and adaptive pacing
 
 A work item may declare `verify`, a shell command that must exit 0 before the item counts as complete. The worker is told the check; a failing check retries the item with the exit status and output tail in the next prompt:
 
 ```text
-OrchestrationCreate goal="Port the parsers" pacing="aimd" work='[
+OrchestrationCreate goal="Port the parsers" work='[
   {"prompt":"Port the CSV parser to the new API","verify":"npm test -- csv"},
   {"prompt":"Port the TOML parser to the new API","verify":"npm test -- toml"}
 ]' maxAttempts=2
@@ -199,7 +199,7 @@ OrchestrationCreate goal="Port the parsers" pacing="aimd" work='[
 
 `verify` runs in the session cwd with the same authority as `MonitorCreate`. While it runs, the dispatch shows as `verifying` and still holds capacity.
 
-`pacing="aimd"` replaces fixed `concurrency` with a window that starts at one worker, grows on verified completions, halves on overload errors or sustained slowdown, and collapses to one on timeouts. It is bounded only by the batch size, so use it when the real limit (a local model server, a provider rate limit) is unknown. Task failures do not shrink the window. The default `pacing="fixed"` is unchanged. Signal classification, the delay heuristic, and its limits are in [REFERENCE.md](REFERENCE.md#ack-clocked-pacing-opt-in).
+Pacing defaults to `aimd`: a window that starts at three workers (or the batch size, if smaller; or where the session's last aimd batch for the same model settled, if it ran in the past 30 minutes), grows on verified completions, shrinks on overload errors or sustained slowdown (to 0.7 when the provider refused work before it ran, to half when work was lost), and collapses to one on timeouts. It is bounded by the batch size when every item declares `verify`, otherwise by 8 workers, so it finds the real limit (a local model server, a provider rate limit) without being told. Task failures do not shrink the window. Pass `concurrency=N` or `pacing="fixed"` for a fixed worker count, or set `PI_LOOP_PACING=fixed` to make fixed the default; an explicit `pacing` always wins. Batches created before this default keep the pacing they were stored with. Signal classification, the delay heuristic, and its limits are in [REFERENCE.md](REFERENCE.md#ack-clocked-pacing).
 
 Inspect compact progress with `LoopList` and durable evidence with:
 
@@ -345,6 +345,7 @@ Requests include `requestId`; replies arrive on `<channel>:reply:<requestId>` as
 | `PI_LOOP_EXPIRES_IN` | Default lifetime for newly created loops (`30s`, `12h`, `14d`) | `7d` |
 | `PI_LOOP_GLYPHS` | Card glyph set: `nerd`, `unicode`, or `ascii`; `/loop glyphs` switches it per process | `unicode` (ASCII without a UTF-8 locale) |
 | `PI_LOOP_PANEL` | `off` hides the progress side panel; `/loop panel` toggles it per process | `auto` |
+| `PI_LOOP_PACING` | Orchestration pacing when a batch sets neither `pacing` nor `concurrency`: `aimd` or `fixed`; other values fail activation | `aimd` |
 | `PI_LOOP_DEBUG` | Debug logging to stderr | unset |
 
 Scope behavior:
@@ -363,4 +364,4 @@ Workflow tool cards, `LoopList`, and `TaskList` stay at two lines while collapse
 
 On terminals at least 110 columns wide, a narrow progress panel docks at the top-right while a workflow, orchestration, running monitor, or native task is in progress. It never takes keyboard focus and disappears when nothing is in progress. Each workflow is a vertical state trail (`✓` visited, `▶` current with derived activity and attempt, `○` not yet entered) followed by its available outcomes; workflows that are paused or unclaimed are listed first. Running monitors (at most three, oldest first) show id, elapsed time, description or command, and their last output line, with a `quiet` flag after five minutes without output; monitor state is process-local, so nothing is shown for monitors from a previous pi process. Native tasks show `done/total`, in-progress work first, and flag a claim whose lease has expired. The panel is presentation only: it reads the same LoopStore and TaskStore snapshots as the status line and never claims work, resumes a controller, or schedules a wake. Task rows come only from standalone tasks, monitor rows only from this process's MonitorManager, and workflow rows only from LoopStore. Monitor output is untrusted and stripped of control bytes before display. Durations refresh on state changes and the existing 30-second heartbeat, and every minute while a monitor runs. Because it overlays the transcript's right edge, hide it with `/loop panel off` (or `/loop panel` to toggle), or start pi with `PI_LOOP_PANEL=off`.
 
-The runtime allows at most 25 active loops and 25 running monitors. Each orchestration batch allows up to 32 work items, 8 local workers under fixed pacing (the batch size under `aimd`), and 3 attempts per item.
+The runtime allows at most 25 active loops and 25 running monitors. Each orchestration batch allows up to 32 work items, 8 local workers under fixed pacing (under `aimd`, the batch size when every item declares `verify`, otherwise 8), and 3 attempts per item, plus up to 3 overload re-sends per item that do not count as attempts.

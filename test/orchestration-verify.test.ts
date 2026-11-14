@@ -63,14 +63,15 @@ describe("orchestration verifier runtime", () => {
   it("holds the dispatch in flight until the verifier passes, then settles it as an ACK", async () => {
     const h = setup([{ prompt: "add sum()", verify: "node --test sum.test.js" }, { prompt: "add mul()" }]);
     await h.runtime.pump();
-    expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:spawn")).toHaveLength(1);
+    // Initial window min(3, batch) dispatches both items at once.
+    expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:spawn")).toHaveLength(2);
 
     h.pi.events.emit("subagents:completed", { id: "agent-1", result: "implemented sum", durationMs: 4000, tokens: { input: 50, output: 200, total: 250 } });
     await h.flush();
     expect(h.runVerify).toHaveBeenCalledTimes(1);
     expect(h.pendingVerifies[0]?.request).toMatchObject({ command: "node --test sum.test.js", cwd: "/work/repo" });
     expect(h.state().work[0]).toMatchObject({ status: "active" });
-    expect(h.state().window).toMatchObject({ cwnd: 1, acks: 0 });
+    expect(h.state().window).toMatchObject({ cwnd: 2, acks: 0 });
 
     h.pi.events.emit("subagents:completed", { id: "agent-1", result: "implemented sum" });
     await h.flush();

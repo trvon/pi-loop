@@ -1,4 +1,4 @@
-import { type AckSignal, applyAckSignal, classifySettlement, createAckWindow, observeDelay, validateAckWindow, windowCapacity } from "./ack-window.js";
+import { type AckSignal, applyAckSignal, classifySettlement, createAckWindow, INITIAL_WINDOW, isCongestionError, observeDelay, validateAckWindow, windowCapacity } from "./ack-window.js";
 import type {
   OrchestrationActor,
   OrchestrationDefinitionInput,
@@ -9,6 +9,7 @@ import type {
   OrchestrationWakeReason,
   OrchestrationWorkItem,
   OrchestrationWorkStatus,
+  WindowSeed,
 } from "./types.js";
 
 export const MAX_ORCHESTRATION_RESULT_CHARS = 8_192;
@@ -17,6 +18,10 @@ export const ORCHESTRATION_OWNER_LEASE_MS = 120_000;
 export const MAX_ORCHESTRATION_WORK_ITEMS = 32;
 export const MAX_ORCHESTRATION_CONCURRENCY = 8;
 export const MAX_ORCHESTRATION_ATTEMPTS = 3;
+/** An earlier batch's window informs a new one only while the path is likely unchanged. */
+export const LEARNED_WINDOW_TTL_MS = 30 * 60_000;
+/** Congestion losses one item may re-send without spending an attempt. */
+export const MAX_CONGESTION_RETRIES_PER_ITEM = 3;
 export const MAX_ORCHESTRATION_INPUT_BYTES = 65_536;
 export const MAX_ORCHESTRATION_VERIFY_CHARS = 2_048;
 export const MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS = 2_048;
@@ -41,8 +46,16 @@ export function validateOrchestrationDefinition(input: OrchestrationDefinitionIn
   if (input.maxTurns !== undefined && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 100)) return "invalid maxTurns";
   if (input.work.some((item) => !item.prompt.trim())) return "work prompts must not be empty";
   if (input.work.some((item) => item.verify !== undefined && (!item.verify.trim() || item.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS))) return "invalid verify command";
-  if (Buffer.byteLength(JSON.stringify(input), "utf8") > MAX_ORCHESTRATION_INPUT_BYTES) return "serialized input exceeds limit";
+  if (input.initialWindow !== undefined && !isWindowSeed(input.initialWindow)) return "invalid initialWindow";
+  // The limit bounds what the caller sent; a seed injected by OrchestrationCreate does not count.
+  const { initialWindow: _seed, ...callerInput } = input;
+  if (Buffer.byteLength(JSON.stringify(callerInput), "utf8") > MAX_ORCHESTRATION_INPUT_BYTES) return "serialized input exceeds limit";
   return undefined;
+}
+
+function isWindowSeed(value: unknown): value is WindowSeed {
+  const units = (field: unknown) => Number.isInteger(field) && Number(field) >= 1 && Number(field) <= MAX_ORCHESTRATION_WORK_ITEMS;
+  return isRecord(value) && units(value.cwnd) && (value.ssthresh === undefined || units(value.ssthresh));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -79,7 +92,12 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
     if (rawItem.verify !== undefined && (typeof rawItem.verify !== "string" || !rawItem.verify.trim() || rawItem.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS)) throw new Error("Malformed orchestration state: invalid verify command");
     ids.add(rawItem.id);
     if (rawItem.status !== "completed") allWorkCompleted = false;
-    if (Number(rawItem.attemptCount) < 0 || Number(rawItem.attemptCount) > Number(value.maxAttempts) || rawItem.dispatches.length !== Number(rawItem.attemptCount)) throw new Error("Malformed orchestration state: invalid attempt count");
+    const congestionRetries = rawItem.congestionRetries ?? 0;
+    if (rawItem.congestionRetries !== undefined && (!Number.isInteger(rawItem.congestionRetries) || Number(rawItem.congestionRetries) < 1 || Number(rawItem.congestionRetries) > MAX_CONGESTION_RETRIES_PER_ITEM || Number(rawItem.congestionRetries) > Number(rawItem.attemptCount))) {
+      throw new Error("Malformed orchestration state: invalid congestion retries");
+    }
+    const chargedAttempts = Number(rawItem.attemptCount) - Number(congestionRetries);
+    if (Number(rawItem.attemptCount) < 0 || chargedAttempts > Number(value.maxAttempts) || rawItem.dispatches.length !== Number(rawItem.attemptCount)) throw new Error("Malformed orchestration state: invalid attempt count");
     for (const [dispatchIndex, rawDispatch] of rawItem.dispatches.entries()) {
       if (!isRecord(rawDispatch) || typeof rawDispatch.dispatchId !== "string" || rawDispatch.attempt !== dispatchIndex + 1 || typeof rawDispatch.ownerRuntimeId !== "string" || !Number.isInteger(rawDispatch.ownerGeneration) || !Number.isFinite(rawDispatch.requestedAt) || !DISPATCH_STATUSES.has(String(rawDispatch.status)) || !CONSUME_STATUSES.has(String(rawDispatch.consumeStatus)) || !Number.isInteger(rawDispatch.consumeAttempts) || Number(rawDispatch.consumeAttempts) < 0 || Number(rawDispatch.consumeAttempts) > 3) {
         throw new Error("Malformed orchestration state: invalid dispatch");
@@ -239,20 +257,29 @@ function settleDispatch(
   const verifiedFailure = input.outcome === "completed" && item.verify !== undefined && input.verify?.passed !== true;
   item.status = input.outcome === "completed" && !verifiedFailure ? "completed" : "failed";
   if (verifiedFailure && !dispatch.error) dispatch.error = input.verify ? `verify failed (exit ${input.verify.exitCode ?? "killed"})` : "verify did not run";
+  const evidence = {
+    outcome: input.outcome,
+    result: input.result,
+    error: input.error,
+    // Karn: only charged retries are ambiguous. A re-send after a free congestion
+    // loss is the first time the work ran, so its success is a first-attempt ACK.
+    attempt: dispatch.attempt - (item.congestionRetries ?? 0),
+    verifyPassed: item.verify === undefined ? undefined : input.verify?.passed ?? false,
+    durationMs: input.usage?.durationMs,
+    outputTokens: input.usage?.tokens?.output,
+  };
+  // Fixed pacing has no window but still tells congestion from task failure.
+  const signal = classifySettlement(evidence, next.window ?? {});
   if (next.window) {
-    const evidence = {
-      outcome: input.outcome,
-      result: input.result,
-      error: input.error,
-      attempt: dispatch.attempt,
-      verifyPassed: item.verify === undefined ? undefined : input.verify?.passed ?? false,
-      durationMs: input.usage?.durationMs,
-      outputTokens: input.usage?.tokens?.output,
-    };
-    recordAckSignal(next, classifySettlement(evidence, next.window), dispatch, at);
-    next.window = observeDelay(next.window!, evidence);
+    // A failure before any tool ran or any output streamed is an admission rejection.
+    const refused = input.outcome === "failed" && input.usage?.toolUses === 0 && !((input.usage.tokens?.output ?? 0) > 0);
+    recordAckSignal(next, signal, dispatch, at, refused);
+    next.window = observeDelay(next.window, evidence);
   }
-  if (item.status === "failed") settleFailure(item, next);
+  if (item.status === "failed") {
+    forgiveCongestion(item, next, signal, input.usage?.toolUses);
+    settleFailure(item, next);
+  }
   refreshControllerStatus(next, at);
 }
 
@@ -320,12 +347,74 @@ export function getOrchestrationCapacity(state: OrchestrationState): number {
   return state.window ? windowCapacity(state.window, state.concurrency) : state.concurrency;
 }
 
-function recordAckSignal(state: OrchestrationState, signal: AckSignal, dispatch: OrchestrationDispatch, at: number): void {
-  if (state.window) state.window = applyAckSignal(state.window, signal, state.concurrency, { at, requestedAt: dispatch.requestedAt });
+function recordAckSignal(state: OrchestrationState, signal: AckSignal, dispatch: OrchestrationDispatch, at: number, rejected = false): void {
+  if (state.window) state.window = applyAckSignal(state.window, signal, state.concurrency, { at, requestedAt: dispatch.requestedAt, rejected });
+}
+
+/** Attempts charged against maxAttempts: congestion losses re-sent for free are excluded. */
+function chargedAttempts(item: OrchestrationWorkItem): number {
+  return item.attemptCount - (item.congestionRetries ?? 0);
+}
+
+/**
+ * A dispatch lost to congestion is the path's failure, not the task's: like a
+ * dropped segment it is re-sent without spending one of the item's attempts.
+ * Only a worker that ran no tools is re-sent for free; one that did may have
+ * changed the workspace, so a re-run is an ordinary, charged retry.
+ * The batch budget (one per item) and per-item cap keep these re-sends from
+ * sustaining the overload that caused them (retry amplification; metastable
+ * failures). Timeouts are excluded: a worker past its own deadline may be the
+ * task's fault.
+ */
+function forgiveCongestion(item: OrchestrationWorkItem, state: OrchestrationState, signal: AckSignal, toolUses: number | undefined): void {
+  if (signal !== "congestion" || toolUses !== 0) return;
+  const itemRetries = item.congestionRetries ?? 0;
+  const batchRetries = state.work.reduce((sum, candidate) => sum + (candidate.congestionRetries ?? 0), 0);
+  if (itemRetries >= MAX_CONGESTION_RETRIES_PER_ITEM || batchRetries >= state.work.length) return;
+  item.congestionRetries = itemRetries + 1;
 }
 
 function settleFailure(item: OrchestrationWorkItem, state: OrchestrationState): void {
-  item.status = item.attemptCount < state.maxAttempts ? "pending" : "failed";
+  item.status = chargedAttempts(item) < state.maxAttempts ? "pending" : "failed";
+}
+
+/**
+ * Under aimd only feedback limits the window. A fully verified batch is bounded
+ * by its size; otherwise any non-empty answer is an ACK, so growth stops at the
+ * fixed-pacing maximum.
+ */
+function aimdCeiling(work: OrchestrationDefinitionInput["work"]): number {
+  return work.every((item) => item.verify !== undefined) ? work.length : Math.min(work.length, MAX_ORCHESTRATION_CONCURRENCY);
+}
+
+/**
+ * The window a new aimd batch should start from, learned from the most recent
+ * aimd batch in this session for the same model (RFC 9040's TCB sharing, kept
+ * to one session). After a loss the window has found the path's limit: the
+ * batch starts where it settled (never below the last cut point) and grows
+ * additively. Without a loss the window was only a lower bound, so the batch
+ * starts there and keeps slow start.
+ */
+export function learnWindowSeed(
+  previous: ReadonlyArray<{ id: string; state: OrchestrationState }>,
+  model: string | undefined,
+  now: number,
+): (WindowSeed & { source: string }) | undefined {
+  // A batch still running holds its window on the same path; seeding from it would double the load.
+  const candidates = previous.filter(({ state }) => state.window !== undefined
+    && state.status !== "active"
+    && !state.work.some((item) => item.status === "active")
+    && state.model === model
+    && now - state.updatedAt <= LEARNED_WINDOW_TTL_MS
+    && state.window.acks + state.window.losses > 0);
+  const latest = candidates.reduce<(typeof candidates)[number] | undefined>((best, candidate) => !best || candidate.state.updatedAt > best.state.updatedAt ? candidate : best, undefined);
+  if (!latest?.state.window) return undefined;
+  const { window } = latest.state;
+  if (window.losses > 0) {
+    const settled = Math.max(window.ssthresh, Math.floor(window.cwnd));
+    return { cwnd: settled, ssthresh: settled, source: latest.id };
+  }
+  return { cwnd: Math.max(INITIAL_WINDOW, Math.floor(window.cwnd)), source: latest.id };
 }
 
 export function createOrchestrationState(
@@ -333,8 +422,8 @@ export function createOrchestrationState(
   owner: OrchestrationActor,
   at: number,
 ): OrchestrationState {
-  // Under aimd only feedback limits the window; the batch itself is the sole bound.
-  const concurrency = input.pacing === "aimd" ? input.work.length : input.concurrency ?? 3;
+  const concurrency = input.pacing === "aimd" ? aimdCeiling(input.work) : input.concurrency ?? 3;
+  const seed = input.pacing === "aimd" ? input.initialWindow : undefined;
   return {
     version: 1,
     revision: 1,
@@ -355,7 +444,7 @@ export function createOrchestrationState(
       dispatches: [],
     })),
     nextWakeSequence: 0,
-    ...(input.pacing === "aimd" ? { window: createAckWindow(concurrency) } : {}),
+    ...(input.pacing === "aimd" ? { window: createAckWindow(concurrency, seed) } : {}),
     createdAt: at,
     updatedAt: at,
   };
@@ -422,7 +511,7 @@ export function applyOrchestrationEvent(
     if (!item) return rejected(state, "work_not_found");
     if (item.status !== "pending") return rejected(state, "work_not_pending");
     if (getOrchestrationCounts(next).active >= getOrchestrationCapacity(next)) return rejected(state, "capacity_exhausted");
-    if (item.attemptCount >= next.maxAttempts) return rejected(state, "attempts_exhausted");
+    if (chargedAttempts(item) >= next.maxAttempts) return rejected(state, "attempts_exhausted");
     item.attemptCount += 1;
     item.status = "active";
     item.dispatches.push({
@@ -509,8 +598,14 @@ export function applyOrchestrationEvent(
     dispatch.consumeStatus = uncertain ? "unavailable" : dispatch.agentId ? "pending" : "not_applicable";
     item.status = uncertain ? "uncertain" : "failed";
     // Uncertain termination already blocks every dispatch; a proved spawn failure is path congestion.
-    if (!uncertain) recordAckSignal(next, "congestion", dispatch, event.at);
-    if (!uncertain) settleFailure(item, next);
+    if (!uncertain) {
+      recordAckSignal(next, "congestion", dispatch, event.at, true);
+      // A proved spawn failure never started a worker, but only congestion is
+      // worth re-sending: pi-subagents' own spawn errors (bad cwd, unknown type,
+      // nested limit) recur on every attempt.
+      if (isCongestionError(event.error)) forgiveCongestion(item, next, "congestion", 0);
+      settleFailure(item, next);
+    }
     refreshControllerStatus(next, event.at);
     return applied(next, event.at);
   }

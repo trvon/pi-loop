@@ -4,6 +4,10 @@ import {
   createOrchestrationState,
   getOrchestrationCapacity,
   getOrchestrationCounts,
+  LEARNED_WINDOW_TTL_MS,
+  learnWindowSeed,
+  MAX_CONGESTION_RETRIES_PER_ITEM,
+  MAX_ORCHESTRATION_CONCURRENCY,
   MAX_ORCHESTRATION_ERROR_CHARS,
   MAX_ORCHESTRATION_RESULT_CHARS,
   validateOrchestrationDefinition,
@@ -246,7 +250,7 @@ interface SettleOptions {
   result?: string;
   error?: string;
   verify?: { passed: boolean; exitCode: number | null; durationMs: number; output?: string };
-  usage?: { durationMs: number; tokens: { input: number; output: number; total: number } };
+  usage?: { toolUses?: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
 }
 
 function request(state: ReturnType<typeof create>, workId: string, key: string, at: number) {
@@ -273,13 +277,18 @@ const tokens = (output: number) => ({ input: 10, output, total: 10 + output });
 const pass = { passed: true, exitCode: 0, durationMs: 5 };
 const fail = { passed: false, exitCode: 1, durationMs: 5, output: "1 failing test" };
 
+/** Window-mechanics tests count from one unit in flight, below the default initial window. */
+function fromOne<T extends ReturnType<typeof createOrchestrationState>>(state: T): T {
+  return state.window ? { ...state, window: { ...state.window, cwnd: 1 } } : state;
+}
+
 function verifiedBatch(count: number, maxAttempts = 2) {
-  return createOrchestrationState({
+  return fromOne(createOrchestrationState({
     goal: "verified batch",
     work: Array.from({ length: count }, (_, index) => ({ prompt: `task ${index + 1}`, verify: `npm test -- task${index + 1}` })),
     pacing: "aimd",
     maxAttempts,
-  }, owner, 100);
+  }, owner, 100));
 }
 
 describe("orchestration ACK-clocked pacing", () => {
@@ -300,13 +309,20 @@ describe("orchestration ACK-clocked pacing", () => {
     expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect" }], concurrency: 9 })).toContain("concurrency");
   });
 
-  it("ignores concurrency under aimd: the window starts at one and is bounded only by the batch", () => {
-    const state = create(4, { concurrency: 2, pacing: "aimd" });
+  it("ignores concurrency under aimd: the window starts at three and is bounded only by the batch", () => {
+    let state = create(4, { concurrency: 2, pacing: "aimd" });
     expect(state.concurrency).toBe(4);
-    expect(state.window).toEqual({ mode: "aimd", cwnd: 1, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
-    const first = dispatch(state, "1", "dispatch-1", 110);
-    expect(first.applied).toBe(true);
-    expect(dispatch(first.state, "2", "dispatch-2", 120)).toMatchObject({ applied: false, reason: "capacity_exhausted" });
+    expect(state.window).toEqual({ mode: "aimd", cwnd: 3, ssthresh: 4, acks: 0, losses: 0, taskLosses: 0 });
+    for (const key of ["1", "2", "3"]) state = dispatch(state, key, `dispatch-${key}`, 110).state;
+    expect(getOrchestrationCounts(state).active).toBe(3);
+    expect(dispatch(state, "4", "dispatch-4", 120)).toMatchObject({ applied: false, reason: "capacity_exhausted" });
+  });
+
+  it("keeps a persisted batch without a window on fixed pacing", () => {
+    const fixed = create(4);
+    expect(fixed.window).toBeUndefined();
+    expect(getOrchestrationCapacity(fixed)).toBe(2);
+    expect(getOrchestrationCapacity(validatePersistedOrchestration(structuredClone(fixed)))).toBe(2);
   });
 
   it("uses a passing verifier as the ACK and retries a failing one without shrinking the window", () => {
@@ -330,7 +346,7 @@ describe("orchestration ACK-clocked pacing", () => {
   });
 
   it("halves on overload errors, resets on timeouts, and ignores generic task errors", () => {
-    let state = create(8, { pacing: "aimd", maxAttempts: 3 });
+    let state = fromOne(create(8, { pacing: "aimd", maxAttempts: 3 }));
     for (const [index, key] of ["1", "2", "3", "4"].entries()) state = runToSettled(state, String(index + 1), key, 100 + index * 10, { result: "ok" });
     expect(state.window?.cwnd).toBe(5);
 
@@ -345,7 +361,7 @@ describe("orchestration ACK-clocked pacing", () => {
   });
 
   it("cuts once per window when parallel workers report congestion together", () => {
-    let state = create(6, { pacing: "aimd", maxAttempts: 2 });
+    let state = fromOne(create(6, { pacing: "aimd", maxAttempts: 2 }));
     for (const [index, key] of ["1", "2", "3"].entries()) state = runToSettled(state, String(index + 1), key, 100 + index * 10, { result: "ok" });
     expect(getOrchestrationCapacity(state)).toBe(4);
     state = request(state, "4", "a", 200);
@@ -378,7 +394,8 @@ describe("orchestration ACK-clocked pacing", () => {
     const failed = applyOrchestrationEvent(requested, {
       type: "dispatch_spawn_failed", at: 131, expected: expectedOf(requested), workId: "3", dispatchId: "dispatch-3", error: "spawn rejected",
     }).state;
-    expect(failed.window).toMatchObject({ cwnd: 1, losses: 1 });
+    // A spawn failure is an admission rejection: 3 x ADMISSION_BACKOFF, floored.
+    expect(failed.window).toMatchObject({ cwnd: 2, losses: 1 });
   });
 
   it("does not open the window when success needed a retry", () => {
@@ -399,10 +416,10 @@ describe("orchestration ACK-clocked pacing", () => {
     expect(uncertain.status).toBe("needs_attention");
   });
 
-  it("lets an aimd window grow past the fixed-pacing safety max up to the batch size", () => {
-    let state = create(16, { pacing: "aimd", maxAttempts: 1 });
+  it("lets a verified aimd window grow past the fixed-pacing safety max up to the batch size", () => {
+    let state = verifiedBatch(16, 1);
     expect(state.concurrency).toBe(16);
-    for (let index = 1; index <= 12; index++) state = runToSettled(state, String(index), String(index), 100 + index * 10, { result: "ok" });
+    for (let index = 1; index <= 12; index++) state = runToSettled(state, String(index), String(index), 100 + index * 10, { result: "ok", verify: pass });
     expect(getOrchestrationCapacity(state)).toBeGreaterThan(8);
     expect(validatePersistedOrchestration(structuredClone(state))).toEqual(state);
     const fixedOver = structuredClone(create(2)) as any;
@@ -470,5 +487,228 @@ describe("review regressions: persisted verification", () => {
     const cancelled = applyOrchestrationEvent(state, { type: "cancelled", at: 130, expected: expectedOf(state) }).state;
     expect(cancelled.work[0]).toMatchObject({ status: "cancelled" });
     expect(cancelled.work[0]?.dispatches[0]).toMatchObject({ status: "completed", consumeStatus: "provider_owned", error: "cancelled before verification" });
+  });
+});
+
+describe("congestion retries do not spend task attempts", () => {
+  // Rejected before the worker ran a tool: nothing in the workspace changed.
+  const overloaded = { outcome: "failed" as const, error: "503 overloaded", usage: { toolUses: 0 } };
+
+  it.each(["fixed", "aimd"] as const)("A1 (%s): a congestion failure is retried without spending the item's attempt", (pacing) => {
+    let state = create(1, { maxAttempts: 1, pacing });
+    state = runToSettled(state, "1", "1", 110, overloaded);
+    expect(state.work[0]).toMatchObject({ status: "pending", attemptCount: 1, congestionRetries: 1 });
+    state = runToSettled(state, "1", "2", 120, { result: "done" });
+    expect(state.work[0]).toMatchObject({ status: "completed", attemptCount: 2 });
+    expect(getOrchestrationCounts(state).completed).toBe(1);
+  });
+
+  it("A2: a task failure still spends its attempt", () => {
+    const state = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, { outcome: "failed", error: "assertion failed in generated code" });
+    expect(state.work[0]).toMatchObject({ status: "failed" });
+    expect(state.work[0]?.congestionRetries).toBeUndefined();
+  });
+
+  it("A3: a timeout still spends its attempt; a worker past its own deadline may be the task's fault", () => {
+    const state = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, { outcome: "failed", error: "worker timed out" });
+    expect(state.work[0]).toMatchObject({ status: "failed" });
+  });
+
+  it("A4: one item forgives at most MAX_CONGESTION_RETRIES_PER_ITEM congestion failures", () => {
+    let state = create(4, { maxAttempts: 1, pacing: "aimd" });
+    for (let index = 0; index < MAX_CONGESTION_RETRIES_PER_ITEM; index++) {
+      state = runToSettled(state, "1", `r${index}`, 110 + index * 10, overloaded);
+      expect(state.work[0]?.status).toBe("pending");
+    }
+    state = runToSettled(state, "1", "last", 200, overloaded);
+    expect(state.work[0]).toMatchObject({ status: "failed", congestionRetries: MAX_CONGESTION_RETRIES_PER_ITEM });
+  });
+
+  it("A5: the batch shares a budget of one forgiven congestion retry per work item", () => {
+    let state = create(2, { maxAttempts: 1, pacing: "aimd" });
+    state = runToSettled(state, "1", "a", 110, overloaded);
+    state = runToSettled(state, "1", "b", 120, overloaded);
+    expect(state.work[0]).toMatchObject({ status: "pending", congestionRetries: 2 });
+    state = runToSettled(state, "2", "c", 130, overloaded);
+    expect(state.work[1]).toMatchObject({ status: "failed" });
+  });
+
+  it("A6: a spawn failure from congestion is retried without spending the attempt", () => {
+    const requested = dispatch(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "dispatch-1", 110).state;
+    const failed = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 111, expected: expectedOf(requested), workId: "1", dispatchId: "dispatch-1", error: "socket hang up",
+    }).state;
+    expect(failed.work[0]).toMatchObject({ status: "pending", congestionRetries: 1 });
+    expect(dispatch(failed, "1", "dispatch-2", 120).applied).toBe(true);
+  });
+
+  it("A8: a congestion loss after the worker ran tools spends the attempt; a re-run could repeat its side effects", () => {
+    const afterTools = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, { ...overloaded, usage: { toolUses: 4 } });
+    expect(afterTools.work[0]).toMatchObject({ status: "failed" });
+    const unknown = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, { ...overloaded, usage: undefined });
+    expect(unknown.work[0]).toMatchObject({ status: "failed" });
+  });
+
+  it("A7: persisted state with forgiven retries round-trips, and inconsistent counts are rejected", () => {
+    const state = runToSettled(create(1, { maxAttempts: 1, pacing: "aimd" }), "1", "1", 110, overloaded);
+    const persisted = JSON.parse(JSON.stringify(state));
+    expect(validatePersistedOrchestration(persisted).work[0]).toMatchObject({ congestionRetries: 1 });
+    const withItem = (patch: Record<string, unknown>) => ({ ...persisted, work: [{ ...persisted.work[0], ...patch }] });
+    expect(() => validatePersistedOrchestration(withItem({ congestionRetries: 2 }))).toThrow("congestion retries");
+    expect(() => validatePersistedOrchestration(withItem({ congestionRetries: 1.5 }))).toThrow("congestion retries");
+    expect(() => validatePersistedOrchestration(withItem({ congestionRetries: MAX_CONGESTION_RETRIES_PER_ITEM + 1 }))).toThrow("congestion retries");
+    expect(() => validatePersistedOrchestration(withItem({ congestionRetries: 0 }))).toThrow("congestion retries");
+  });
+});
+
+describe("unverified aimd growth", () => {
+  const batch = (count: number, verify: (index: number) => string | undefined) => createOrchestrationState({
+    goal: "batch",
+    work: Array.from({ length: count }, (_, index) => ({ prompt: `task ${index + 1}`, verify: verify(index) })),
+    pacing: "aimd",
+  }, owner, 100);
+
+  it("G1: an unverified aimd batch is capped at the fixed-pacing maximum", () => {
+    expect(batch(20, () => undefined).concurrency).toBe(MAX_ORCHESTRATION_CONCURRENCY);
+  });
+
+  it("G2: one verified item does not lift the cap for the rest", () => {
+    expect(batch(20, (index) => index === 0 ? "true" : undefined).concurrency).toBe(MAX_ORCHESTRATION_CONCURRENCY);
+  });
+
+  it("G3: a fully verified aimd batch is bounded by its size", () => {
+    expect(batch(20, (index) => `npm test -- t${index}`).concurrency).toBe(20);
+    expect(batch(5, () => undefined).concurrency).toBe(5);
+  });
+});
+
+describe("admission rejections cut gently", () => {
+  const grownBatch = () => {
+    const state = verifiedBatch(16, 3);
+    return { ...state, window: { ...state.window!, cwnd: 10 } };
+  };
+
+  it("S4: an overload from a worker that ran no tools cuts to 0.7x", () => {
+    const state = runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests", usage: { toolUses: 0 } });
+    expect(state.window).toMatchObject({ cwnd: 7, ssthresh: 7 });
+  });
+
+  it("S5: an overload after the worker ran tools, or with unknown tool use, halves", () => {
+    expect(runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests", usage: { toolUses: 2 } }).window).toMatchObject({ cwnd: 5 });
+    expect(runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests" }).window).toMatchObject({ cwnd: 5 });
+  });
+
+  it("R3: a tool-less worker that produced output before the overload lost work, so the window halves", () => {
+    const streamed = runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "503 overloaded", usage: { toolUses: 0, tokens: tokens(4_000) } });
+    expect(streamed.window).toMatchObject({ cwnd: 5 });
+    const refused = runToSettled(grownBatch(), "1", "1", 110, { outcome: "failed", error: "503 overloaded", usage: { toolUses: 0, tokens: tokens(0) } });
+    expect(refused.window).toMatchObject({ cwnd: 7 });
+  });
+
+  it("S6: a proved spawn failure is an admission rejection", () => {
+    const requested = dispatch(grownBatch(), "1", "dispatch-1", 110).state;
+    const failed = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 111, expected: expectedOf(requested), workId: "1", dispatchId: "dispatch-1", error: "spawn rejected",
+    }).state;
+    expect(failed.window).toMatchObject({ cwnd: 7 });
+  });
+});
+
+describe("session-learned initial window", () => {
+  const aimdState = (window: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
+    const base = createOrchestrationState({ goal: "prior", work: Array.from({ length: 12 }, (_, i) => ({ prompt: `t${i}`, verify: "true" })), pacing: "aimd" }, owner, 100);
+    // A settled prior batch: running ones are excluded (R1).
+    return { ...base, status: "completed" as const, window: { ...base.window!, ...window }, updatedAt: 1_000, ...overrides };
+  };
+  const now = 1_000 + 60_000;
+
+  it("L1: with no earlier aimd batch there is nothing to learn", () => {
+    expect(learnWindowSeed([], undefined, now)).toBeUndefined();
+    expect(learnWindowSeed([{ id: "1", state: create(3) }], undefined, now)).toBeUndefined();
+  });
+
+  it("L2: after a loss, the next batch starts where the window settled and grows additively", () => {
+    const prior = aimdState({ cwnd: 4.5, ssthresh: 4, acks: 9, losses: 1 });
+    expect(learnWindowSeed([{ id: "7", state: prior }], undefined, now)).toEqual({ cwnd: 4, ssthresh: 4, source: "7" });
+    // Additive growth since the cut is evidence too: start from the regrown window.
+    const regrown = aimdState({ cwnd: 6.2, ssthresh: 4, acks: 14, losses: 1 });
+    expect(learnWindowSeed([{ id: "8", state: regrown }], undefined, now)).toEqual({ cwnd: 6, ssthresh: 6, source: "8" });
+    // A window still collapsed by a timeout starts no lower than the cut point.
+    const collapsed = aimdState({ cwnd: 1, ssthresh: 3, acks: 5, losses: 2 });
+    expect(learnWindowSeed([{ id: "9", state: collapsed }], undefined, now)).toEqual({ cwnd: 3, ssthresh: 3, source: "9" });
+  });
+
+  it("L3: without a loss the window was only a lower bound, so slow start is kept", () => {
+    expect(learnWindowSeed([{ id: "1", state: aimdState({ cwnd: 6.4, ssthresh: 12, acks: 8 }) }], undefined, now)).toEqual({ cwnd: 6, source: "1" });
+    expect(learnWindowSeed([{ id: "1", state: aimdState({ cwnd: 2, ssthresh: 12, acks: 1 }) }], undefined, now)).toEqual({ cwnd: 3, source: "1" });
+  });
+
+  it("L4: learns only from recent aimd batches for the same model with evidence, preferring the latest", () => {
+    const older = { id: "1", state: aimdState({ cwnd: 2, ssthresh: 2, acks: 3, losses: 1 }, { updatedAt: 900 }) };
+    const latest = { id: "2", state: aimdState({ cwnd: 5, ssthresh: 5, acks: 6, losses: 1 }) };
+    expect(learnWindowSeed([latest, older], undefined, now)?.source).toBe("2");
+    expect(learnWindowSeed([older, latest], undefined, now)?.source).toBe("2");
+    expect(learnWindowSeed([latest], "other-model", now)).toBeUndefined();
+    expect(learnWindowSeed([{ id: "3", state: aimdState({ cwnd: 5, ssthresh: 5, acks: 4, losses: 1 }, { model: "m" }) }], "m", now)?.source).toBe("3");
+    expect(learnWindowSeed([latest], undefined, 1_000 + LEARNED_WINDOW_TTL_MS + 1)).toBeUndefined();
+    expect(learnWindowSeed([{ id: "4", state: aimdState({}) }], undefined, now)).toBeUndefined();
+  });
+
+  it("R1: a batch still running is not a learning source; its window is in use on the same path", () => {
+    const running = aimdState({ cwnd: 8, ssthresh: 12, acks: 8 }, { status: "active" });
+    expect(learnWindowSeed([{ id: "1", state: running }], undefined, now)).toBeUndefined();
+    const busy = { ...aimdState({ cwnd: 5, ssthresh: 5, acks: 6, losses: 1 }, { status: "needs_attention" }) };
+    busy.work = busy.work.map((item, index) => index === 0 ? { ...item, status: "active" as const } : item);
+    expect(learnWindowSeed([{ id: "2", state: busy }], undefined, now)).toBeUndefined();
+    const settled = aimdState({ cwnd: 5, ssthresh: 5, acks: 6, losses: 1 }, { status: "completed" });
+    expect(learnWindowSeed([{ id: "3", state: settled }, { id: "1", state: running }], undefined, now)?.source).toBe("3");
+  });
+
+  it("R2: the input size limit is measured without the injected seed", () => {
+    const base = { goal: "g", work: [{ prompt: "a" }], pacing: "aimd" as const };
+    const overhead = Buffer.byteLength(JSON.stringify(base), "utf8");
+    const atLimit = { ...base, goal: "g".repeat(65_536 - overhead + 1) };
+    expect(Buffer.byteLength(JSON.stringify(atLimit), "utf8")).toBe(65_536);
+    expect(validateOrchestrationDefinition(atLimit)).toBeUndefined();
+    expect(validateOrchestrationDefinition({ ...atLimit, initialWindow: { cwnd: 4, ssthresh: 4 } })).toBeUndefined();
+  });
+
+  it("L5: a seed is clamped to the new batch's ceiling and ignored under fixed pacing", () => {
+    const unverified = createOrchestrationState({ goal: "next", work: Array.from({ length: 20 }, (_, i) => ({ prompt: `t${i}` })), pacing: "aimd", initialWindow: { cwnd: 12, ssthresh: 12 } }, owner, 100);
+    expect(unverified.window).toMatchObject({ cwnd: 8, ssthresh: 8 });
+    const small = createOrchestrationState({ goal: "next", work: [{ prompt: "a" }, { prompt: "b" }, { prompt: "c" }, { prompt: "d" }], pacing: "aimd", initialWindow: { cwnd: 2, ssthresh: 2 } }, owner, 100);
+    expect(small.window).toMatchObject({ cwnd: 2, ssthresh: 2 });
+    const slowStart = createOrchestrationState({ goal: "next", work: [{ prompt: "a" }, { prompt: "b" }, { prompt: "c" }, { prompt: "d" }], pacing: "aimd", initialWindow: { cwnd: 6 } }, owner, 100);
+    expect(slowStart.window).toMatchObject({ cwnd: 4, ssthresh: 4 });
+    expect(createOrchestrationState({ goal: "next", work: [{ prompt: "a" }], initialWindow: { cwnd: 2 } }, owner, 100).window).toBeUndefined();
+  });
+
+  it("L6: rejects a malformed seed", () => {
+    const definition = (initialWindow: unknown) => ({ goal: "g", work: [{ prompt: "a" }], pacing: "aimd" as const, initialWindow: initialWindow as never });
+    for (const bad of [{ cwnd: 0 }, { cwnd: 1.5 }, { cwnd: 33 }, { cwnd: 2, ssthresh: 0 }, { cwnd: 2, ssthresh: 2.5 }, { ssthresh: 2 }]) {
+      expect(validateOrchestrationDefinition(definition(bad))).toContain("initialWindow");
+    }
+    expect(validateOrchestrationDefinition(definition({ cwnd: 4, ssthresh: 4 }))).toBeUndefined();
+  });
+});
+
+describe("review regressions: congestion re-sends", () => {
+  it("D2: a deterministic spawn failure spends its attempt and the batch budget is untouched", () => {
+    let state = create(2, { maxAttempts: 1, pacing: "aimd" });
+    const requested = dispatch(state, "1", "dispatch-1", 110).state;
+    state = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 111, expected: expectedOf(requested), workId: "1", dispatchId: "dispatch-1", error: "Unknown agent type \"Explroe\"",
+    }).state;
+    expect(state.work[0]).toMatchObject({ status: "failed" });
+    expect(state.work[0]?.congestionRetries).toBeUndefined();
+  });
+
+  it("D4: success after a free congestion re-send is a first-attempt ACK and grows the window", () => {
+    let state = verifiedBatch(2, 1);
+    state = runToSettled(state, "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests", usage: { toolUses: 0 } });
+    const cut = state.window!;
+    state = runToSettled(state, "1", "2", 200, { result: "done", verify: pass });
+    expect(state.window!.acks).toBe(cut.acks + 1);
+    expect(state.window!.cwnd).toBeGreaterThan(cut.cwnd);
   });
 });

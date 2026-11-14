@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LoopScope } from "../src/runtime/scope.js";
 import { LoopStore } from "../src/store.js";
-import { registerSubagentOrchestrationTools } from "../src/tools/subagent-orchestration-tools.js";
+import { registerSubagentOrchestrationTools, resolveDefaultPacing } from "../src/tools/subagent-orchestration-tools.js";
+import type { OrchestrationPacing } from "../src/types.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
-function setup(options: { scope?: LoopScope; env?: string; protocol?: number } = {}) {
+function setup(options: { scope?: LoopScope; env?: string; protocol?: number; defaultPacing?: OrchestrationPacing } = {}) {
   const { pi, toolMap } = createMockPi();
   const store = new LoopStore();
   const probeSubagents = vi.fn(async () => options.protocol === undefined ? { version: 2 } : { version: options.protocol });
@@ -16,6 +17,7 @@ function setup(options: { scope?: LoopScope; env?: string; protocol?: number } =
     getActor: () => ({ sessionId: "session-a", runtimeId: "runtime-a", generation: 1 }),
     probeSubagents,
     updateWidget: vi.fn(),
+    ...(options.defaultPacing ? { defaultPacing: options.defaultPacing } : {}),
   });
   const result = async (name: string, args: unknown) => toolMap.get(name)!.execute!("call", args);
   const text = async (name: string, args: unknown) => (await result(name, args)).content[0].text as string;
@@ -112,7 +114,7 @@ describe("subagent orchestration tools", () => {
     expect(h.store.list()).toHaveLength(0);
   });
 
-  it("creates an opt-in aimd batch with per-item verifiers", async () => {
+  it("creates an explicit aimd batch with per-item verifiers", async () => {
     const out = await h.text("OrchestrationCreate", {
       goal: "Implement helpers",
       work: [{ prompt: "Add sum()", verify: "node --test sum.test.js" }, { prompt: "Add mul()", verify: " npm test " }],
@@ -120,15 +122,74 @@ describe("subagent orchestration tools", () => {
       pacing: "aimd",
     });
 
-    expect(out).toContain("2 work items · aimd window 1-2");
+    expect(out).toContain("2 work items · aimd window 2-2");
     expect(h.store.get("1")?.orchestration).toMatchObject({
       concurrency: 2,
-      window: { mode: "aimd", cwnd: 1, ssthresh: 2 },
+      window: { mode: "aimd", cwnd: 2, ssthresh: 2 },
       work: [{ verify: "node --test sum.test.js" }, { verify: "npm test" }],
     });
     expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }], pacing: "cubic" })).toContain("pacing must be fixed or aimd");
     expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect", verify: " " }] })).toContain("verify must contain");
     expect(h.store.list()).toHaveLength(1);
+  });
+
+  describe("default pacing", () => {
+    it("paces a batch with aimd when neither pacing nor concurrency is given", async () => {
+      h = setup();
+      const out = await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "A" }, { prompt: "B" }, { prompt: "C" }, { prompt: "D" }] });
+      expect(out).toContain("4 work items · aimd window 3-4");
+      expect(h.store.get("1")?.orchestration).toMatchObject({ concurrency: 4, window: { mode: "aimd", cwnd: 3, ssthresh: 4 } });
+    });
+
+    it("reports the stored aimd window, capped at eight for unverified work", async () => {
+      h = setup();
+      const work = Array.from({ length: 20 }, (_, index) => ({ prompt: `task ${index + 1}` }));
+      expect(await h.text("OrchestrationCreate", { goal: "Review", work })).toContain("20 work items · aimd window 3-8");
+      const verified = work.map((item) => ({ ...item, verify: "npm test" }));
+      expect(await h.text("OrchestrationCreate", { goal: "Review", work: verified })).toContain("20 work items · aimd window 3-20");
+    });
+
+    it("L7: seeds a new aimd batch from the window the session's last batch learned", async () => {
+      h = setup();
+      const work = [{ prompt: "A" }, { prompt: "B" }, { prompt: "C" }, { prompt: "D" }];
+      await h.text("OrchestrationCreate", { goal: "First", work });
+      const expected = () => {
+        const state = h.store.get("1")!.orchestration!;
+        return { revision: state.revision, ownerRuntimeId: "runtime-a", generation: 1 };
+      };
+      h.store.mutateOrchestration("1", { type: "dispatch_requested", at: Date.now(), expected: expected(), workId: "1", dispatchId: "d1" });
+      h.store.mutateOrchestration("1", { type: "dispatch_bound", at: Date.now(), expected: expected(), workId: "1", dispatchId: "d1", agentId: "a1" });
+      h.store.mutateOrchestration("1", { type: "dispatch_settled", at: Date.now(), expected: expected(), agentId: "a1", outcome: "failed", error: "503 overloaded", usage: { toolUses: 2 } });
+      expect(h.store.get("1")?.orchestration?.window).toMatchObject({ cwnd: 1, ssthresh: 1 });
+      const out = await h.text("OrchestrationCreate", { goal: "Second", work });
+      expect(out).toContain("aimd window 1-4 (learned from orchestration #1)");
+      expect(h.store.get("2")?.orchestration?.window).toMatchObject({ cwnd: 1, ssthresh: 1 });
+    });
+
+    it("treats an explicit concurrency as a request for fixed pacing", async () => {
+      h = setup();
+      await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "A" }], concurrency: 2 });
+      const stored = h.store.get("1")?.orchestration;
+      expect(stored).toMatchObject({ concurrency: 2 });
+      expect(stored?.window).toBeUndefined();
+    });
+
+    it("lets explicit pacing win over the configured default", async () => {
+      h = setup({ defaultPacing: "fixed" });
+      await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "A" }] });
+      expect(h.store.get("1")?.orchestration?.window).toBeUndefined();
+      expect(h.store.get("1")?.orchestration?.concurrency).toBe(3);
+      await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "A" }], pacing: "aimd" });
+      expect(h.store.get("2")?.orchestration?.window?.mode).toBe("aimd");
+    });
+
+    it("resolves PI_LOOP_PACING and rejects unknown values", () => {
+      expect(resolveDefaultPacing(undefined)).toBe("aimd");
+      expect(resolveDefaultPacing("")).toBe("aimd");
+      expect(resolveDefaultPacing(" Fixed ")).toBe("fixed");
+      expect(resolveDefaultPacing("aimd")).toBe("aimd");
+      expect(() => resolveDefaultPacing("cubic")).toThrow("Invalid PI_LOOP_PACING");
+    });
   });
 
   it("ignores concurrency under aimd instead of rejecting values above the fixed-pacing limit", async () => {

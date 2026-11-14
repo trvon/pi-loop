@@ -41,7 +41,7 @@ import { CronScheduler } from "./scheduler.js";
 import { LoopStore } from "./store.js";
 import { registerLoopTools } from "./tools/loop-tools.js";
 import { registerMonitorTools } from "./tools/monitor-tools.js";
-import { registerSubagentOrchestrationTools } from "./tools/subagent-orchestration-tools.js";
+import { registerSubagentOrchestrationTools, resolveDefaultPacing } from "./tools/subagent-orchestration-tools.js";
 import { createToolContextRegistration } from "./tools/tool-context.js";
 import { registerWorkflowTools } from "./tools/workflow-tools.js";
 import { TriggerSystem } from "./trigger-system.js";
@@ -70,6 +70,7 @@ export default function (pi: ExtensionAPI) {
 
   const getScopeOptions = () => ({ piLoopEnv, loopScope });
   const defaultLoopExpiryMs = resolveDefaultLoopExpiryMs(process.env.PI_LOOP_EXPIRES_IN);
+  const defaultOrchestrationPacing = resolveDefaultPacing(process.env.PI_LOOP_PACING);
 
   let store = new LoopStore(resolveLoopStorePath(getScopeOptions()), defaultLoopExpiryMs);
   const memoryLoopStores = new Map<string, LoopStore>();
@@ -569,6 +570,7 @@ export default function (pi: ExtensionAPI) {
     getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId, generation: sessionGeneration } : undefined,
     probeSubagents: () => rpcProbe(pi.events, "subagents:rpc:ping", 1_000),
     updateWidget: () => widget.update(),
+    defaultPacing: defaultOrchestrationPacing,
   });
 
   registerWorkflowTools({
