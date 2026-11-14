@@ -151,6 +151,41 @@ describe("orchestration presentation", () => {
   });
 });
 
+describe("pacing labels", () => {
+  function pacedEntry() {
+    const store = new LoopStore();
+    return store.create({ type: "dynamic" }, "Paced batch", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "session", runtimeId: "runtime", generation: 1 },
+        definition: { goal: "Paced batch", work: [{ prompt: "a" }, { prompt: "b" }, { prompt: "c" }, { prompt: "d" }], pacing: "aimd", maxAttempts: 2 },
+      },
+    });
+  }
+
+  it("shows ssthresh once a loss has set it below the ceiling", () => {
+    const entry = pacedEntry();
+    entry.orchestration!.window = { ...entry.orchestration!.window!, cwnd: 2, ssthresh: 2, losses: 1 };
+    expect(orchestrationControllerText(entry)).toContain("Limits: aimd window=2/4 ssthresh=2 losses=1 taskLosses=0 maxAttempts=2");
+  });
+
+  it("omits ssthresh while it is still the ceiling", () => {
+    expect(orchestrationControllerText(pacedEntry())).not.toContain("ssthresh=");
+  });
+
+  it("labels fixed pacing as fixed", () => {
+    const store = new LoopStore();
+    const entry = store.create({ type: "dynamic" }, "Fixed batch", {
+      recurring: true,
+      orchestration: {
+        owner: { sessionId: "session", runtimeId: "runtime", generation: 1 },
+        definition: { goal: "Fixed batch", work: [{ prompt: "a" }, { prompt: "b" }], concurrency: 2, maxAttempts: 1 },
+      },
+    });
+    expect(orchestrationControllerText(entry)).toContain("Limits: fixed concurrency=2 maxAttempts=1");
+  });
+});
+
 describe("review regressions: attempts label", () => {
   it("D3: counts charged attempts and reports free congestion re-sends separately", () => {
     const entry = createEntry();
