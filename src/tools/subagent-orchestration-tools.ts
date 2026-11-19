@@ -184,7 +184,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       const stored = entry.orchestration!;
       const pacingLabel = stored.window
         ? `aimd window ${Math.floor(stored.window.cwnd)}-${stored.concurrency}${seed ? ` (learned from orchestration #${seed.source})` : ""}`
-        : `concurrency ${stored.concurrency}`;
+        : `fixed concurrency ${stored.concurrency}`;
       const message = [
         `Orchestration #${entry.id} created`,
         `${definition.work.length} work items · ${pacingLabel}`,

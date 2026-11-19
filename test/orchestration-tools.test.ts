@@ -82,7 +82,7 @@ describe("subagent orchestration tools", () => {
     const out = created.content[0].text as string;
 
     expect(out).toContain("Orchestration #1 created");
-    expect(out).toContain("2 work items · concurrency 2");
+    expect(out).toContain("2 work items · fixed concurrency 2");
     expect(created.details).toMatchObject({
       kind: "orchestration",
       tone: "success",
