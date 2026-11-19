@@ -159,6 +159,9 @@ try {
   const launched = await call("OrchestrationCreate", { goal: "Live v1 launch", work: [{ prompt: "Reply with the single word ok. Do not use any tools." }], ...(paid ? { model: workerModel } : {}) });
   report.create = launched;
   check(launched.includes("created"), `launch batch was not created: ${launched}`);
+  // The unknown-agent batch said nothing about load, so this one must not start from its window.
+  check(!launched.includes("learned from"), `a refused launch seeded the next batch: ${launched}`);
+  check(unknownItem.dispatches?.length === 1, "a refused launch was re-sent");
   const item = await until(() => {
     const work = loops().find((entry) => entry.orchestration?.goal === "Live v1 launch")?.orchestration?.work?.[0];
     return work && work.status !== "pending" && work.status !== "active" ? work : undefined;

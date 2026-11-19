@@ -703,6 +703,31 @@ describe("review regressions: congestion re-sends", () => {
     expect(state.work[0]?.congestionRetries).toBeUndefined();
   });
 
+  it("D5: a launch the provider refused for good is the item's failure, not the path's", () => {
+    let state = create(4, { maxAttempts: 2, pacing: "aimd" });
+    state = runToSettled(state, "1", "1", 110, { result: "ok" });
+    state = runToSettled(state, "2", "2", 120, { result: "ok" });
+    const grown = state.window!;
+    const requested = dispatch(state, "3", "dispatch-3", 130).state;
+    const refused = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 131, expected: expectedOf(requested), workId: "3", dispatchId: "dispatch-3", error: "Unknown agent: Explroe", permanent: true,
+    }).state;
+    expect(refused.window).toMatchObject({ cwnd: grown.cwnd, ssthresh: grown.ssthresh, losses: 0, taskLosses: 1 });
+    expect(refused.window!.recoverAt).toBeUndefined();
+    expect(refused.work[2]?.congestionRetries).toBeUndefined();
+    // It still spends the attempt, so the item is retried within its budget and then fails.
+    expect(refused.work[2]).toMatchObject({ status: "pending", attemptCount: 1 });
+    // A batch with only this kind of failure teaches later batches nothing about the path.
+    expect(learnWindowSeed([{ id: "9", state: { ...create(1, { pacing: "aimd" }), status: "needs_attention", updatedAt: 200, window: { ...createOrchestrationState({ goal: "g", work: [{ prompt: "p" }], pacing: "aimd" }, owner, 1).window!, taskLosses: 1 } } }], undefined, 300)).toBeUndefined();
+
+    // Control: the same failure without the provider's verdict is still an admission rejection.
+    const ambiguous = applyOrchestrationEvent(requested, {
+      type: "dispatch_spawn_failed", at: 131, expected: expectedOf(requested), workId: "3", dispatchId: "dispatch-3", error: "spawn rejected",
+    }).state;
+    expect(ambiguous.window!.losses).toBe(1);
+    expect(ambiguous.window!.cwnd).toBeLessThan(grown.cwnd);
+  });
+
   it("D4: success after a free congestion re-send is a first-attempt ACK and grows the window", () => {
     let state = verifiedBatch(2, 1);
     state = runToSettled(state, "1", "1", 110, { outcome: "failed", error: "429 Too Many Requests", usage: { toolUses: 0 } });

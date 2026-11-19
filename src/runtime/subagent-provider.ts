@@ -30,6 +30,13 @@ export interface SubagentSpawnRequest {
 /** The provider replied, but not with a worker id: whether a worker started is unknown. */
 export class AmbiguousSpawnReplyError extends Error {}
 
+/**
+ * The provider refused the launch for a reason that will recur on every
+ * attempt (an unknown agent, invalid parameters). It says nothing about load,
+ * so it must not be read as congestion.
+ */
+export class PermanentLaunchError extends RpcError {}
+
 export interface SubagentProvider {
   readonly name: string;
   /** Agent type used when a work item names none. */
@@ -186,8 +193,11 @@ function callV1(events: RpcEventBus, method: string, params: Record<string, unkn
         finish(() => resolve(reply.data));
         return;
       }
-      const message = text(record(reply?.error)?.message) ?? `${channel} replied with a malformed envelope`;
-      finish(() => reject(new RpcError(channel, message)));
+      const error = record(reply?.error);
+      const message = text(error?.message) ?? `${channel} replied with a malformed envelope`;
+      // The provider validates before it starts anything: a parameter error or an unknown agent recurs.
+      const permanent = method === "spawn" && (error?.code === "invalid_params" || /^Unknown agent\b/.test(message));
+      finish(() => reject(permanent ? new PermanentLaunchError(channel, message) : new RpcError(channel, message)));
     });
     try {
       events.emit(V1.request, { version: V1_PROTOCOL_VERSION, requestId, method, params });

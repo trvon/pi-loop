@@ -107,7 +107,7 @@ Wake delivery is idle-driven. A due timer or event mutates loop state, emits `lo
 | `stopped` / interrupted (`paused`) run | uncertain | uncertain |
 | Consume | supported | unsupported; results stay provider-owned |
 
-Under RPC v1 the window is limited only by errors, timeouts and its ceiling. Its completion event is delivered at least once and may repeat for a run that pauses and later stops; a repeat for an already settled dispatch is ignored. It does not discover TaskStore records, execute workflow phases, or use the generic scheduler.
+Under RPC v1 the window is limited only by errors, timeouts and its ceiling. A launch that provider refuses for good (`invalid_params`, or an `Unknown agent` error) is counted as the item's failure: it spends the attempt, never shrinks the window, and never seeds a later batch. Any other proved launch failure remains an admission rejection. Its completion event is delivered at least once and may repeat for a run that pauses and later stops; a repeat for an already settled dispatch is ignored. It does not discover TaskStore records, execute workflow phases, or use the generic scheduler.
 
 The parent `agent_end`, existing 30-second heartbeat, session recovery, and direct `subagents:started|completed|failed` events drive reconciliation. Before each spawn, LoopStore records a generated dispatch ID and consumes local capacity. Spawn forces background execution, disables inherited extension tools, and leaves global queue/concurrency authority with `pi-subagents`. `spawning`, `queued`, and `running` all count against the local limit.
 

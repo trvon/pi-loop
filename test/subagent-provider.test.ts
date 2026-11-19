@@ -4,6 +4,7 @@ import {
   createSubagentProviderSelector,
   createSubagentsV1Provider,
   createSubagentsV2Provider,
+  PermanentLaunchError,
   type SubagentLifecycleEvent,
 } from "../src/runtime/subagent-provider.js";
 
@@ -104,6 +105,32 @@ describe("pi-subagents RPC v1 provider", () => {
     const timedOut = await pending;
     expect(timedOut).toBeInstanceOf(RpcError);
     expect(timedOut.timedOut).toBe(true);
+  });
+
+  it("A8: tells a launch refused for good from one refused for now", async () => {
+    const refuse = async (error: { code: string; message: string }) => {
+      const { bus } = createBus();
+      serveV1(bus, () => ({ error }));
+      return createSubagentsV1Provider(bus).spawn({ agentType: "x", prompt: "p", description: "d" }, 5_000).catch((caught) => caught);
+    };
+    for (const error of [
+      { code: "execution_failed", message: "Unknown agent: Explroe. Did you mean 'explore'?" },
+      { code: "invalid_params", message: "RPC spawn only supports detached async launches" },
+    ]) {
+      const caught = await refuse(error);
+      expect(caught).toBeInstanceOf(PermanentLaunchError);
+      expect(caught).toBeInstanceOf(RpcError);
+      expect(caught.message).toBe(error.message);
+    }
+    for (const error of [
+      { code: "execution_failed", message: "Active async run capacity exhausted: 4/4 used." },
+      { code: "execution_failed", message: "Failed to start async run 'r1': spawn EAGAIN" },
+      { code: "no_active_session", message: "No active extension context for subagent RPC." },
+    ]) {
+      const caught = await refuse(error);
+      expect(caught).toBeInstanceOf(RpcError);
+      expect(caught).not.toBeInstanceOf(PermanentLaunchError);
+    }
   });
 
   it("A4: maps run lifecycle events to worker outcomes", () => {

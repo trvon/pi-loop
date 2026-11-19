@@ -153,7 +153,7 @@ export type OrchestrationEvent =
   | { type: "dispatch_settled"; at: number; expected: ExpectedOrchestration; agentId: string; outcome: "completed" | "failed"; result?: string; error?: string; usage?: OrchestrationUsage; verify?: OrchestrationVerification }
   | { type: "dispatch_awaiting_verify"; at: number; expected: ExpectedOrchestration; agentId: string; result?: string; usage?: OrchestrationUsage }
   | { type: "dispatch_verified"; at: number; expected: ExpectedOrchestration; agentId: string; verify: OrchestrationVerification }
-  | { type: "dispatch_spawn_failed"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
+  | { type: "dispatch_spawn_failed"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string; /** The provider's verdict that the launch can never succeed as asked. */ permanent?: boolean }
   | { type: "dispatch_interrupted"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
   | { type: "dispatch_uncertain"; at: number; expected: ExpectedOrchestration; workId: string; dispatchId: string; error: string }
   | { type: "consume_recorded"; at: number; expected: ExpectedOrchestration; agentId: string; consumed: boolean }
@@ -600,11 +600,17 @@ export function applyOrchestrationEvent(
     item.status = uncertain ? "uncertain" : "failed";
     // Uncertain termination already blocks every dispatch; a proved spawn failure is path congestion.
     if (!uncertain) {
-      recordAckSignal(next, "congestion", dispatch, event.at, true);
-      // A proved spawn failure never started a worker, but only congestion is
-      // worth re-sending: pi-subagents' own spawn errors (bad cwd, unknown type,
-      // nested limit) recur on every attempt.
-      if (isCongestionError(event.error)) forgiveCongestion(item, next, "congestion", 0);
+      if (event.type === "dispatch_spawn_failed" && event.permanent) {
+        // A launch refused for good (unknown agent, bad parameters) is the item's own failure:
+        // it is counted, and the window keeps what it learned about the path.
+        recordAckSignal(next, "task_loss", dispatch, event.at);
+      } else {
+        recordAckSignal(next, "congestion", dispatch, event.at, true);
+        // A proved spawn failure never started a worker, but only congestion is
+        // worth re-sending: pi-subagents' own spawn errors (bad cwd, unknown type,
+        // nested limit) recur on every attempt.
+        if (isCongestionError(event.error)) forgiveCongestion(item, next, "congestion", 0);
+      }
       settleFailure(item, next);
     }
     refreshControllerStatus(next, event.at);

@@ -860,6 +860,32 @@ describe("subagent orchestration runtime wiring", () => {
       }
     });
 
+    it("I3: an unknown agent fails its item without shrinking the window", async () => {
+      vi.useFakeTimers();
+      try {
+        const { pi, toolMap, emitExtension } = createMockPi();
+        pi.events.on("subagents:rpc:v1:request", (raw: any) => {
+          queueMicrotask(() => pi.events.emit(`subagents:rpc:v1:reply:${raw.requestId}`, raw.method === "ping"
+            ? { version: 1, success: true, data: ping }
+            : { version: 1, success: false, error: { code: "execution_failed", message: "Unknown agent: Explroe" } }));
+        });
+        extension(pi as any);
+        const ctx = createCtx({ sessionId });
+        await emitExtension("session_start", start, ctx);
+        await vi.advanceTimersByTimeAsync(1_100);
+        await emitExtension("turn_start", null, ctx);
+        await toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Typo", agentType: "Explroe", work: [{ prompt: "A" }, { prompt: "B" }, { prompt: "C" }, { prompt: "D" }] });
+        await emitExtension("agent_end", null, ctx);
+        await vi.advanceTimersByTimeAsync(10);
+
+        const inspected = (await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1" })).content[0].text as string;
+        expect(inspected).toContain("needs attention");
+        expect(inspected).toMatch(/aimd window=3\/4 losses=0 taskLosses=\d/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("I2: a v1 run reported stopped is kept uncertain, never retried", async () => {
       vi.useFakeTimers();
       try {

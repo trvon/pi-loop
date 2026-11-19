@@ -14,7 +14,7 @@ import type {
   OrchestrationWorkItem,
 } from "../types.js";
 import type { LoopScope } from "./scope.js";
-import { AmbiguousSpawnReplyError, createSubagentsV2Provider, type SubagentLifecycleEvent, type SubagentProvider } from "./subagent-provider.js";
+import { AmbiguousSpawnReplyError, createSubagentsV2Provider, PermanentLaunchError, type SubagentLifecycleEvent, type SubagentProvider } from "./subagent-provider.js";
 import { runVerifyCommand, type VerifyRunner } from "./verify-runner.js";
 
 const STOP_TIMEOUT_MS = 1_000;
@@ -530,6 +530,7 @@ export function createSubagentOrchestrationRuntime(
         workId: item.id,
         dispatchId,
         error: spawnedId === undefined ? message : `Spawn reply could not be recorded: ${message}`,
+        ...(!uncertain && error instanceof PermanentLaunchError ? { permanent: true } : {}),
       });
       // Best effort: the dispatch is already uncertain, so a failed stop only leaves it for review.
       if (spawnedId !== undefined) await cleanupReply(spawnedId).catch(() => undefined);
