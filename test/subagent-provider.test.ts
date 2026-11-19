@@ -211,7 +211,7 @@ describe("pi-subagents RPC v1 provider", () => {
 
   it("A6: declares what the provider cannot do", () => {
     const v1 = createSubagentsV1Provider(createBus().bus);
-    expect(v1).toMatchObject({ defaultAgentType: "worker", supportsMaxTurns: false });
+    expect(v1).toMatchObject({ defaultAgentType: "delegate", supportsMaxTurns: false });
     expect(v1.spawnTimeoutMs).toBeGreaterThan(5_000);
     const { bus } = createBus();
     const v2 = createSubagentsV2Provider(bus, async () => undefined);
@@ -247,7 +247,7 @@ describe("provider selection", () => {
     expect(await probing).toBe(true);
     expect(selector.isAvailable()).toBe(true);
     expect(selector.name).toContain("RPC v1");
-    expect(selector).toMatchObject({ defaultAgentType: "worker", supportsMaxTurns: false });
+    expect(selector).toMatchObject({ defaultAgentType: "delegate", supportsMaxTurns: false });
     expect(selector.workerId(await selector.spawn({ agentType: "worker", prompt: "x", description: "d" }, 5_000))).toBe("run-1");
     expect(emitted.some((event) => event.name === "subagents:rpc:spawn")).toBe(false);
   });

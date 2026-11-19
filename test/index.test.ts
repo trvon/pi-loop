@@ -841,7 +841,9 @@ describe("subagent orchestration runtime wiring", () => {
         await vi.advanceTimersByTimeAsync(10);
 
         const spawns = requests.filter((request) => request.method === "spawn");
-        expect(spawns.map((request) => request.params.agent)).toEqual(["worker", "reviewer"]);
+        expect(spawns.map((request) => request.params.agent)).toEqual(["delegate", "reviewer"]);
+        // The schema the model sees names the default this provider will use.
+        expect((toolMap.get("OrchestrationCreate")!.parameters as any).properties.agentType.description).toContain("default: delegate");
         expect(spawns.every((request) => request.params.context === "fresh" && !("maxTurns" in request.params))).toBe(true);
         expect(emittedEvents.filter((event) => event.name === "subagents:rpc:spawn")).toHaveLength(0);
 

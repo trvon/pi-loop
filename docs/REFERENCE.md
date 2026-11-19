@@ -98,7 +98,7 @@ Wake delivery is idle-driven. A due timer or event mutates loop state, emits `lo
 
 | | `@tintinweb/pi-subagents` (protocol v2) | npm `pi-subagents` (RPC v1) |
 |---|---|---|
-| Default agent type | `general-purpose` | `worker` |
+| Default agent type | `general-purpose` | `delegate` (its generic agent; pass `agentType: "worker"` for its single-writer implementer) |
 | `maxTurns` | forwarded | rejected at creation: the provider has no turn limit, only its own run timeout |
 | Worker id | agent id | run id of one detached async run per work item |
 | Launch reply timeout | 5 s | 60 s (the reply waits for the detached runner's startup) |

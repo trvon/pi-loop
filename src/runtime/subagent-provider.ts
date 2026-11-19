@@ -238,14 +238,16 @@ function normalizeV1Completion(raw: unknown): SubagentLifecycleEvent | undefined
 
 /**
  * The unscoped npm `pi-subagents` package, RPC v1. It has no per-worker turn
- * limit, no generic agent type, no consume method, and reports no tool-use
+ * limit, no `general-purpose` agent type, no consume method, and reports no tool-use
  * count, so turn bounds are rejected and delay evidence stays off. Each
  * launch is its own detached run; the run id is the worker id.
  */
 export function createSubagentsV1Provider(events: RpcEventBus): SubagentProvider {
   return {
     name: "pi-subagents (RPC v1)",
-    defaultAgentType: "worker",
+    // The provider's generic agent. Its `worker` is a single-writer implementer with forced
+    // high thinking and default plan reads, which does not fit many parallel items.
+    defaultAgentType: "delegate",
     supportsMaxTurns: false,
     // The reply waits for the detached runner's startup handshake.
     spawnTimeoutMs: 60_000,

@@ -112,6 +112,8 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
   const registerTool: ExtensionAPI["registerTool"] = options.registerTool ?? (definition => options.pi.registerTool(definition));
   const { getStore, getScope, getPiLoopEnv, getActor, probeSubagents, updateWidget } = options;
   const defaultPacing = options.defaultPacing ?? "aimd";
+  // Registration follows provider selection, so the schema can name the default the provider will use.
+  const defaultAgentType = options.getProvider?.()?.defaultAgentType ?? "general-purpose";
 
   registerTool({
     name: "OrchestrationCreate",
@@ -128,7 +130,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         agentType: Type.Optional(Type.String({ description: "Per-item subagent type override" })),
         verify: Type.Optional(Type.String({ description: "Shell, exit 0=ok" })),
       }), { minItems: 1, maxItems: MAX_WORK_ITEMS }),
-      agentType: Type.Optional(Type.String({ description: "Default subagent type (default: general-purpose)" })),
+      agentType: Type.Optional(Type.String({ description: `Default subagent type (default: ${defaultAgentType})` })),
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
       maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
       concurrency: Type.Optional(Type.Integer({ description: "Sets fixed pacing: 1-8 workers", minimum: 1 })),
