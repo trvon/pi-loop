@@ -24,6 +24,10 @@ function setup(options: { scope?: LoopScope; env?: string; protocol?: number; de
   return { store, toolMap, probeSubagents, result, text };
 }
 
+function setupFields() {
+  return Object.keys((setup().toolMap.get("OrchestrationCreate")!.parameters as { properties: Record<string, unknown> }).properties);
+}
+
 describe("subagent orchestration tools", () => {
   let h: ReturnType<typeof setup>;
   beforeEach(() => {
@@ -227,7 +231,8 @@ describe("subagent orchestration tools", () => {
         updateWidget: vi.fn(),
       });
       const text = async (args: unknown) => (await toolMap.get("OrchestrationCreate")!.execute!("call", args)).content[0].text as string;
-      return { store, text };
+      const fields = Object.keys((toolMap.get("OrchestrationCreate")!.parameters as { properties: Record<string, unknown> }).properties);
+      return { store, text, fields };
     }
     const v1 = { name: "pi-subagents (RPC v1)", defaultAgentType: "worker", supportsMaxTurns: false };
 
@@ -258,6 +263,27 @@ describe("subagent orchestration tools", () => {
       const h2 = withProvider({ name: "@tintinweb/pi-subagents (protocol v2)", defaultAgentType: "general-purpose", supportsMaxTurns: true });
       expect(await h2.text({ goal: "Review", work: [{ prompt: "A" }], maxTurns: 20 })).toContain("Orchestration #1 created");
       expect(h2.store.list()[0]?.orchestration?.maxTurns).toBe(20);
+    });
+
+    it("T6: the schema offers maxTurns only when the provider has a turn limit", () => {
+      expect(withProvider(v1).fields).not.toContain("maxTurns");
+      // Controls: a provider with turn limits, and no declared traits, keep the field; nothing else is dropped.
+      const v2 = withProvider({ name: "@tintinweb/pi-subagents (protocol v2)", defaultAgentType: "general-purpose", supportsMaxTurns: true });
+      expect(v2.fields).toContain("maxTurns");
+      expect(setupFields()).toContain("maxTurns");
+      expect(v2.fields.filter((field) => field !== "maxTurns")).toEqual(withProvider(v1).fields);
+    });
+
+    it("T7: a multi-item batch held to one worker says it is serial and how to lift that", async () => {
+      const serial = "Serial: one worker at a time. Omit `concurrency` if the items can safely run together.";
+      const h1 = withProvider(v1);
+      expect(await h1.text({ goal: "Review", concurrency: 1, work: [{ prompt: "A" }, { prompt: "B" }] })).toContain(serial);
+      // Controls: one item, more than one worker, and adaptive pacing are not serial batches.
+      expect(await withProvider(v1).text({ goal: "Review", concurrency: 1, work: [{ prompt: "A" }] })).not.toContain("Serial");
+      expect(await withProvider(v1).text({ goal: "Review", concurrency: 2, work: [{ prompt: "A" }, { prompt: "B" }] })).not.toContain("Serial");
+      expect(await withProvider(v1).text({ goal: "Review", work: [{ prompt: "A" }, { prompt: "B" }] })).not.toContain("Serial");
+      // The stored batch is unchanged by the note.
+      expect(h1.store.list()[0]?.orchestration?.concurrency).toBe(1);
     });
 
     it("T5: rejects malformed input and a failing probe with a specific message, without persisting", async () => {

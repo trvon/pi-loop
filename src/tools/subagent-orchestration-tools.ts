@@ -114,6 +114,9 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
   const defaultPacing = options.defaultPacing ?? "aimd";
   // Registration follows provider selection, so the schema can name the default the provider will use.
   const defaultAgentType = options.getProvider?.()?.defaultAgentType ?? "general-purpose";
+  // An offered field gets used: a provider with no turn limit would cost the caller a rejected call.
+  const offersMaxTurns = options.getProvider?.()?.supportsMaxTurns ?? true;
+  const maxTurnsSchema = Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS }));
 
   registerTool({
     name: "OrchestrationCreate",
@@ -136,7 +139,8 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       }), { minItems: 1, maxItems: MAX_WORK_ITEMS }),
       agentType: Type.Optional(Type.String({ description: `Default subagent type (default: ${defaultAgentType})` })),
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
-      maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
+      // Typed as always present so the executor's parameter type does not depend on the provider.
+      ...((offersMaxTurns ? { maxTurns: maxTurnsSchema } : {}) as { maxTurns: typeof maxTurnsSchema }),
       concurrency: Type.Optional(Type.Integer({ description: "Sets fixed pacing: 1-8 workers", minimum: 1 })),
       pacing: Type.Optional(Type.String({ description: `Omitted: ${defaultPacing} (PI_LOOP_PACING)`, enum: ["fixed", "aimd"] })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
@@ -198,10 +202,15 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       const unverifiedCap = stored.window !== undefined && definition.work.length > stored.concurrency
         ? [`Window capped at ${stored.concurrency}: not every item declares verify. A batch whose items all pass a verify command (exit 0 = done) may grow to its size.`]
         : [];
+      // A one-worker cap on several items is easy to set by habit; say what it costs where the caller can undo it.
+      const serial = stored.window === undefined && stored.concurrency === 1 && definition.work.length > 1
+        ? ["Serial: one worker at a time. Omit `concurrency` if the items can safely run together."]
+        : [];
       const message = [
         `Orchestration #${entry.id} created`,
         `${definition.work.length} work items · ${pacingLabel}`,
         ...unverifiedCap,
+        ...serial,
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {
