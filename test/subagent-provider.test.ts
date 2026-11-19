@@ -171,6 +171,17 @@ describe("pi-subagents RPC v1 provider", () => {
     expect(seen).toHaveLength(7);
   });
 
+  it("A9: a run flagged stopped is never a plain failure, whatever its state says", () => {
+    const { bus } = createBus();
+    const seen: SubagentLifecycleEvent[] = [];
+    createSubagentsV1Provider(bus).onLifecycle((event) => seen.push(event));
+    bus.emit("subagent:async-complete", { id: "run-1", success: false, state: "failed", stopped: true, error: "stopped by request" });
+    // Control: a failure with no such flag is still a failure that may be retried.
+    bus.emit("subagent:async-complete", { id: "run-4", success: false, state: "failed", stopped: false, error: "TypeError: x" });
+    expect(seen.map((event) => [event.id, event.status])).toEqual([["run-1", "stopped"], ["run-4", "failed"]]);
+    expect(seen[1]!.error).toBe("TypeError: x");
+  });
+
   it("A5: stops by run id, cannot consume, and reports readiness", async () => {
     const { bus, emitted } = createBus();
     serveV1(bus, (method) => method === "stop" ? { data: { runId: "run-1", state: "stopping" } } : undefined);
@@ -281,21 +292,33 @@ describe("provider selection", () => {
     expect(selector.name).toContain("RPC v1");
   });
 
-  it("S5: forwards lifecycle and readiness from every provider", () => {
-    const { bus, selector } = both({});
+  it("S5: forwards lifecycle only from the selected provider, and readiness from every candidate", async () => {
+    const { bus, selector } = both({ v1: true });
     const seen: SubagentLifecycleEvent[] = [];
     const ready = vi.fn();
     const off = selector.onLifecycle((event) => seen.push(event));
     const offReady = selector.onReady(ready);
+
+    // Before selection nothing was launched here, so no provider's event belongs to this runtime.
+    bus.emit("subagents:started", { id: "agent-0" });
+    bus.emit("subagent:async-started", { id: "run-0" });
+    expect(seen).toEqual([]);
+
+    const probing = selector.probe(1_000);
+    await vi.advanceTimersByTimeAsync(1_001);
+    await probing;
+    // An installed but unselected provider cannot settle or crowd out this runtime's dispatches.
     bus.emit("subagents:started", { id: "agent-1" });
+    bus.emit("subagents:completed", { id: "agent-1", result: "foreign" });
     bus.emit("subagent:async-started", { id: "run-1" });
+    expect(seen.map((event) => event.id)).toEqual(["run-1"]);
+
     bus.emit("subagents:ready", {});
     bus.emit("subagents:rpc:v1:ready", {});
-    expect(seen.map((event) => event.id)).toEqual(["agent-1", "run-1"]);
     expect(ready).toHaveBeenCalledTimes(2);
     off();
     offReady();
-    bus.emit("subagents:started", { id: "agent-2" });
-    expect(seen).toHaveLength(2);
+    bus.emit("subagent:async-started", { id: "run-2" });
+    expect(seen).toHaveLength(1);
   });
 });

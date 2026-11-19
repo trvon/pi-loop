@@ -227,7 +227,8 @@ function normalizeV1Completion(raw: unknown): SubagentLifecycleEvent | undefined
     return defined({ kind: "completed" as const, id, result: text(first?.output) ?? text(data.summary), status: state, ...usage });
   }
   // A stopped or interrupted run reports no proof the worker ended; the runtime keeps both as unconfirmed.
-  if (state === "stopped") return defined({ kind: "failed" as const, id, status: "stopped", ...usage });
+  // The provider also sets a `stopped` flag; honour it even if the state reads as a plain failure.
+  if (state === "stopped" || data.stopped === true) return defined({ kind: "failed" as const, id, status: "stopped", ...usage });
   if (state === "paused") return defined({ kind: "failed" as const, id, status: "aborted", ...usage });
   const reported = text(first?.error) ?? text(data.error);
   const error = data.timedOut === true
@@ -294,8 +295,10 @@ export function createSubagentsV1Provider(events: RpcEventBus): SubagentProvider
 /**
  * Picks the first provider, in order, that answers its probe, and keeps it for
  * the runtime's lifetime: persisted dispatches carry that provider's worker
- * ids, so switching mid-run could not stop or settle them. Lifecycle and
- * readiness are forwarded from every candidate; only the installed one emits.
+ * ids, so switching mid-run could not stop or settle them. Readiness is
+ * forwarded from every candidate. Lifecycle is forwarded only from the selected
+ * one: nothing is launched before selection, and afterwards another installed
+ * provider's runs must not settle, collide with, or crowd out this runtime's.
  */
 export function createSubagentProviderSelector(candidates: readonly SubagentProvider[]): SubagentProvider {
   let selected: SubagentProvider | undefined;
@@ -325,7 +328,9 @@ export function createSubagentProviderSelector(candidates: readonly SubagentProv
     stop: (agentId, timeoutMs) => selected ? selected.stop(agentId, timeoutMs) : unavailable(),
     consume: (agentId, timeoutMs) => selected ? selected.consume(agentId, timeoutMs) : unavailable(),
     onLifecycle(handler) {
-      const unsubscribe = candidates.map((candidate) => candidate.onLifecycle(handler));
+      const unsubscribe = candidates.map((candidate) => candidate.onLifecycle((event) => {
+        if (candidate === selected) handler(event);
+      }));
       return () => {
         for (const stop of unsubscribe) stop();
       };
