@@ -109,11 +109,15 @@ describe("settlement classification", () => {
     const floor = { delayFloors: { "2": 20 } };
     const fast = { outcome: "completed" as const, attempt: 1, verifyPassed: true, outputTokens: 100, toolUses: 6 };
     const slowDuration = 100 * 20 * DELAY_CONGESTION_FACTOR + 100;
-    expect(classifySettlement({ ...fast, durationMs: 100 * 20 * DELAY_CONGESTION_FACTOR }, { ...floor, delayStreak: 1 })).toBe("ack");
+    expect(classifySettlement({ ...fast, durationMs: 100 * 20 * DELAY_CONGESTION_FACTOR }, { ...floor, delayRuns: { "2": 1 } })).toBe("ack");
     expect(classifySettlement({ ...fast, durationMs: slowDuration }, floor)).toBe("ack");
-    expect(classifySettlement({ ...fast, durationMs: slowDuration }, { ...floor, delayStreak: 1 })).toBe("congestion");
-    expect(classifySettlement({ ...fast, durationMs: 999_999 }, { delayStreak: 9 })).toBe("ack");
-    expect(classifySettlement({ ...fast, durationMs: 999_999, outputTokens: 0 }, { ...floor, delayStreak: 9 })).toBe("ack");
+    expect(classifySettlement({ ...fast, durationMs: slowDuration }, { ...floor, delayRuns: { "2": 1 } })).toBe("congestion");
+    // A run already reported is not reported again.
+    expect(classifySettlement({ ...fast, durationMs: slowDuration }, { ...floor, delayRuns: { "2": 2 } })).toBe("delayed_ack");
+    // Another class's run does not count toward this one.
+    expect(classifySettlement({ ...fast, durationMs: slowDuration }, { ...floor, delayRuns: { "0": 1 } })).toBe("ack");
+    expect(classifySettlement({ ...fast, durationMs: 999_999 }, { delayRuns: { "2": 1 } })).toBe("ack");
+    expect(classifySettlement({ ...fast, durationMs: 999_999, outputTokens: 0 }, { ...floor, delayRuns: { "2": 1 } })).toBe("ack");
   });
 
   it("tracks the delay floor from first attempts only", () => {
@@ -131,7 +135,7 @@ describe("settlement classification", () => {
 
 describe("persisted window validation", () => {
   it("accepts well-formed windows and rejects malformed ones", () => {
-    const valid = { mode: "aimd", cwnd: 2.5, ssthresh: 2, acks: 3, losses: 1, taskLosses: 2, recoverAt: 40, minMsPerToken: 12.5, delayFloors: { "0": 9.5, "3": 40 } };
+    const valid = { mode: "aimd", cwnd: 2.5, ssthresh: 2, acks: 3, losses: 1, taskLosses: 2, recoverAt: 40, minMsPerToken: 12.5, delayFloors: { "0": 9.5, "3": 40 }, delayRuns: { "0": 0, "3": 3 }, delayStreak: 4 };
     expect(validateAckWindow(valid, 4)).toBe(true);
     expect(validateAckWindow({ ...valid, recoverAt: undefined, minMsPerToken: undefined, delayFloors: undefined }, 4)).toBe(true);
     // A window persisted before per-class floors carries only the single floor.
@@ -146,6 +150,9 @@ describe("persisted window validation", () => {
       { ...valid, delayFloors: { "0": 0 } },
       { ...valid, delayFloors: { "4": 10 } },
       { ...valid, delayFloors: [10] },
+      { ...valid, delayRuns: { "0": -1 } },
+      { ...valid, delayRuns: { "0": 9 } },
+      { ...valid, delayRuns: { "7": 1 } },
       { ...valid, recoverAt: Number.NaN },
       { ...valid, mode: "cubic" },
       null,
@@ -170,15 +177,15 @@ describe("review regressions", () => {
     const fast = { ...slow, durationMs: 100 * 20 };
     expect(classifySettlement(slow, floor)).toBe("ack");
     const afterOne = observeDelay(floor, slow);
-    expect(afterOne.delayStreak).toBe(1);
+    expect(afterOne.delayRuns).toEqual({ "2": 1 });
     expect(classifySettlement(slow, afterOne)).toBe("congestion");
-    expect(observeDelay(afterOne, fast).delayStreak).toBe(0);
+    expect(observeDelay(afterOne, fast).delayRuns).toEqual({ "2": 0 });
   });
 
   it("R7: a retried success is never classified as delay congestion (Karn)", () => {
-    const primed = { ...createAckWindow(8), delayFloors: { "2": 20 }, delayStreak: 5 };
+    const primed = { ...createAckWindow(8), delayFloors: { "2": 20 }, delayRuns: { "2": 1 } };
     expect(classifySettlement({ outcome: "completed", attempt: 2, verifyPassed: true, outputTokens: 100, durationMs: 999_999, toolUses: 6 }, primed)).toBe("retry_ack");
-    expect(observeDelay(primed, { attempt: 2, outputTokens: 100, durationMs: 999_999, toolUses: 6 }).delayStreak).toBe(5);
+    expect(observeDelay(primed, { attempt: 2, outputTokens: 100, durationMs: 999_999, toolUses: 6 }).delayRuns).toEqual({ "2": 1 });
   });
 });
 
@@ -228,8 +235,29 @@ describe("delay signal comparability", () => {
 
   it("D2: one run of slow samples cuts once, not on every later slow sample", () => {
     const { window, signals } = run([[20, 6], [60, 6], [60, 6], [60, 6]]);
-    expect(signals).toEqual(["ack", "ack", "congestion", "ack"]);
+    expect(signals).toEqual(["ack", "ack", "congestion", "delayed_ack"]);
     expect(window.losses).toBe(1);
+  });
+
+  it("D6: a slow run that continues cuts once and does not grow; it can cut again only after comparable work was fast", () => {
+    const first = run([[20, 6], [60, 6], [60, 6], [60, 6], [60, 6], [60, 6]]);
+    expect(first.signals).toEqual(["ack", "ack", "congestion", "delayed_ack", "delayed_ack", "delayed_ack"]);
+    expect(first.window.losses).toBe(1);
+    const afterCut = run([[20, 6], [60, 6], [60, 6]]).window.cwnd;
+    expect(first.window.cwnd).toBe(afterCut);
+
+    const second = run([[20, 6], [60, 6], [60, 6], [60, 6], [22, 6], [60, 6], [60, 6]]);
+    expect(second.signals).toEqual(["ack", "ack", "congestion", "delayed_ack", "ack", "ack", "congestion"]);
+    expect(second.window.losses).toBe(2);
+  });
+
+  it("D7: slow runs are tracked per tool-use class, so unrelated work neither completes nor clears one", () => {
+    // One slow sample in each of two classes is not two consecutive slow samples.
+    expect(run([[20, 6], [10, 0], [60, 6], [30, 0]]).signals).toEqual(["ack", "ack", "ack", "ack"]);
+    // A fast tool-less sample does not end the tool-heavy class's slow run.
+    const interleaved = run([[20, 6], [10, 0], [60, 6], [10, 0], [60, 6]]);
+    expect(interleaved.signals).toEqual(["ack", "ack", "ack", "ack", "congestion"]);
+    expect(interleaved.window.losses).toBe(1);
   });
 
   it("D3 (control): comparable work that slows down is still congestion", () => {

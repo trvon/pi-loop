@@ -380,9 +380,9 @@ describe("orchestration ACK-clocked pacing", () => {
     state = runToSettled(state, "2", "2", 110, { verify: pass, usage: { toolUses: 6, durationMs: 2_200, tokens: tokens(100) } });
     expect(state.window).toMatchObject({ cwnd: 3, delayFloors: { "2": 20 } });
     state = runToSettled(state, "3", "3", 120, { verify: pass, usage: { toolUses: 5, durationMs: 6_000, tokens: tokens(100) } });
-    expect(state.window).toMatchObject({ cwnd: 4, acks: 3, delayStreak: 1 });
+    expect(state.window).toMatchObject({ cwnd: 4, acks: 3, delayRuns: { "2": 1 } });
     state = runToSettled(state, "4", "4", 130, { verify: pass, usage: { toolUses: 7, durationMs: 6_000, tokens: tokens(100) } });
-    expect(state.window).toMatchObject({ cwnd: 2, ssthresh: 2, losses: 1, acks: 3, delayStreak: 0, delayFloors: { "2": 20 } });
+    expect(state.window).toMatchObject({ cwnd: 2, ssthresh: 2, losses: 1, acks: 3, delayRuns: { "2": 2 }, delayFloors: { "2": 20 } });
     expect(state.work[3]?.status).toBe("completed");
   });
 

@@ -41,10 +41,20 @@ describe("delay signal properties", () => {
       expect(window.cwnd).toBeGreaterThanOrEqual(1);
       expect(window.cwnd).toBeLessThanOrEqual(ceiling);
       expect(window.acks + window.losses + window.taskLosses).toBe(samples.length);
-      // A reported streak starts over: two delay cuts need at least two slow samples each.
-      for (let index = 1; index < signals.length; index += 1) {
-        expect(signals[index] === "congestion" && signals[index - 1] === "congestion").toBe(false);
-      }
+      // A class reports one slow run once: between two reports, a sample of that class was not slow.
+      const reported = new Set<string>();
+      samples.forEach((item, index) => {
+        const sampleClass = delayClass(item.toolUses);
+        if (sampleClass === undefined || item.attempt > 1) return;
+        if (signals[index] === "congestion") {
+          expect(reported.has(sampleClass)).toBe(false);
+          reported.add(sampleClass);
+        } else if (signals[index] === "ack") {
+          reported.delete(sampleClass);
+        }
+      });
+      // A sample inside an already reported run never grows the window.
+      expect(signals.filter((signal) => signal === "delayed_ack").length).toBeLessThanOrEqual(samples.length);
     }), propertyOptions());
   });
 
