@@ -47,6 +47,9 @@ writeFileSync(join(workspace, "README.md"), "# Isolated live RPC v1 orchestratio
 process.chdir(workspace);
 
 const observed: Array<{ channel: string; payload: unknown }> = [];
+const timeline: Array<Record<string, unknown>> = [];
+const ownTools = new Map<string, { execute: (id: string, args: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }> }>();
+const startedMs = Date.now();
 const report: Record<string, unknown> = { extension, paid, startedAt: new Date().toISOString() };
 const failures: string[] = [];
 const check = (condition: unknown, message: string) => {
@@ -103,10 +106,33 @@ try {
     extensionFactories: [
       (pi) => {
         for (const channel of ["subagents:rpc:v1:ready", "subagent:async-started", "subagent:async-complete", "subagent:process-terminal"]) {
-          pi.events.on(channel, (payload) => observed.push({ channel, payload }));
+          pi.events.on(channel, (payload) => {
+            observed.push({ channel, payload });
+            timeline.push({ at: Date.now() - startedMs, what: channel, id: (payload as any)?.id ?? (payload as any)?.runId, state: (payload as any)?.state });
+          });
         }
+        // Requests pi-loop sends, and the provider's reply to each, without prompts or results.
+        pi.events.on("subagents:rpc:v1:request", (raw) => {
+          const request = raw as { requestId: string; method: string; params?: Record<string, unknown> };
+          timeline.push({ at: Date.now() - startedMs, what: `request:${request.method}`, id: request.params?.id as string | undefined });
+          const off = pi.events.on(`subagents:rpc:v1:reply:${request.requestId}`, (reply) => {
+            off();
+            const data = reply as { success?: boolean; error?: { code?: string; message?: string }; data?: { state?: string } };
+            timeline.push({ at: Date.now() - startedMs, what: `reply:${request.method}`, success: data.success, state: data.data?.state, error: data.error ? `${data.error.code}: ${String(data.error.message).slice(0, 200)}` : undefined });
+          });
+        });
       },
-      (pi) => piLoop(pi),
+      // Keep pi-loop's own tool executors: the provider holds a headless parent turn open until its
+      // workers finish, so a cancellation sent through a scripted parent turn would arrive too late.
+      (pi) => piLoop(new Proxy(pi, {
+        get(target, property, receiver) {
+          if (property !== "registerTool") return Reflect.get(target, property, receiver);
+          return (definition: { name: string; execute: (id: string, args: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }> }) => {
+            ownTools.set(definition.name, definition);
+            return (target.registerTool as (tool: unknown) => unknown)(definition);
+          };
+        },
+      })),
     ],
   });
   await loader.reload();
@@ -190,6 +216,32 @@ try {
   if (paid) check(extensionErrors.length === 0, `extension errors: ${extensionErrors.join("; ")}`);
   report.extensionErrors = extensionErrors;
   if (paid) {
+    // 5. Cancelling an active batch reaches the provider's stop method for the real run.
+    const cancelGoal = "Live v1 cancellation";
+    // Not awaited yet: the provider keeps this headless parent turn open while its worker runs.
+    const creating = call("OrchestrationCreate", { goal: cancelGoal, model: workerModel, work: [{ prompt: "Use your shell tool to run exactly `sleep 90`, then reply done." }] });
+    const active = await until(() => {
+      const entry = loops().find((candidate) => candidate.orchestration?.goal === cancelGoal);
+      const last = entry?.orchestration?.work?.[0]?.dispatches?.at(-1);
+      return last?.agentId ? { id: String(entry.id), runId: last.agentId as string } : undefined;
+    }, "an active worker to cancel");
+    timeline.push({ at: Date.now() - startedMs, what: "LoopDelete", id: active.runId });
+    const cancelled = (await ownTools.get("LoopDelete")!.execute("live-cancel", { id: active.id })).content.map((part) => part.text ?? "").join("\n");
+    timeline.push({ at: Date.now() - startedMs, what: "LoopDelete:result" });
+    report.cancellation = { message: cancelled, runId: active.runId };
+    check(/cancel/i.test(cancelled), `LoopDelete did not report a cancellation: ${cancelled}`);
+    const stopped = await until(() => observed.find((event) => event.channel === "subagent:async-complete" && (event.payload as any)?.id === active.runId), "the provider to report the cancelled run");
+    report.cancellationState = { state: (stopped.payload as any).state, success: (stopped.payload as any).success, durationMs: (stopped.payload as any).durationMs, output: String((stopped.payload as any).results?.[0]?.output ?? "").slice(0, 200) };
+    check((stopped.payload as any).state === "stopped", `cancelled run ended as ${(stopped.payload as any).state}, expected stopped`);
+    const cancelCreated = await creating;
+    check(cancelCreated.includes("created"), `cancellation batch was not created: ${cancelCreated}`);
+    const retained = loops().find((candidate) => candidate.orchestration?.goal === cancelGoal);
+    report.cancellationRetained = retained ? { status: retained.orchestration.status, work: retained.orchestration.work[0].status } : "deleted";
+    check(retained === undefined || retained.orchestration.work[0].status !== "completed", "a cancelled worker was recorded as completed");
+    check(timeline.some((entry) => entry.what === "request:stop" && entry.id === active.runId), "pi-loop sent no stop request for the active run");
+    check(timeline.some((entry) => entry.what === "reply:stop" && entry.success === true), "the provider did not accept the stop request");
+    check(Number((stopped.payload as any).durationMs) < 60_000, "the cancelled worker ran to the end of its 90 s task");
+
     const usage = dispatch?.usage;
     report.usage = usage;
     check(Number.isFinite(usage?.durationMs), "completed worker carried no duration");
@@ -199,6 +251,7 @@ try {
   failures.push(error instanceof Error ? error.stack ?? error.message : String(error));
 } finally {
   report.events = observed.map((event) => event.channel);
+  report.timeline = timeline;
   report.failures = failures;
   report.finishedAt = new Date().toISOString();
   try {

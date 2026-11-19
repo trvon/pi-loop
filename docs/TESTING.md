@@ -196,7 +196,7 @@ PI_LOOP_LIVE_V1=1 PI_LOOP_LIVE_V1_AGENT_DIR="$HOME/.pi/agent" PI_LOOP_LIVE_MODEL
 npm run test:e2e:orchestration:v1
 ```
 
-The parent session is scripted (no parent inference) and loads the real provider from `PI_LOOP_LIVE_SUBAGENTS_V1_EXTENSION` (default: the standard user package location). It checks provider detection and tool registration, `maxTurns` rejection, an unknown agent as a proved launch failure, and one launch through run id, `subagent:async-started`, `subagent:async-complete` and settlement. The report is written to `.artifacts/live-orchestration-v1/report.json`.
+The parent session is scripted (no parent inference) and loads the real provider from `PI_LOOP_LIVE_SUBAGENTS_V1_EXTENSION` (default: the standard user package location). It checks provider detection and tool registration, `maxTurns` rejection, an unknown agent as a proved launch failure, and one launch through run id, `subagent:async-started`, `subagent:async-complete` and settlement. With real credentials it also cancels an active worker and checks that the provider accepted the stop request, reported the run `stopped`, and that the controller was retained rather than deleted. The provider keeps a headless parent turn open while its workers run, so the check cancels through pi-loop's own tool executor instead of a second parent turn. The report is written to `.artifacts/live-orchestration-v1/report.json`.
 
 Without `PI_LOOP_LIVE_MODEL` (or `PI_LOOP_LIVE_V1=1` for the RPC v1 check), live scripts exit with `SKIP`. Reports are bounded JSON under `.artifacts/` and do not record credentials; claim IDs are redacted where applicable.
 
