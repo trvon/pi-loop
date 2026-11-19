@@ -4,7 +4,7 @@ import type { TaskEntry } from "../task-types.js";
 import type { LoopEntry, MonitorEntry } from "../types.js";
 import { getWorkflowOutcomeAvailability } from "../workflow-reducer.js";
 import { activeCardGlyphs } from "./card-style.js";
-import { orchestrationInFlightLabel, orchestrationStatusLabel } from "./orchestration-presentation.js";
+import { isOrchestrationInProgress, orchestrationInFlightLabel, orchestrationStatusLabel } from "./orchestration-presentation.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration, workflowAttemptLabel } from "./workflow-presentation.js";
 
 /**
@@ -102,7 +102,7 @@ function isPanelWorkflow(entry: LoopEntry): boolean {
 }
 
 function isPanelOrchestration(entry: LoopEntry): boolean {
-  return entry.orchestration !== undefined && (entry.status === "active" || entry.status === "paused");
+  return isOrchestrationInProgress(entry);
 }
 
 export const ACTIVITY_TONE = {
@@ -165,7 +165,8 @@ function orchestrationLine(entry: LoopEntry): PanelLine {
   const state = entry.orchestration;
   if (!state) return [];
   const counts = getOrchestrationCounts(state);
-  const tone: PanelTone = state.status === "needs_attention" ? "warning" : state.status === "completed" ? "success" : "accent";
+  // Only in-progress batches reach the panel, so the row is either dispatching or waiting on the user.
+  const tone: PanelTone = state.status === "needs_attention" ? "warning" : "accent";
   const detail = state.status === "active"
     ? `· ${orchestrationInFlightLabel(state)}`
     : orchestrationStatusLabel(state.status);

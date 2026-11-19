@@ -171,6 +171,16 @@ export function formatOrchestrationInspection(entry: LoopEntry): string {
   return displayRows(orchestrationControllerText(entry).split("\n"), 10).join("\n");
 }
 
+/**
+ * Whether live surfaces (status line, progress panel) should show this batch.
+ * A finished or cancelled batch stays stored for inspection but is no longer in progress;
+ * counting it would make the bar grow with every batch ever started.
+ */
+export function isOrchestrationInProgress(entry: LoopEntry): boolean {
+  const status = entry.orchestration?.status;
+  return (entry.status === "active" || entry.status === "paused") && (status === "active" || status === "needs_attention");
+}
+
 export function orchestrationWidgetSummary(entry: LoopEntry): string {
   const state = entry.orchestration;
   if (!state) return `#${entry.id} unavailable`;

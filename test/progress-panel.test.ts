@@ -144,6 +144,12 @@ describe("progress panel layout", () => {
     expect(text({ loops: [panelWorkflow()], tasks: [], now }, 34, 0)).toEqual([]);
   });
 
+  it("lists only orchestrations still running or needing attention, so a running batch is never crowded out", () => {
+    const loops = [panelOrchestration("1", ["completed"], "completed"), panelOrchestration("2", ["cancelled"], "cancelled"), panelOrchestration("3", ["active"]), panelOrchestration("4", ["failed"], "needs_attention")];
+    expect(text({ loops, tasks: [], now })).toEqual(["◇ #3 0/1 · 1/2 in flight", "◇ #4 0/1 needs attention"]);
+    expect(text({ loops: loops.slice(0, 2), tasks: [], now })).toEqual([]);
+  });
+
   it("summarizes orchestration progress without claiming observed execution", () => {
     const lines = text({ loops: [panelOrchestration("7", ["completed", "active", "pending"])], tasks: [], now });
     expect(lines).toEqual(["◇ #7 1/3 · 1/2 in flight"]);

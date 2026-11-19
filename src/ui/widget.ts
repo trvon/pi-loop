@@ -3,7 +3,7 @@ import type { MonitorManager } from "../monitor-manager.js";
 import type { LoopStore } from "../store.js";
 import type { TaskEntry } from "../task-types.js";
 import type { LoopEntry } from "../types.js";
-import { orchestrationWidgetSummary } from "./orchestration-presentation.js";
+import { isOrchestrationInProgress, orchestrationWidgetSummary } from "./orchestration-presentation.js";
 import { type ProgressPanelMode, ProgressPanelOverlay } from "./progress-panel-overlay.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "./workflow-presentation.js";
 
@@ -192,7 +192,8 @@ function formatCount(count: number, noun: string): string {
 }
 
 function isStatusVisibleLoop(loop: LoopEntry): boolean {
-  if ((loop.workflow || loop.orchestration) && loop.status === "paused") return true;
+  if (loop.orchestration) return isOrchestrationInProgress(loop);
+  if (loop.workflow && loop.status === "paused") return true;
   if (loop.status !== "active") return false;
   if (loop.recurring) return true;
   return !(loop.trigger.type === "event" && loop.trigger.source === "monitor:done");
