@@ -212,7 +212,9 @@ describe("workflow properties", () => {
           });
         },
       ),
-      propertyOptions(),
+      // Each run applies 33-40 revisions against a growing history (about 16 ms), so an
+      // uncapped FC_NUM_RUNS=10000 campaign cannot finish inside the test timeout.
+      propertyOptions(100, 500),
     );
   });
 
