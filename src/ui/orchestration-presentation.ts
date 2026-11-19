@@ -14,7 +14,7 @@ import type {
 export function orchestrationCancellationMessage(id: string, result: OrchestrationCancellation): string {
   if (result === "deleted") return `Orchestration #${id} cancelled and deleted`;
   if (result === "paused") return `Orchestration #${id} cancelled and paused`;
-  if (result === "retained") return `Orchestration #${id} cancellation recorded; retained and paused because worker termination is unconfirmed. No automatic retry or consume. Inspect OrchestrationGet; protocol v2 cannot prove safe cleanup.`;
+  if (result === "retained") return `Orchestration #${id} cancellation recorded; retained and paused because worker termination is unconfirmed. No automatic retry or consume. Inspect OrchestrationGet; a stop request is not proof the worker ended.`;
   if (result === "context_changed") return `Orchestration #${id} session changed during cancellation; inspect the original session before retrying. Deletion is not confirmed.`;
   return `Orchestration #${id} cancellation failed; inspect OrchestrationGet and retry.`;
 }

@@ -241,9 +241,11 @@ describe("provider selection", () => {
 
   it("S2: selects RPC v1 when it is the only provider, and routes calls to it", async () => {
     const { selector, emitted } = both({ v1: true });
+    expect(selector.isAvailable()).toBe(false);
     const probing = selector.probe(1_000);
     await vi.advanceTimersByTimeAsync(1_001);
     expect(await probing).toBe(true);
+    expect(selector.isAvailable()).toBe(true);
     expect(selector.name).toContain("RPC v1");
     expect(selector).toMatchObject({ defaultAgentType: "worker", supportsMaxTurns: false });
     expect(selector.workerId(await selector.spawn({ agentType: "worker", prompt: "x", description: "d" }, 5_000))).toBe("run-1");
@@ -255,6 +257,7 @@ describe("provider selection", () => {
     const probing = selector.probe(1_000);
     await vi.advanceTimersByTimeAsync(2_002);
     expect(await probing).toBe(false);
+    expect(selector.isAvailable()).toBe(false);
     const before = emitted.length;
     await expect(selector.spawn({ agentType: "worker", prompt: "x", description: "d" }, 5_000)).rejects.toThrow(/No compatible subagent provider/);
     await expect(selector.stop("run-1", 1_000)).rejects.toThrow(/No compatible subagent provider/);

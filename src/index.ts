@@ -574,10 +574,13 @@ export default function (pi: ExtensionAPI) {
   // RPC during session_start and then announce readiness, so both cues probe.
   // Registration is one-way; persisted batches stay visible through LoopList
   // and cancellable through LoopDelete either way.
+  const DETECTION_PROBE_MS = 250;
   let orchestrationToolsRegistered = false;
   function detectSubagentProvider(): void {
     if (orchestrationToolsRegistered) return;
-    void subagentProvider.probe(1_000).then((compatible) => {
+    // Replies are in-process, so a short wait is enough to tell an absent provider from a present one
+    // and keeps registration ahead of the first request.
+    void subagentProvider.probe(DETECTION_PROBE_MS).then((compatible) => {
       if (!compatible || orchestrationToolsRegistered) return;
       try {
         registerSubagentOrchestrationTools({
@@ -594,6 +597,8 @@ export default function (pi: ExtensionAPI) {
         });
         orchestrationToolsRegistered = true;
         debug(`orchestration tools registered (${subagentProvider.name})`);
+        // Recovered batches held their pending work until a provider was selected.
+        void orchestrationRuntime?.pump().catch((error) => debug("orchestration pump after provider selection failed", error));
       } catch (error) {
         if (!isStaleExtensionContextError(error)) throw error;
         debug("orchestration tool registration skipped: extension context went stale");

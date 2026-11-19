@@ -45,6 +45,8 @@ export interface SubagentProvider {
   readonly supportsMaxTurns: boolean;
   /** How long a launch may take to reply before its outcome is treated as unknown. */
   readonly spawnTimeoutMs: number;
+  /** False while no concrete provider has been selected; launches must wait rather than fail. */
+  isAvailable(): boolean;
   /** True when a responder speaking this provider's protocol answers within the timeout. */
   probe(timeoutMs: number): Promise<boolean>;
   /** Resolves with the provider's raw reply; rejects with the transport error. */
@@ -107,6 +109,7 @@ export function createSubagentsV2Provider(events: RpcEventBus, rpcCall: RpcCall)
     defaultAgentType: "general-purpose",
     supportsMaxTurns: true,
     spawnTimeoutMs: 5_000,
+    isAvailable: () => true,
     async probe(timeoutMs) {
       try {
         const reply = await rpcCall(V2.ping, {}, timeoutMs);
@@ -246,6 +249,7 @@ export function createSubagentsV1Provider(events: RpcEventBus): SubagentProvider
     supportsMaxTurns: false,
     // The reply waits for the detached runner's startup handshake.
     spawnTimeoutMs: 60_000,
+    isAvailable: () => true,
     async probe(timeoutMs) {
       try {
         const reply = record(await callV1(events, "ping", {}, timeoutMs));
@@ -301,6 +305,7 @@ export function createSubagentProviderSelector(candidates: readonly SubagentProv
     get defaultAgentType() { return (selected ?? fallback).defaultAgentType; },
     get supportsMaxTurns() { return (selected ?? fallback).supportsMaxTurns; },
     get spawnTimeoutMs() { return (selected ?? fallback).spawnTimeoutMs; },
+    isAvailable: () => selected !== undefined,
     probe(timeoutMs) {
       if (selected) return selected.probe(timeoutMs);
       // Probe together, choose by order: a candidate wins once every earlier one has answered no,

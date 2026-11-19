@@ -658,6 +658,9 @@ export function createSubagentOrchestrationRuntime(
       retryPendingConsumes(entry);
       resumeVerifies(entry);
       if (entry.status !== "active" || state.status !== "active") continue;
+      // An adopted batch can be pumped before any provider has answered its probe. A launch
+      // then would be recorded as a failed spawn, so pending work waits for selection instead.
+      if (!provider.isAvailable()) continue;
 
       while (true) {
         const freshEntry = getStore().get(entry.id);

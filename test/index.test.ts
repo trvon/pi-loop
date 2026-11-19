@@ -886,6 +886,76 @@ describe("subagent orchestration runtime wiring", () => {
       }
     });
 
+    describe("recovered batch before a provider is selected", () => {
+      async function persistPendingBatch(): Promise<void> {
+        const first = createMockPi();
+        serveV1(first.pi, (method) => method === "ping" ? ping : undefined);
+        extension(first.pi as any);
+        const ctx = createCtx({ sessionId });
+        await first.emitExtension("session_start", start, ctx);
+        await vi.advanceTimersByTimeAsync(1_100);
+        await first.emitExtension("turn_start", null, ctx);
+        const created = await first.toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Recovered", work: [{ prompt: "A" }, { prompt: "B" }] });
+        expect(created.content[0].text).toContain("Orchestration #1 created");
+        // The first runtime ends before the parent goes idle, so nothing was dispatched.
+        await first.emitExtension("session_shutdown", { type: "session_shutdown" }, ctx);
+        // Pi restarts after the first runtime's owner lease has lapsed, so the next runtime adopts the batch.
+        await vi.advanceTimersByTimeAsync(121_000);
+      }
+
+      const inspect = async (toolMap: Map<string, any>) => (await toolMap.get("LoopList")!.execute!("list", {})).content[0].text as string;
+
+      it("I4: waits for the provider instead of failing pending work, then dispatches", async () => {
+        vi.useFakeTimers();
+        try {
+          await persistPendingBatch();
+          let nextRun = 0;
+          const second = createMockPi();
+          const requests = serveV1(second.pi, (method) => method === "ping" ? ping : method === "spawn" ? { details: { runId: `run-${++nextRun}` } } : undefined);
+          extension(second.pi as any);
+          const ctx = createCtx({ sessionId });
+          await second.emitExtension("session_start", start, ctx);
+          await second.emitExtension("turn_start", null, ctx);
+          await second.emitExtension("agent_end", null, ctx);
+          await vi.advanceTimersByTimeAsync(5);
+
+          // The v2 probe has not timed out yet, so no provider is selected.
+          expect(requests.filter((request) => request.method === "spawn")).toHaveLength(0);
+          const waiting = await inspect(second.toolMap);
+          expect(waiting).toContain("[orchestration:active]");
+          expect(waiting).toContain("0/2 complete · 0/2 in flight · 2 pending");
+
+          await vi.advanceTimersByTimeAsync(1_100);
+          expect(requests.filter((request) => request.method === "spawn")).toHaveLength(2);
+          expect(await inspect(second.toolMap)).toContain("0/2 complete · 2/2 in flight");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("I5: with no provider at all, pending work stays pending and nothing is charged", async () => {
+        vi.useFakeTimers();
+        try {
+          await persistPendingBatch();
+          const second = createMockPi();
+          extension(second.pi as any);
+          const ctx = createCtx({ sessionId });
+          await second.emitExtension("session_start", start, ctx);
+          await second.emitExtension("turn_start", null, ctx);
+          await second.emitExtension("agent_end", null, ctx);
+          await vi.advanceTimersByTimeAsync(10_000);
+
+          const listed = await inspect(second.toolMap);
+          expect(listed).toContain("[orchestration:active]");
+          expect(listed).toContain("0/2 complete · 0/2 in flight · 2 pending");
+          expect(listed).not.toContain("failed");
+          expect(listed).not.toContain("uncertain");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
     it("I2: a v1 run reported stopped is kept uncertain, never retried", async () => {
       vi.useFakeTimers();
       try {

@@ -122,6 +122,7 @@ describe("provider adapter properties", () => {
         defaultAgentType: `agent-${index}`,
         supportsMaxTurns: index % 2 === 0,
         spawnTimeoutMs: 1_000 + index,
+        isAvailable: () => true,
         probe: async () => answers[index] ?? false,
         spawn: async () => ({ index }),
         workerId: () => `worker-${index}`,
