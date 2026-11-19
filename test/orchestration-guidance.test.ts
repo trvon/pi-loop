@@ -36,12 +36,22 @@ describe("orchestration routing guidance", () => {
     expect(register("compact").toolMap.get("OrchestrationCreate")!.description).toMatch(/swarm/i);
   });
 
-  it("G2: says what it is for and where a single delegation belongs", () => {
+  it("G2: says when to use it, when the provider's own tool is right, and which controller owns other shapes", () => {
     const guidance = (register().toolMap.get("OrchestrationCreate")!.promptGuidelines ?? []).join("\n");
+    // What it is for.
     expect(guidance).toMatch(/swarm/i);
-    expect(guidance).toMatch(/independent/);
-    // The competing surface: a single delegation stays with the provider.
-    expect(guidance).toMatch(/one delegation: provider's tool/);
+    expect(guidance).toMatch(/finite list of independent items/);
+    expect(guidance).toMatch(/survives restart/);
+    // The competing surface: single, chained, or watched delegation stays with the provider.
+    expect(guidance).toMatch(/provider's own subagent tool for one delegation, a chain/);
+    expect(guidance).toMatch(/never send the same items through both/);
+    // One controller per job.
+    expect(guidance).toContain("WorkflowCreate");
+    expect(guidance).toContain("TaskCreate");
+    // What verify buys, and that a worker count is not the default.
+    expect(guidance).toMatch(/`verify`, a shell command that exits 0 only when that item is done/);
+    expect(guidance).toMatch(/only a fully verified batch may grow past 8 workers/);
+    expect(guidance).toMatch(/Omit `concurrency` unless a fixed worker count was requested/);
   });
 
   it("G3: names verify as a shell exit-0 check, and says so again when the unverified ceiling binds", async () => {

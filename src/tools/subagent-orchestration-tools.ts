@@ -121,8 +121,12 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
     renderCall: renderToolCall("Orchestration", (args) => `create · ${String(toolArg(args, "goal") ?? "batch").slice(0, 56)}`),
     renderResult: renderToolResult,
     description: "Run a swarm: a bounded session LoopStore orchestration batch.",
-    // The copy budget leaves room for one line; the verify hint is given in the create result instead.
-    promptGuidelines: ["For swarms of independent items; one delegation: provider's tool."],
+    promptGuidelines: [
+      "A swarm, fan-out, or parallel subagents over a finite list of independent items means OrchestrationCreate: it persists the batch, paces workers from feedback, retries proved failures, and survives restart.",
+      "Use the provider's own subagent tool for one delegation, a chain whose steps need earlier results, or foreground work to watch; never send the same items through both.",
+      "Give each item `verify`, a shell command that exits 0 only when that item is done, whenever one exists: only a fully verified batch may grow past 8 workers. Omit `concurrency` unless a fixed worker count was requested.",
+      "Not for ordered phases or rework (WorkflowCreate) or a backlog nobody was asked to run (TaskCreate).",
+    ],
     parameters: Type.Object({
       goal: Type.String({ description: "Shared batch goal", maxLength: MAX_GOAL_CHARS }),
       work: Type.Array(Type.Object({
