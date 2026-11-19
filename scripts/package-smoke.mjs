@@ -53,7 +53,9 @@ try {
   } catch (error) {
     throw new Error("npm pack returned invalid JSON", { cause: error });
   }
-  const packageReport = packReport[0];
+  // npm <= 11 reports an array; npm 12 reports an object keyed by package name.
+  const packageReport = Array.isArray(packReport) ? packReport[0] : Object.values(packReport ?? {})[0];
+  assert(packageReport?.filename, "npm pack must report the packed tarball");
   const paths = (packageReport?.files ?? []).map((file) => file.path);
 
   assert(paths.includes("dist/index.js"), "tarball must include dist/index.js");
