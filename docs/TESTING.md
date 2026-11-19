@@ -185,7 +185,20 @@ npm run test:e2e:orchestration
 
 It runs in a temporary workspace with default file-backed session scope, proves two isolated workers settle with durable consumed evidence, then creates and cancels an active worker. The extension path defaults to the standard user package location when `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` is omitted.
 
-Without `PI_LOOP_LIVE_MODEL`, live scripts exit with `SKIP`. Reports are bounded JSON under `.artifacts/` and do not record credentials; claim IDs are redacted where applicable.
+RPC v1 provider (npm `pi-subagents`) check:
+
+```bash
+# Wire check, no model spend: the worker gets an empty agent directory and fails.
+PI_LOOP_LIVE_V1=1 npm run test:e2e:orchestration:v1
+
+# Success path: one worker makes real model requests with that directory's credentials.
+PI_LOOP_LIVE_V1=1 PI_LOOP_LIVE_V1_AGENT_DIR="$HOME/.pi/agent" PI_LOOP_LIVE_MODEL="provider/model" \
+npm run test:e2e:orchestration:v1
+```
+
+The parent session is scripted (no parent inference) and loads the real provider from `PI_LOOP_LIVE_SUBAGENTS_V1_EXTENSION` (default: the standard user package location). It checks provider detection and tool registration, `maxTurns` rejection, an unknown agent as a proved launch failure, and one launch through run id, `subagent:async-started`, `subagent:async-complete` and settlement. The report is written to `.artifacts/live-orchestration-v1/report.json`.
+
+Without `PI_LOOP_LIVE_MODEL` (or `PI_LOOP_LIVE_V1=1` for the RPC v1 check), live scripts exit with `SKIP`. Reports are bounded JSON under `.artifacts/` and do not record credentials; claim IDs are redacted where applicable.
 
 ## Property and fuzz replay
 
