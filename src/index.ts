@@ -33,6 +33,7 @@ import { resolveLoopStorageScope, resolveLoopStorePath, resolveTaskStorePath } f
 import { registerSessionRuntimeHooks } from "./runtime/session-runtime.js";
 import { isStaleExtensionContextError } from "./runtime/stale-context.js";
 import { createSubagentOrchestrationRuntime, type SubagentOrchestrationRuntime } from "./runtime/subagent-orchestration-runtime.js";
+import { createSubagentsV2Provider } from "./runtime/subagent-provider.js";
 import { createTaskBacklogRuntime } from "./runtime/task-backlog-runtime.js";
 import { createTaskProviderRuntime, type TaskProviderRuntime } from "./runtime/task-provider-runtime.js";
 import { createWorkflowVerifier } from "./runtime/verify-runner.js";
@@ -433,7 +434,9 @@ export default function (pi: ExtensionAPI) {
 
   // ── Session lifecycle ──
 
+  const subagentProvider = createSubagentsV2Provider(pi.events, (channel, params, timeoutMs) => rpcCall(pi.events, channel, params, timeoutMs));
   orchestrationRuntime = createSubagentOrchestrationRuntime({
+    provider: subagentProvider,
     events: pi.events,
     getStore: () => store,
     getScope: () => loopScope,
@@ -561,17 +564,40 @@ export default function (pi: ExtensionAPI) {
     cancelOrchestration: (id, action) => orchestrationRuntime!.cancel(id, action),
   });
 
-  registerSubagentOrchestrationTools({
-    pi,
-    registerTool,
-    getStore: () => store,
-    getScope: () => loopScope,
-    getPiLoopEnv: () => piLoopEnv,
-    getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId, generation: sessionGeneration } : undefined,
-    probeSubagents: () => rpcProbe(pi.events, "subagents:rpc:ping", 1_000),
-    updateWidget: () => widget.update(),
-    defaultPacing: defaultOrchestrationPacing,
-  });
+  // Orchestration cannot run without a compatible worker provider, so its tools
+  // are offered only once one answers: a model shown a tool that always fails
+  // tries it before the provider's own delegation tool. A provider may wire its
+  // RPC during session_start and then announce readiness, so both cues probe.
+  // Registration is one-way; persisted batches stay visible through LoopList
+  // and cancellable through LoopDelete either way.
+  let orchestrationToolsRegistered = false;
+  function detectSubagentProvider(): void {
+    if (orchestrationToolsRegistered) return;
+    void subagentProvider.probe(1_000).then((compatible) => {
+      if (!compatible || orchestrationToolsRegistered) return;
+      try {
+        registerSubagentOrchestrationTools({
+          pi,
+          registerTool,
+          getStore: () => store,
+          getScope: () => loopScope,
+          getPiLoopEnv: () => piLoopEnv,
+          getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId, generation: sessionGeneration } : undefined,
+          probeSubagents: () => rpcProbe(pi.events, "subagents:rpc:ping", 1_000),
+          updateWidget: () => widget.update(),
+          defaultPacing: defaultOrchestrationPacing,
+        });
+        orchestrationToolsRegistered = true;
+        debug(`orchestration tools registered (${subagentProvider.name})`);
+      } catch (error) {
+        if (!isStaleExtensionContextError(error)) throw error;
+        debug("orchestration tool registration skipped: extension context went stale");
+      }
+    }).catch((error) => debug("orchestration provider detection failed", error));
+  }
+  detectSubagentProvider();
+  pi.on("session_start", detectSubagentProvider);
+  subagentProvider.onReady(detectSubagentProvider);
 
   registerWorkflowTools({
     pi,

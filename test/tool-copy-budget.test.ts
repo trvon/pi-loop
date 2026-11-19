@@ -20,7 +20,8 @@ afterEach(() => {
 
 describe("registered tool copy budget", () => {
   it("keeps agent-facing descriptions below half the audited baseline", async () => {
-    const { pi, toolMap, extensionHandlers } = createMockPi();
+    // A compatible worker provider, so the orchestration tools are part of the measured surface.
+    const { pi, toolMap, extensionHandlers } = createMockPi({ respondToSubagentPing: 2 });
     extension(pi);
     const ctx = {
       ui: { setStatus: vi.fn(), setWidget: vi.fn() },
@@ -35,6 +36,7 @@ describe("registered tool copy budget", () => {
       description: typeof tool.description === "string" ? tool.description : "",
       parameters: tool.parameters as Tool["parameters"],
     }));
+    expect(toolMap.has("OrchestrationCreate")).toBe(true);
     expect(checkToolContextBudget(costs, contextBudget)).toEqual([]);
     const before = structuredClone(costs);
     for (const field of BUDGET_FIELDS) {

@@ -718,6 +718,94 @@ describe("subagent orchestration runtime wiring", () => {
     }
   });
 
+  describe("provider-gated tool registration", () => {
+    const start = { type: "session_start", reason: "startup" };
+
+    it("P1: registers no orchestration tools when no subagent provider answers", async () => {
+      vi.useFakeTimers();
+      try {
+        const { pi, toolMap, emitExtension } = createMockPi();
+        extension(pi as any);
+        await emitExtension("session_start", start, createCtx({ sessionId }));
+        // Past the probe timeout, so an unanswered ping has settled.
+        await vi.advanceTimersByTimeAsync(1_100);
+
+        expect(toolMap.has("OrchestrationCreate")).toBe(false);
+        expect(toolMap.has("OrchestrationGet")).toBe(false);
+        // Control: tools that need no provider are unaffected.
+        expect(toolMap.has("LoopCreate")).toBe(true);
+        expect(toolMap.has("WorkflowCreate")).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("P2: registers no orchestration tools for an incompatible provider protocol", async () => {
+      const { pi, toolMap, emitExtension } = createMockPi({ respondToSubagentPing: 1 });
+      extension(pi as any);
+      await flushAsync();
+      await emitExtension("session_start", start, createCtx({ sessionId }));
+      await flushAsync();
+
+      expect(toolMap.has("OrchestrationCreate")).toBe(false);
+      expect(toolMap.has("OrchestrationGet")).toBe(false);
+    });
+
+    it("P3: registers the tools once a compatible provider answers, and only once", async () => {
+      const { pi, toolMap, emitExtension } = createMockPi({ respondToSubagentPing: 2 });
+      const registerTool = vi.spyOn(pi, "registerTool");
+      extension(pi as any);
+      await flushAsync();
+      await emitExtension("session_start", start, createCtx({ sessionId }));
+      await flushAsync();
+      pi.events.emit("subagents:ready", {});
+      await flushAsync();
+
+      expect(toolMap.has("OrchestrationCreate")).toBe(true);
+      expect(toolMap.has("OrchestrationGet")).toBe(true);
+      const names = registerTool.mock.calls.map(([definition]) => (definition as { name: string }).name);
+      expect(names.filter((name) => name === "OrchestrationCreate")).toHaveLength(1);
+      expect(names.filter((name) => name === "OrchestrationGet")).toHaveLength(1);
+    });
+
+    it("P4: registers the tools when a provider wires its RPC during session_start and announces readiness", async () => {
+      const options: Parameters<typeof createMockPi>[0] = {};
+      const { pi, toolMap, emitExtension } = createMockPi(options);
+      extension(pi as any);
+      await flushAsync();
+      await emitExtension("session_start", start, createCtx({ sessionId }));
+      expect(toolMap.has("OrchestrationCreate")).toBe(false);
+
+      options.respondToSubagentPing = 2;
+      pi.events.emit("subagents:ready", {});
+      await flushAsync();
+
+      expect(toolMap.has("OrchestrationCreate")).toBe(true);
+      expect(toolMap.has("OrchestrationGet")).toBe(true);
+    });
+
+    it("P5: a persisted batch stays listable and cancellable without a provider", async () => {
+      const withProvider = createMockPi({ respondToSubagentPing: 2 });
+      extension(withProvider.pi as any);
+      await flushAsync();
+      await withProvider.emitExtension("turn_start", null, createCtx({ sessionId }));
+      await withProvider.toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Review", work: [{ prompt: "A" }] });
+      await withProvider.emitExtension("session_shutdown", { type: "session_shutdown" }, createCtx({ sessionId }));
+
+      const without = createMockPi();
+      extension(without.pi as any);
+      await flushAsync();
+      await without.emitExtension("session_start", start, createCtx({ sessionId }));
+      await without.emitExtension("turn_start", null, createCtx({ sessionId }));
+
+      expect(without.toolMap.has("OrchestrationCreate")).toBe(false);
+      const listed = await without.toolMap.get("LoopList")!.execute!("list", {});
+      expect(listed.content[0].text).toContain("[orchestration:");
+      const deleted = await without.toolMap.get("LoopDelete")!.execute!("delete", { id: "1" });
+      expect(deleted.content[0].text).toMatch(/Orchestration #1 cancell/);
+    });
+  });
+
   it("dispatches a bounded batch, preserves provider completion, and wakes the idle parent once", async () => {
     let nextAgent = 0;
     const { pi, toolMap, emittedEvents, sentMessages, emitExtension } = createMockPi({

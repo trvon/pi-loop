@@ -180,7 +180,7 @@ OrchestrationCreate goal="Review release readiness" work='[
 ]' concurrency=2 maxAttempts=2 maxTurns=12
 ```
 
-This surface requires the default file-backed session scope and `@tintinweb/pi-subagents` protocol v2. It rejects memory/project scope, `PI_LOOP=off`, and custom `PI_LOOP` paths. The batch is stored only in `LoopStore`; it does not create standalone tasks or delegate workflow states.
+This surface requires the default file-backed session scope and `@tintinweb/pi-subagents` protocol v2. Its tools are registered only when that provider answers; the unscoped npm `pi-subagents` package is a different extension with a different RPC protocol and does not enable them. It rejects memory/project scope, `PI_LOOP=off`, and custom `PI_LOOP` paths. The batch is stored only in `LoopStore`; it does not create standalone tasks or delegate workflow states.
 
 Work items must be independent. The controller does not model dependencies or protect overlapping filesystem writes. Each spawned worker is background, does not inherit parent context, and is isolated from extension tools, so it cannot call pi-loop task/workflow/controller tools. The optional `agentType`, `model`, and `maxTurns` fields are the only invocation overrides.
 

@@ -62,7 +62,7 @@ A workflow is one dynamic `LoopEntry` with a version-1 named-state definition.
 An orchestration is one finite, session-file-backed `LoopEntry` batch.
 
 - It accepts explicit independent work only; it never discovers TaskStore work or workflow executions.
-- Creation requires protocol-v2 `pi-subagents` and rejects memory/project/custom/off storage.
+- Creation requires protocol-v2 `@tintinweb/pi-subagents` and rejects memory/project/custom/off storage. Worker access goes through `SubagentProvider` (`src/runtime/subagent-provider.ts`); the orchestration tools register only once a compatible provider answers, and never unregister.
 - Every dispatch is persisted before spawn and fenced by controller revision, owner runtime/generation, work ID, dispatch ID, attempt, and upstream agent ID.
 - `spawning`, `queued`, and `running` consume local capacity; pi-subagents retains its global queue.
 - Lifecycle evidence is bounded and persisted before any `subagents:rpc:consume`. Normal terminal results remain provider-owned; pi-loop does not consume them or send a duplicate aggregate wake.
