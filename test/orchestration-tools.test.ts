@@ -8,7 +8,7 @@ import { createMockPi } from "./helpers/mock-pi.js";
 function setup(options: { scope?: LoopScope; env?: string; protocol?: number; defaultPacing?: OrchestrationPacing } = {}) {
   const { pi, toolMap } = createMockPi();
   const store = new LoopStore();
-  const probeSubagents = vi.fn(async () => options.protocol === undefined ? { version: 2 } : { version: options.protocol });
+  const probeSubagents = vi.fn(async () => options.protocol === undefined || options.protocol === 2);
   registerSubagentOrchestrationTools({
     pi,
     getStore: () => store,
@@ -39,9 +39,9 @@ describe("subagent orchestration tools", () => {
       let store = a;
       let actor = { sessionId: "session-a", runtimeId: "runtime-a", generation: 1 };
       let entered!: () => void;
-      let release!: (reply: { version: number }) => void;
+      let release!: (compatible: boolean) => void;
       const probeEntered = new Promise<void>((resolve) => { entered = resolve; });
-      const probeReply = new Promise<{ version: number }>((resolve) => { release = resolve; });
+      const probeReply = new Promise<boolean>((resolve) => { release = resolve; });
       registerSubagentOrchestrationTools({
         pi,
         getStore: () => store,
@@ -55,7 +55,7 @@ describe("subagent orchestration tools", () => {
       await probeEntered;
       store = b;
       actor = { sessionId: "session-b", runtimeId: "runtime-b", generation: 2 };
-      release({ version: 2 });
+      release(true);
       const result = await creating;
 
       expect.soft(a.list()).toEqual([]);
@@ -258,6 +258,17 @@ describe("subagent orchestration tools", () => {
       const h2 = withProvider({ name: "@tintinweb/pi-subagents (protocol v2)", defaultAgentType: "general-purpose", supportsMaxTurns: true });
       expect(await h2.text({ goal: "Review", work: [{ prompt: "A" }], maxTurns: 20 })).toContain("Orchestration #1 created");
       expect(h2.store.list()[0]?.orchestration?.maxTurns).toBe(20);
+    });
+
+    it("T5: rejects malformed input and a failing probe with a specific message, without persisting", async () => {
+      const create = (args: unknown) => h.text("OrchestrationCreate", args);
+      expect(await create({ goal: "   ", work: [{ prompt: "A" }] })).toContain("goal must contain 1-2000 characters");
+      expect(await create({ goal: "Review", work: [{ prompt: "  " }] })).toContain("work item 1 prompt must not be empty");
+      expect(await create({ goal: "Review", work: [{ prompt: "A", agentType: "x".repeat(129) }] })).toContain("agentType exceeds 128 characters at item 1");
+      expect(await create({ goal: "Review", work: Array.from({ length: 5 }, () => ({ prompt: "x".repeat(16_000) })) })).toContain("Serialized orchestration input exceeds 65536 bytes");
+      h.probeSubagents.mockRejectedValueOnce(new Error("bus closed"));
+      expect(await create({ goal: "Review", work: [{ prompt: "A" }] })).toContain("requires a compatible subagent provider: bus closed");
+      expect(h.store.list()).toHaveLength(0);
     });
 
     it("T4 (control): with no provider traits the default agent type is unchanged", async () => {

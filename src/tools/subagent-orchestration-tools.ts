@@ -25,8 +25,8 @@ interface OrchestrationToolsOptions {
   getActor: () => OrchestrationActor | undefined;
   /** Pacing for batches that set neither `pacing` nor `concurrency` (PI_LOOP_PACING). */
   defaultPacing?: OrchestrationPacing;
-  /** Resolves true when a provider adapter vouches for compatibility, or a protocol-v2 ping reply. */
-  probeSubagents: () => Promise<unknown>;
+  /** Resolves true when a compatible worker provider answers. */
+  probeSubagents: () => Promise<boolean>;
   /** The selected provider's limits; without it protocol-v2 behaviour is assumed. */
   getProvider?: () => { name: string; defaultAgentType: string; supportsMaxTurns: boolean } | undefined;
   updateWidget: () => void;
@@ -76,12 +76,6 @@ function validateCreate(params: CreateParams): string | undefined {
     return `Serialized orchestration input exceeds ${MAX_SERIALIZED_INPUT_BYTES} bytes.`;
   }
   return undefined;
-}
-
-function protocolVersion(value: unknown): number | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const version = (value as Record<string, unknown>).version;
-  return Number.isInteger(version) ? Number(version) : undefined;
 }
 
 /** PI_LOOP_PACING: unset means aimd; anything but fixed/aimd fails activation. */
@@ -156,13 +150,13 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         return errorResult(`maxTurns is not supported by ${provider.name}: it has no per-worker turn limit. Omit maxTurns; workers are bounded by the provider's own run timeout.`);
       }
 
-      let probe: unknown;
+      let compatible: boolean;
       try {
-        probe = await probeSubagents();
+        compatible = await probeSubagents();
       } catch (error) {
         return errorResult(`Orchestration requires a compatible subagent provider: ${error instanceof Error ? error.message : String(error)}`);
       }
-      if (probe !== true && protocolVersion(probe) !== 2) return errorResult("Orchestration requires a compatible subagent provider (@tintinweb/pi-subagents protocol v2 or pi-subagents RPC v1); none replied.");
+      if (compatible !== true) return errorResult("Orchestration requires a compatible subagent provider (@tintinweb/pi-subagents protocol v2 or pi-subagents RPC v1); none replied.");
       const currentActor = getActor();
       if (getScope() !== "session" || getPiLoopEnv() !== undefined || getStore() !== store
         || currentActor?.sessionId !== actor.sessionId

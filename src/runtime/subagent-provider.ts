@@ -295,7 +295,7 @@ export function createSubagentProviderSelector(candidates: readonly SubagentProv
       if (selected) return selected.probe(timeoutMs);
       // Probe together, choose by order: a candidate wins once every earlier one has answered no,
       // so an installed first choice is never held up by a later candidate's timeout.
-      const answers = candidates.map((candidate) => candidate.probe(timeoutMs).catch(() => false));
+      const answers = candidates.map((candidate) => candidate.probe(timeoutMs));
       return answers.reduce<Promise<boolean>>(async (earlier, answer, index) => {
         if (await earlier) return true;
         if (!(await answer)) return false;

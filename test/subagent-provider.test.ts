@@ -162,6 +162,26 @@ describe("pi-subagents RPC v1 provider", () => {
     expect(ready).toHaveBeenCalledTimes(1);
   });
 
+  it("A7: a bus that throws on emit rejects the call and leaves no listener or timer behind", async () => {
+    const { bus, listenerCount } = createBus();
+    let requestId = "";
+    const throwing = { on: bus.on, emit: (event: string, data: unknown) => { requestId = (data as { requestId: string }).requestId; throw new Error(`cannot emit ${event}`); } };
+    await expect(createSubagentsV1Provider(throwing).stop("run-1", 1_000)).rejects.toThrow("cannot emit subagents:rpc:v1:request");
+    expect(listenerCount(`subagents:rpc:v1:reply:${requestId}`)).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // A reply delivered during emit settles the call; a later emit failure cannot change it.
+    const racing = createBus();
+    const replied = {
+      on: racing.bus.on,
+      emit(event: string, data: unknown) {
+        racing.bus.emit(`subagents:rpc:v1:reply:${(data as { requestId: string }).requestId}`, { version: 1, success: true, data: { state: "stopping" } });
+        throw new Error(`late failure on ${event}`);
+      },
+    };
+    await expect(createSubagentsV1Provider(replied).stop("run-1", 1_000)).resolves.toEqual({ state: "stopping" });
+  });
+
   it("A6: declares what the provider cannot do", () => {
     const v1 = createSubagentsV1Provider(createBus().bus);
     expect(v1).toMatchObject({ defaultAgentType: "worker", supportsMaxTurns: false });
@@ -213,6 +233,12 @@ describe("provider selection", () => {
     await expect(selector.stop("run-1", 1_000)).rejects.toThrow(/No compatible subagent provider/);
     expect(emitted).toHaveLength(before);
     expect(selector.workerId({ id: "x" })).toBeUndefined();
+  });
+
+  it("S6: needs at least one candidate, and cannot consume before a provider is selected", async () => {
+    expect(() => createSubagentProviderSelector([])).toThrow("needs at least one candidate");
+    const { selector } = both({});
+    await expect(selector.consume("run-1", 1_000)).rejects.toThrow(/No compatible subagent provider/);
   });
 
   it("S4: the first selection is kept for the runtime's lifetime", async () => {
