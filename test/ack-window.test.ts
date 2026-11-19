@@ -106,8 +106,8 @@ describe("settlement classification", () => {
   });
 
   it("flags a verified success as congestion only after a run of slow samples", () => {
-    const floor = { minMsPerToken: 20 };
-    const fast = { outcome: "completed" as const, attempt: 1, verifyPassed: true, outputTokens: 100 };
+    const floor = { delayFloors: { "2": 20 } };
+    const fast = { outcome: "completed" as const, attempt: 1, verifyPassed: true, outputTokens: 100, toolUses: 6 };
     const slowDuration = 100 * 20 * DELAY_CONGESTION_FACTOR + 100;
     expect(classifySettlement({ ...fast, durationMs: 100 * 20 * DELAY_CONGESTION_FACTOR }, { ...floor, delayStreak: 1 })).toBe("ack");
     expect(classifySettlement({ ...fast, durationMs: slowDuration }, floor)).toBe("ack");
@@ -118,20 +118,24 @@ describe("settlement classification", () => {
 
   it("tracks the delay floor from first attempts only", () => {
     const window = createAckWindow(8);
-    const first = observeDelay(window, { durationMs: 3000, outputTokens: 100, attempt: 1 });
-    expect(first.minMsPerToken).toBe(30);
-    expect(observeDelay(first, { durationMs: 1000, outputTokens: 100, attempt: 2 }).minMsPerToken).toBe(30);
-    expect(observeDelay(first, { durationMs: 1000, outputTokens: 100, attempt: 1 }).minMsPerToken).toBe(10);
-    expect(observeDelay(first, { durationMs: 9000, outputTokens: 100, attempt: 1 }).minMsPerToken).toBe(30);
-    expect(observeDelay(first, { durationMs: 1000, attempt: 1 })).toBe(first);
+    const first = observeDelay(window, { durationMs: 3000, outputTokens: 100, attempt: 1, toolUses: 6 });
+    expect(first.delayFloors).toEqual({ "2": 30 });
+    expect(observeDelay(first, { durationMs: 1000, outputTokens: 100, attempt: 2, toolUses: 6 }).delayFloors).toEqual({ "2": 30 });
+    expect(observeDelay(first, { durationMs: 1000, outputTokens: 100, attempt: 1, toolUses: 6 }).delayFloors).toEqual({ "2": 10 });
+    expect(observeDelay(first, { durationMs: 9000, outputTokens: 100, attempt: 1, toolUses: 6 }).delayFloors).toEqual({ "2": 30 });
+    expect(observeDelay(first, { durationMs: 1000, attempt: 1, toolUses: 6 })).toBe(first);
+    // Another tool-use class keeps its own floor.
+    expect(observeDelay(first, { durationMs: 1000, outputTokens: 100, attempt: 1, toolUses: 0 }).delayFloors).toEqual({ "0": 10, "2": 30 });
   });
 });
 
 describe("persisted window validation", () => {
   it("accepts well-formed windows and rejects malformed ones", () => {
-    const valid = { mode: "aimd", cwnd: 2.5, ssthresh: 2, acks: 3, losses: 1, taskLosses: 2, recoverAt: 40, minMsPerToken: 12.5 };
+    const valid = { mode: "aimd", cwnd: 2.5, ssthresh: 2, acks: 3, losses: 1, taskLosses: 2, recoverAt: 40, minMsPerToken: 12.5, delayFloors: { "0": 9.5, "3": 40 } };
     expect(validateAckWindow(valid, 4)).toBe(true);
-    expect(validateAckWindow({ ...valid, recoverAt: undefined, minMsPerToken: undefined }, 4)).toBe(true);
+    expect(validateAckWindow({ ...valid, recoverAt: undefined, minMsPerToken: undefined, delayFloors: undefined }, 4)).toBe(true);
+    // A window persisted before per-class floors carries only the single floor.
+    expect(validateAckWindow({ ...valid, delayFloors: undefined }, 4)).toBe(true);
     for (const bad of [
       { ...valid, cwnd: 0.5 },
       { ...valid, cwnd: 5 },
@@ -139,6 +143,9 @@ describe("persisted window validation", () => {
       { ...valid, acks: -1 },
       { ...valid, taskLosses: undefined },
       { ...valid, minMsPerToken: 0 },
+      { ...valid, delayFloors: { "0": 0 } },
+      { ...valid, delayFloors: { "4": 10 } },
+      { ...valid, delayFloors: [10] },
       { ...valid, recoverAt: Number.NaN },
       { ...valid, mode: "cubic" },
       null,
@@ -158,8 +165,8 @@ describe("review regressions", () => {
   });
 
   it("R7: one slow sample is not congestion; two consecutive slow samples are", () => {
-    const floor = { ...createAckWindow(8), minMsPerToken: 20 };
-    const slow = { outcome: "completed" as const, attempt: 1, verifyPassed: true, outputTokens: 100, durationMs: 100 * 20 * 3 };
+    const floor = { ...createAckWindow(8), delayFloors: { "2": 20 } };
+    const slow = { outcome: "completed" as const, attempt: 1, verifyPassed: true, outputTokens: 100, durationMs: 100 * 20 * 3, toolUses: 6 };
     const fast = { ...slow, durationMs: 100 * 20 };
     expect(classifySettlement(slow, floor)).toBe("ack");
     const afterOne = observeDelay(floor, slow);
@@ -169,9 +176,9 @@ describe("review regressions", () => {
   });
 
   it("R7: a retried success is never classified as delay congestion (Karn)", () => {
-    const primed = { ...createAckWindow(8), minMsPerToken: 20, delayStreak: 5 };
-    expect(classifySettlement({ outcome: "completed", attempt: 2, verifyPassed: true, outputTokens: 100, durationMs: 999_999 }, primed)).toBe("retry_ack");
-    expect(observeDelay(primed, { attempt: 2, outputTokens: 100, durationMs: 999_999 }).delayStreak).toBe(5);
+    const primed = { ...createAckWindow(8), delayFloors: { "2": 20 }, delayStreak: 5 };
+    expect(classifySettlement({ outcome: "completed", attempt: 2, verifyPassed: true, outputTokens: 100, durationMs: 999_999, toolUses: 6 }, primed)).toBe("retry_ack");
+    expect(observeDelay(primed, { attempt: 2, outputTokens: 100, durationMs: 999_999, toolUses: 6 }).delayStreak).toBe(5);
   });
 });
 
@@ -191,5 +198,55 @@ describe("split multiplicative decrease", () => {
   it("S3: a rejected timeout still collapses to one and a rejection never cuts below one", () => {
     expect(applyAckSignal(grown, "timeout", 16, { at: 100, requestedAt: 50, rejected: true })).toMatchObject({ cwnd: 1, ssthresh: 5 });
     expect(applyAckSignal({ ...grown, cwnd: 1 }, "congestion", 16, { at: 100, requestedAt: 50, rejected: true })).toMatchObject({ cwnd: 1, ssthresh: 1 });
+  });
+});
+
+describe("delay signal comparability", () => {
+  const settle = (window: AckWindow, at: number, msPerToken: number, toolUses: number | undefined) => {
+    const evidence = { outcome: "completed" as const, result: "ok", attempt: 1, durationMs: msPerToken * 1000, outputTokens: 1000, toolUses };
+    const signal = classifySettlement(evidence, window);
+    return { signal, window: observeDelay(applyAckSignal(window, signal, 8, { at, requestedAt: at - 1 }), evidence) };
+  };
+  const run = (samples: Array<[msPerToken: number, toolUses: number | undefined]>) => {
+    let window = createAckWindow(8);
+    const signals: AckSignal[] = [];
+    for (const [index, [msPerToken, toolUses]] of samples.entries()) {
+      const step = settle(window, (index + 1) * 1000, msPerToken, toolUses);
+      window = step.window;
+      signals.push(step.signal);
+    }
+    return { window, signals };
+  };
+
+  it("D1: one cheap tool-less answer does not make tool-heavy work read as congestion", () => {
+    // An uncongested mixed batch: duration includes the worker's own tool time.
+    const { window, signals } = run([[30, 0], [120, 9], [95, 7], [140, 12], [110, 8], [100, 9], [130, 11], [90, 6]]);
+    expect(signals).not.toContain("congestion");
+    expect(window.losses).toBe(0);
+    expect(windowCapacity(window, 8)).toBe(8);
+  });
+
+  it("D2: one run of slow samples cuts once, not on every later slow sample", () => {
+    const { window, signals } = run([[20, 6], [60, 6], [60, 6], [60, 6]]);
+    expect(signals).toEqual(["ack", "ack", "congestion", "ack"]);
+    expect(window.losses).toBe(1);
+  });
+
+  it("D3 (control): comparable work that slows down is still congestion", () => {
+    const { window, signals } = run([[20, 6], [22, 7], [60, 6], [65, 8]]);
+    expect(signals).toEqual(["ack", "ack", "ack", "congestion"]);
+    expect(window).toMatchObject({ losses: 1, cwnd: 3, ssthresh: 3 });
+  });
+
+  it("D4: without a tool-use count there is no delay evidence", () => {
+    const { window, signals } = run([[20, undefined], [60, undefined], [60, undefined], [60, undefined]]);
+    expect(signals).toEqual(["ack", "ack", "ack", "ack"]);
+    expect(window.losses).toBe(0);
+  });
+
+  it("D5: a sample is compared only with work of a similar tool-use count", () => {
+    // Tool-less 20, light 40, heavy 100: each is its own floor, so none is delayed.
+    const { signals } = run([[20, 0], [40, 2], [100, 20], [22, 0], [44, 3], [105, 24]]);
+    expect(signals).not.toContain("congestion");
   });
 });

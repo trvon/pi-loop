@@ -267,6 +267,7 @@ function settleDispatch(
     verifyPassed: item.verify === undefined ? undefined : input.verify?.passed ?? false,
     durationMs: input.usage?.durationMs,
     outputTokens: input.usage?.tokens?.output,
+    toolUses: input.usage?.toolUses,
   };
   // Fixed pacing has no window but still tells congestion from task failure.
   const signal = classifySettlement(evidence, next.window ?? {});

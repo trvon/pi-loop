@@ -376,13 +376,13 @@ describe("orchestration ACK-clocked pacing", () => {
 
   it("treats a run of rising per-token latency on verified successes as congestion", () => {
     let state = verifiedBatch(4);
-    state = runToSettled(state, "1", "1", 100, { verify: pass, usage: { durationMs: 2_000, tokens: tokens(100) } });
-    state = runToSettled(state, "2", "2", 110, { verify: pass, usage: { durationMs: 2_200, tokens: tokens(100) } });
-    expect(state.window).toMatchObject({ cwnd: 3, minMsPerToken: 20 });
-    state = runToSettled(state, "3", "3", 120, { verify: pass, usage: { durationMs: 6_000, tokens: tokens(100) } });
+    state = runToSettled(state, "1", "1", 100, { verify: pass, usage: { toolUses: 5, durationMs: 2_000, tokens: tokens(100) } });
+    state = runToSettled(state, "2", "2", 110, { verify: pass, usage: { toolUses: 6, durationMs: 2_200, tokens: tokens(100) } });
+    expect(state.window).toMatchObject({ cwnd: 3, delayFloors: { "2": 20 } });
+    state = runToSettled(state, "3", "3", 120, { verify: pass, usage: { toolUses: 5, durationMs: 6_000, tokens: tokens(100) } });
     expect(state.window).toMatchObject({ cwnd: 4, acks: 3, delayStreak: 1 });
-    state = runToSettled(state, "4", "4", 130, { verify: pass, usage: { durationMs: 6_000, tokens: tokens(100) } });
-    expect(state.window).toMatchObject({ cwnd: 2, ssthresh: 2, losses: 1, acks: 3, delayStreak: 2, minMsPerToken: 20 });
+    state = runToSettled(state, "4", "4", 130, { verify: pass, usage: { toolUses: 7, durationMs: 6_000, tokens: tokens(100) } });
+    expect(state.window).toMatchObject({ cwnd: 2, ssthresh: 2, losses: 1, acks: 3, delayStreak: 0, delayFloors: { "2": 20 } });
     expect(state.work[3]?.status).toBe("completed");
   });
 
@@ -446,7 +446,7 @@ describe("review regressions: persisted verification", () => {
   function awaiting(state: ReturnType<typeof create>, key: string, at: number, result = "done") {
     return applyOrchestrationEvent(state, {
       type: "dispatch_awaiting_verify", at, expected: expectedOf(state), agentId: `agent-${key}`, result,
-      usage: { durationMs: 2000, tokens: tokens(100) },
+      usage: { toolUses: 3, durationMs: 2000, tokens: tokens(100) },
     });
   }
 
@@ -464,7 +464,7 @@ describe("review regressions: persisted verification", () => {
     const verified = applyOrchestrationEvent(state, { type: "dispatch_verified", at: 120, expected: expectedOf(state), agentId: "agent-1", verify: pass }).state;
     expect(verified.work[0]).toMatchObject({ status: "completed" });
     expect(verified.work[0]?.dispatches[0]).toMatchObject({ status: "completed", result: "done", verify: pass, consumeStatus: "provider_owned" });
-    expect(verified.window).toMatchObject({ cwnd: 2, acks: 1, minMsPerToken: 20 });
+    expect(verified.window).toMatchObject({ cwnd: 2, acks: 1, delayFloors: { "1": 20 } });
   });
 
   it("R6: rejects verification for dispatches that are not verifying", () => {

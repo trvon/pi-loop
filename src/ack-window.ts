@@ -30,10 +30,29 @@ export interface AckWindow {
    * it belongs to the same window and is not cut again (NewReno, RFC 6582).
    */
   recoverAt?: number;
-  /** Lowest observed milliseconds per output token: the uncongested floor. */
+  /**
+   * Lowest observed milliseconds per output token, per tool-use class: the
+   * uncongested floor for comparable work. Worker duration includes the
+   * worker's own tool time, so a tool-less answer and a tool-heavy one are not
+   * comparable and never share a floor.
+   */
+  delayFloors?: Partial<Record<DelayClass, number>>;
+  /** Written by releases that kept one floor for all work; no longer read. */
   minMsPerToken?: number;
-  /** Consecutive first-attempt samples above the delay threshold. */
+  /** Consecutive first-attempt samples above their class's delay threshold. */
   delayStreak?: number;
+}
+
+/** Tool-use classes for the delay signal: none, light, moderate, heavy. */
+export type DelayClass = "0" | "1" | "2" | "3";
+const DELAY_CLASSES: readonly DelayClass[] = ["0", "1", "2", "3"];
+
+/** Undefined when the provider reported no tool-use count: such work has no comparable floor. */
+export function delayClass(toolUses: number | undefined): DelayClass | undefined {
+  if (toolUses === undefined || !Number.isFinite(toolUses) || toolUses < 0) return undefined;
+  if (toolUses === 0) return "0";
+  if (toolUses <= 4) return "1";
+  return toolUses <= 16 ? "2" : "3";
 }
 
 /**
@@ -126,6 +145,7 @@ export interface SettlementEvidence {
   verifyPassed?: boolean;
   durationMs?: number;
   outputTokens?: number;
+  toolUses?: number;
 }
 
 /** Error text that names overload or a dropped connection rather than the task. */
@@ -139,7 +159,7 @@ export function msPerToken(evidence: Pick<SettlementEvidence, "durationMs" | "ou
   return durationMs / outputTokens;
 }
 
-export function classifySettlement(evidence: SettlementEvidence, window: Pick<AckWindow, "minMsPerToken" | "delayStreak">): AckSignal {
+export function classifySettlement(evidence: SettlementEvidence, window: Pick<AckWindow, "delayFloors" | "delayStreak">): AckSignal {
   if (evidence.outcome === "failed") {
     const error = evidence.error ?? "";
     if (TIMEOUT_ERROR.test(error)) return "timeout";
@@ -153,18 +173,32 @@ export function classifySettlement(evidence: SettlementEvidence, window: Pick<Ac
   return "ack";
 }
 
-function isDelayed(evidence: Pick<SettlementEvidence, "durationMs" | "outputTokens">, window: Pick<AckWindow, "minMsPerToken">): boolean {
+type DelaySample = Pick<SettlementEvidence, "durationMs" | "outputTokens" | "toolUses">;
+
+function isDelayed(evidence: DelaySample, window: Pick<AckWindow, "delayFloors">): boolean {
   const sample = msPerToken(evidence);
-  return sample !== undefined && window.minMsPerToken !== undefined && sample > window.minMsPerToken * DELAY_CONGESTION_FACTOR;
+  const sampleClass = delayClass(evidence.toolUses);
+  const floor = sampleClass === undefined ? undefined : window.delayFloors?.[sampleClass];
+  return sample !== undefined && floor !== undefined && sample > floor * DELAY_CONGESTION_FACTOR;
 }
 
-/** Fold a delay sample into the floor and streak. Retried work is excluded (Karn). */
-export function observeDelay(window: AckWindow, evidence: Pick<SettlementEvidence, "durationMs" | "outputTokens" | "attempt">): AckWindow {
+/**
+ * Fold a delay sample into its class floor and the streak. Retried work is
+ * excluded (Karn), as is work with no tool-use count. A streak that reached
+ * the threshold has been reported as congestion and starts over, so one run of
+ * slow samples cuts the window once.
+ */
+export function observeDelay(window: AckWindow, evidence: DelaySample & Pick<SettlementEvidence, "attempt">): AckWindow {
   const sample = msPerToken(evidence);
-  if (sample === undefined || evidence.attempt > 1) return window;
-  const delayStreak = isDelayed(evidence, window) ? (window.delayStreak ?? 0) + 1 : 0;
-  const minMsPerToken = window.minMsPerToken === undefined ? sample : Math.min(window.minMsPerToken, sample);
-  return { ...window, minMsPerToken, delayStreak };
+  const sampleClass = delayClass(evidence.toolUses);
+  if (sample === undefined || sampleClass === undefined || evidence.attempt > 1) return window;
+  const streak = isDelayed(evidence, window) ? (window.delayStreak ?? 0) + 1 : 0;
+  const floor = window.delayFloors?.[sampleClass];
+  return {
+    ...window,
+    delayFloors: { ...window.delayFloors, [sampleClass]: floor === undefined ? sample : Math.min(floor, sample) },
+    delayStreak: streak >= DELAY_CONGESTION_STREAK ? 0 : streak,
+  };
 }
 
 export function validateAckWindow(value: unknown, ceiling: number): value is AckWindow {
@@ -178,5 +212,13 @@ export function validateAckWindow(value: unknown, ceiling: number): value is Ack
     && count(window.acks) && count(window.losses) && count(window.taskLosses)
     && optionalFinite(window.recoverAt, 0)
     && optionalFinite(window.minMsPerToken, Number.MIN_VALUE)
+    && validDelayFloors(window.delayFloors)
     && (window.delayStreak === undefined || count(window.delayStreak));
+}
+
+function validDelayFloors(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(([key, floor]) => (DELAY_CLASSES as readonly string[]).includes(key)
+    && typeof floor === "number" && Number.isFinite(floor) && floor > 0);
 }
