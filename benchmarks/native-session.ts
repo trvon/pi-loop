@@ -120,6 +120,13 @@ export async function createNativeSession(options: {
       noContextFiles: true,
       extensionFactories: [
         (pi) => {
+          // Stand-in protocol-v2 worker provider: pi-loop offers its orchestration tools only when one answers.
+          pi.events.on("subagents:rpc:ping", (raw) => {
+            const requestId = (raw as { requestId?: unknown } | undefined)?.requestId;
+            if (typeof requestId === "string") pi.events.emit(`subagents:rpc:ping:reply:${requestId}`, { success: true, data: { version: 2 } });
+          });
+        },
+        (pi) => {
           // Capture memory scope synchronously; never retain or replace the caller's environment.
           const previous = { PI_LOOP: process.env.PI_LOOP, PI_LOOP_SCOPE: process.env.PI_LOOP_SCOPE, PI_LOOP_CONTEXT: process.env.PI_LOOP_CONTEXT };
           process.env.PI_LOOP = "off";

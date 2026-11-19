@@ -62,7 +62,7 @@ A workflow is one dynamic `LoopEntry` with a version-1 named-state definition.
 An orchestration is one finite, session-file-backed `LoopEntry` batch.
 
 - It accepts explicit independent work only; it never discovers TaskStore work or workflow executions.
-- Creation requires protocol-v2 `pi-subagents` and rejects memory/project/custom/off storage.
+- Creation requires a compatible provider (`@tintinweb/pi-subagents` protocol v2, or npm `pi-subagents` RPC v1) and rejects memory/project/custom/off storage. Worker access goes through `SubagentProvider` (`src/runtime/subagent-provider.ts`); the orchestration tools register only once a provider answers, and never unregister. The selected provider is kept for the runtime's lifetime. Provider differences (default agent type, turn limits, usage evidence) are declared on the adapter, never special-cased in the reducer.
 - Every dispatch is persisted before spawn and fenced by controller revision, owner runtime/generation, work ID, dispatch ID, attempt, and upstream agent ID.
 - `spawning`, `queued`, and `running` consume local capacity; pi-subagents retains its global queue.
 - Lifecycle evidence is bounded and persisted before any `subagents:rpc:consume`. Normal terminal results remain provider-owned; pi-loop does not consume them or send a duplicate aggregate wake.
@@ -164,7 +164,7 @@ Lint has two established optional-chain warnings; do not add new warnings. Workf
 - 25 active loops
 - 25 running monitors
 - 32 orchestration work items
-- 8 local orchestration workers under fixed pacing; `pacing: "aimd"` (the default unless `concurrency` or `PI_LOOP_PACING=fixed` is given) is bounded by its feedback window and the batch size, or by 8 unless every item declares `verify` (pi-subagents' provider-owned pool still queues beyond its own limit)
+- 8 local orchestration workers under fixed pacing; `pacing: "aimd"` (the default unless `concurrency` or `PI_LOOP_PACING=fixed` is given) is bounded by its feedback window and the batch size, or by 8 unless every item declares `verify` (protocol-v2 pi-subagents queues beyond its own pool; npm pi-subagents has no queue and a launch starts or fails)
 - 3 orchestration attempts per item
 - seven-day default loop lifetime; explicit `PI_LOOP_EXPIRES_IN` or per-loop `expiresIn` may be longer
 - five-minute self-paced default interval

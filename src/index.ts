@@ -22,7 +22,7 @@ import { sameLoopActivation } from "./loop-activation.js";
 import { resolveDefaultLoopExpiryMs } from "./loop-expiry.js";
 import { atMaxFires } from "./loop-reducer.js";
 import { MonitorManager } from "./monitor-manager.js";
-import { rpcCall, rpcProbe } from "./rpc/cross-extension-rpc.js";
+import { rpcCall } from "./rpc/cross-extension-rpc.js";
 import { buildLoopExpiredPayload } from "./runtime/loop-events.js";
 import { createMonitorOnDoneRuntime } from "./runtime/monitor-ondone-runtime.js";
 import {
@@ -33,6 +33,7 @@ import { resolveLoopStorageScope, resolveLoopStorePath, resolveTaskStorePath } f
 import { registerSessionRuntimeHooks } from "./runtime/session-runtime.js";
 import { isStaleExtensionContextError } from "./runtime/stale-context.js";
 import { createSubagentOrchestrationRuntime, type SubagentOrchestrationRuntime } from "./runtime/subagent-orchestration-runtime.js";
+import { createSubagentProviderSelector, createSubagentsV1Provider, createSubagentsV2Provider } from "./runtime/subagent-provider.js";
 import { createTaskBacklogRuntime } from "./runtime/task-backlog-runtime.js";
 import { createTaskProviderRuntime, type TaskProviderRuntime } from "./runtime/task-provider-runtime.js";
 import { createWorkflowVerifier } from "./runtime/verify-runner.js";
@@ -433,7 +434,13 @@ export default function (pi: ExtensionAPI) {
 
   // ── Session lifecycle ──
 
+  // Protocol v2 is preferred when both are installed; whichever answers first in that order is kept.
+  const subagentProvider = createSubagentProviderSelector([
+    createSubagentsV2Provider(pi.events, (channel, params, timeoutMs) => rpcCall(pi.events, channel, params, timeoutMs)),
+    createSubagentsV1Provider(pi.events),
+  ]);
   orchestrationRuntime = createSubagentOrchestrationRuntime({
+    provider: subagentProvider,
     events: pi.events,
     getStore: () => store,
     getScope: () => loopScope,
@@ -561,17 +568,46 @@ export default function (pi: ExtensionAPI) {
     cancelOrchestration: (id, action) => orchestrationRuntime!.cancel(id, action),
   });
 
-  registerSubagentOrchestrationTools({
-    pi,
-    registerTool,
-    getStore: () => store,
-    getScope: () => loopScope,
-    getPiLoopEnv: () => piLoopEnv,
-    getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId, generation: sessionGeneration } : undefined,
-    probeSubagents: () => rpcProbe(pi.events, "subagents:rpc:ping", 1_000),
-    updateWidget: () => widget.update(),
-    defaultPacing: defaultOrchestrationPacing,
-  });
+  // Orchestration cannot run without a compatible worker provider, so its tools
+  // are offered only once one answers: a model shown a tool that always fails
+  // tries it before the provider's own delegation tool. A provider may wire its
+  // RPC during session_start and then announce readiness, so both cues probe.
+  // Registration is one-way; persisted batches stay visible through LoopList
+  // and cancellable through LoopDelete either way.
+  const DETECTION_PROBE_MS = 250;
+  let orchestrationToolsRegistered = false;
+  function detectSubagentProvider(): void {
+    if (orchestrationToolsRegistered) return;
+    // Replies are in-process, so a short wait is enough to tell an absent provider from a present one
+    // and keeps registration ahead of the first request.
+    void subagentProvider.probe(DETECTION_PROBE_MS).then((compatible) => {
+      if (!compatible || orchestrationToolsRegistered) return;
+      try {
+        registerSubagentOrchestrationTools({
+          pi,
+          registerTool,
+          getStore: () => store,
+          getScope: () => loopScope,
+          getPiLoopEnv: () => piLoopEnv,
+          getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId, generation: sessionGeneration } : undefined,
+          probeSubagents: () => subagentProvider.probe(1_000),
+          getProvider: () => subagentProvider,
+          updateWidget: () => widget.update(),
+          defaultPacing: defaultOrchestrationPacing,
+        });
+        orchestrationToolsRegistered = true;
+        debug(`orchestration tools registered (${subagentProvider.name})`);
+        // Recovered batches held their pending work until a provider was selected.
+        void orchestrationRuntime?.pump().catch((error) => debug("orchestration pump after provider selection failed", error));
+      } catch (error) {
+        if (!isStaleExtensionContextError(error)) throw error;
+        debug("orchestration tool registration skipped: extension context went stale");
+      }
+    }).catch((error) => debug("orchestration provider detection failed", error));
+  }
+  detectSubagentProvider();
+  pi.on("session_start", detectSubagentProvider);
+  subagentProvider.onReady(detectSubagentProvider);
 
   registerWorkflowTools({
     pi,

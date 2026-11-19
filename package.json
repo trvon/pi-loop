@@ -75,6 +75,8 @@
     "test:e2e:routing": "npm run build && node test/e2e/controller-routing-conformance.mjs",
     "test:e2e:routing:native": "node --import tsx benchmarks/evaluate-native-routing.mjs",
     "test:e2e:orchestration": "npm run build && node test/e2e/orchestration-conformance.mjs",
+    "test:e2e:orchestration:v1": "node --import tsx test/e2e/orchestration-v1-live.mts",
+    "test:e2e:orchestration:v2": "node --import tsx test/e2e/orchestration-v2-live.mts",
     "test:property": "TZ=UTC vitest run test/property --maxWorkers=1 --no-file-parallelism --passWithNoTests",
     "test:fuzz": "FC_NUM_RUNS=10000 npm run test:property",
     "bench": "TZ=UTC vitest bench --run --maxWorkers=1 --no-file-parallelism --passWithNoTests",

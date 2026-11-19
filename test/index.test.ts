@@ -718,6 +718,272 @@ describe("subagent orchestration runtime wiring", () => {
     }
   });
 
+  describe("provider-gated tool registration", () => {
+    const start = { type: "session_start", reason: "startup" };
+
+    it("P1: registers no orchestration tools when no subagent provider answers", async () => {
+      vi.useFakeTimers();
+      try {
+        const { pi, toolMap, emitExtension } = createMockPi();
+        extension(pi as any);
+        await emitExtension("session_start", start, createCtx({ sessionId }));
+        // Past the probe timeout, so an unanswered ping has settled.
+        await vi.advanceTimersByTimeAsync(1_100);
+
+        expect(toolMap.has("OrchestrationCreate")).toBe(false);
+        expect(toolMap.has("OrchestrationGet")).toBe(false);
+        // Control: tools that need no provider are unaffected.
+        expect(toolMap.has("LoopCreate")).toBe(true);
+        expect(toolMap.has("WorkflowCreate")).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("P2: registers no orchestration tools for an incompatible provider protocol", async () => {
+      const { pi, toolMap, emitExtension } = createMockPi({ respondToSubagentPing: 1 });
+      extension(pi as any);
+      await flushAsync();
+      await emitExtension("session_start", start, createCtx({ sessionId }));
+      await flushAsync();
+
+      expect(toolMap.has("OrchestrationCreate")).toBe(false);
+      expect(toolMap.has("OrchestrationGet")).toBe(false);
+    });
+
+    it("P3: registers the tools once a compatible provider answers, and only once", async () => {
+      const { pi, toolMap, emitExtension } = createMockPi({ respondToSubagentPing: 2 });
+      const registerTool = vi.spyOn(pi, "registerTool");
+      extension(pi as any);
+      await flushAsync();
+      await emitExtension("session_start", start, createCtx({ sessionId }));
+      await flushAsync();
+      pi.events.emit("subagents:ready", {});
+      await flushAsync();
+
+      expect(toolMap.has("OrchestrationCreate")).toBe(true);
+      expect(toolMap.has("OrchestrationGet")).toBe(true);
+      const names = registerTool.mock.calls.map(([definition]) => (definition as { name: string }).name);
+      expect(names.filter((name) => name === "OrchestrationCreate")).toHaveLength(1);
+      expect(names.filter((name) => name === "OrchestrationGet")).toHaveLength(1);
+    });
+
+    it("P4: registers the tools when a provider wires its RPC during session_start and announces readiness", async () => {
+      const options: Parameters<typeof createMockPi>[0] = {};
+      const { pi, toolMap, emitExtension } = createMockPi(options);
+      extension(pi as any);
+      await flushAsync();
+      await emitExtension("session_start", start, createCtx({ sessionId }));
+      expect(toolMap.has("OrchestrationCreate")).toBe(false);
+
+      options.respondToSubagentPing = 2;
+      pi.events.emit("subagents:ready", {});
+      await flushAsync();
+
+      expect(toolMap.has("OrchestrationCreate")).toBe(true);
+      expect(toolMap.has("OrchestrationGet")).toBe(true);
+    });
+
+    it("P5: a persisted batch stays listable and cancellable without a provider", async () => {
+      const withProvider = createMockPi({ respondToSubagentPing: 2 });
+      extension(withProvider.pi as any);
+      await flushAsync();
+      await withProvider.emitExtension("turn_start", null, createCtx({ sessionId }));
+      await withProvider.toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Review", work: [{ prompt: "A" }] });
+      await withProvider.emitExtension("session_shutdown", { type: "session_shutdown" }, createCtx({ sessionId }));
+
+      const without = createMockPi();
+      extension(without.pi as any);
+      await flushAsync();
+      await without.emitExtension("session_start", start, createCtx({ sessionId }));
+      await without.emitExtension("turn_start", null, createCtx({ sessionId }));
+
+      expect(without.toolMap.has("OrchestrationCreate")).toBe(false);
+      const listed = await without.toolMap.get("LoopList")!.execute!("list", {});
+      expect(listed.content[0].text).toContain("[orchestration:");
+      const deleted = await without.toolMap.get("LoopDelete")!.execute!("delete", { id: "1" });
+      expect(deleted.content[0].text).toMatch(/Orchestration #1 cancell/);
+    });
+  });
+
+  describe("pi-subagents RPC v1 provider", () => {
+    const start = { type: "session_start", reason: "startup" };
+    const ping = { version: 1, methods: ["ping", "status", "spawn", "stop"], capabilities: { asyncSpawn: true, stop: true } };
+
+    function serveV1(pi: any, handle: (method: string, params: any) => unknown) {
+      const requests: Array<{ method: string; params: any }> = [];
+      pi.events.on("subagents:rpc:v1:request", (raw: any) => {
+        requests.push({ method: raw.method, params: raw.params });
+        const data = handle(raw.method, raw.params);
+        if (data === undefined) return;
+        queueMicrotask(() => pi.events.emit(`subagents:rpc:v1:reply:${raw.requestId}`, { version: 1, requestId: raw.requestId, method: raw.method, success: true, data }));
+      });
+      return requests;
+    }
+
+    it("I1: runs a batch end to end through the v1 provider", async () => {
+      vi.useFakeTimers();
+      try {
+        let nextRun = 0;
+        const { pi, toolMap, emittedEvents, emitExtension } = createMockPi();
+        const requests = serveV1(pi, (method) => method === "ping" ? ping : method === "spawn" ? { text: "Async", details: { mode: "single", runId: `run-${++nextRun}` } } : method === "stop" ? { state: "stopping" } : undefined);
+        extension(pi as any);
+        const ctx = createCtx({ sessionId });
+        await emitExtension("session_start", start, ctx);
+        // The v2 probe has to time out before the second-choice provider is selected.
+        await vi.advanceTimersByTimeAsync(1_100);
+        await emitExtension("turn_start", null, ctx);
+        expect(toolMap.has("OrchestrationCreate")).toBe(true);
+
+        const created = await toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Fix modules", work: [{ prompt: "Fix A" }, { prompt: "Fix B", agentType: "reviewer" }], concurrency: 2 });
+        expect(created.content[0].text).toContain("Orchestration #1 created");
+        await emitExtension("agent_end", null, ctx);
+        await vi.advanceTimersByTimeAsync(10);
+
+        const spawns = requests.filter((request) => request.method === "spawn");
+        expect(spawns.map((request) => request.params.agent)).toEqual(["delegate", "reviewer"]);
+        // The schema the model sees names the default this provider will use.
+        expect((toolMap.get("OrchestrationCreate")!.parameters as any).properties.agentType.description).toContain("default: delegate");
+        expect(spawns.every((request) => request.params.context === "fresh" && !("maxTurns" in request.params))).toBe(true);
+        expect(emittedEvents.filter((event) => event.name === "subagents:rpc:spawn")).toHaveLength(0);
+
+        pi.events.emit("subagent:async-complete", { id: "run-1", success: true, state: "complete", durationMs: 2_000, totalTokens: { input: 10, output: 100, total: 110 }, results: [{ output: "A fixed." }] });
+        pi.events.emit("subagent:async-complete", { id: "run-2", success: false, state: "failed", results: [{ error: "TypeError: x" }] });
+        await vi.advanceTimersByTimeAsync(10);
+
+        const first = await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1", workId: "1" });
+        expect(first.content[0].text).toContain("Work #1 · complete");
+        expect(first.content[0].text).toContain("Result: A fixed.");
+        const second = await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1", workId: "2" });
+        expect(second.content[0].text).toContain("Work #2 · failed");
+        expect(second.content[0].text).toContain("Error: TypeError: x");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("I3: an unknown agent fails its item without shrinking the window", async () => {
+      vi.useFakeTimers();
+      try {
+        const { pi, toolMap, emitExtension } = createMockPi();
+        pi.events.on("subagents:rpc:v1:request", (raw: any) => {
+          queueMicrotask(() => pi.events.emit(`subagents:rpc:v1:reply:${raw.requestId}`, raw.method === "ping"
+            ? { version: 1, success: true, data: ping }
+            : { version: 1, success: false, error: { code: "execution_failed", message: "Unknown agent: Explroe" } }));
+        });
+        extension(pi as any);
+        const ctx = createCtx({ sessionId });
+        await emitExtension("session_start", start, ctx);
+        await vi.advanceTimersByTimeAsync(1_100);
+        await emitExtension("turn_start", null, ctx);
+        await toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Typo", agentType: "Explroe", work: [{ prompt: "A" }, { prompt: "B" }, { prompt: "C" }, { prompt: "D" }] });
+        await emitExtension("agent_end", null, ctx);
+        await vi.advanceTimersByTimeAsync(10);
+
+        const inspected = (await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1" })).content[0].text as string;
+        expect(inspected).toContain("needs attention");
+        expect(inspected).toMatch(/aimd window=3\/4 losses=0 taskLosses=\d/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    describe("recovered batch before a provider is selected", () => {
+      async function persistPendingBatch(): Promise<void> {
+        const first = createMockPi();
+        serveV1(first.pi, (method) => method === "ping" ? ping : undefined);
+        extension(first.pi as any);
+        const ctx = createCtx({ sessionId });
+        await first.emitExtension("session_start", start, ctx);
+        await vi.advanceTimersByTimeAsync(1_100);
+        await first.emitExtension("turn_start", null, ctx);
+        const created = await first.toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Recovered", work: [{ prompt: "A" }, { prompt: "B" }] });
+        expect(created.content[0].text).toContain("Orchestration #1 created");
+        // The first runtime ends before the parent goes idle, so nothing was dispatched.
+        await first.emitExtension("session_shutdown", { type: "session_shutdown" }, ctx);
+        // Pi restarts after the first runtime's owner lease has lapsed, so the next runtime adopts the batch.
+        await vi.advanceTimersByTimeAsync(121_000);
+      }
+
+      const inspect = async (toolMap: Map<string, any>) => (await toolMap.get("LoopList")!.execute!("list", {})).content[0].text as string;
+
+      it("I4: waits for the provider instead of failing pending work, then dispatches", async () => {
+        vi.useFakeTimers();
+        try {
+          await persistPendingBatch();
+          let nextRun = 0;
+          const second = createMockPi();
+          const requests = serveV1(second.pi, (method) => method === "ping" ? ping : method === "spawn" ? { details: { runId: `run-${++nextRun}` } } : undefined);
+          extension(second.pi as any);
+          const ctx = createCtx({ sessionId });
+          await second.emitExtension("session_start", start, ctx);
+          await second.emitExtension("turn_start", null, ctx);
+          await second.emitExtension("agent_end", null, ctx);
+          await vi.advanceTimersByTimeAsync(5);
+
+          // The v2 probe has not timed out yet, so no provider is selected.
+          expect(requests.filter((request) => request.method === "spawn")).toHaveLength(0);
+          const waiting = await inspect(second.toolMap);
+          expect(waiting).toContain("[orchestration:active]");
+          expect(waiting).toContain("0/2 complete · 0/2 in flight · 2 pending");
+
+          await vi.advanceTimersByTimeAsync(1_100);
+          expect(requests.filter((request) => request.method === "spawn")).toHaveLength(2);
+          expect(await inspect(second.toolMap)).toContain("0/2 complete · 2/2 in flight");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("I5: with no provider at all, pending work stays pending and nothing is charged", async () => {
+        vi.useFakeTimers();
+        try {
+          await persistPendingBatch();
+          const second = createMockPi();
+          extension(second.pi as any);
+          const ctx = createCtx({ sessionId });
+          await second.emitExtension("session_start", start, ctx);
+          await second.emitExtension("turn_start", null, ctx);
+          await second.emitExtension("agent_end", null, ctx);
+          await vi.advanceTimersByTimeAsync(10_000);
+
+          const listed = await inspect(second.toolMap);
+          expect(listed).toContain("[orchestration:active]");
+          expect(listed).toContain("0/2 complete · 0/2 in flight · 2 pending");
+          expect(listed).not.toContain("failed");
+          expect(listed).not.toContain("uncertain");
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
+    it("I2: a v1 run reported stopped is kept uncertain, never retried", async () => {
+      vi.useFakeTimers();
+      try {
+        const { pi, toolMap, emitExtension } = createMockPi();
+        const requests = serveV1(pi, (method) => method === "ping" ? ping : method === "spawn" ? { details: { runId: "run-1" } } : method === "stop" ? { state: "stopping" } : undefined);
+        extension(pi as any);
+        const ctx = createCtx({ sessionId });
+        await emitExtension("session_start", start, ctx);
+        await vi.advanceTimersByTimeAsync(1_100);
+        await emitExtension("turn_start", null, ctx);
+        await toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Fix", work: [{ prompt: "Fix A" }], maxAttempts: 3 });
+        await emitExtension("agent_end", null, ctx);
+        await vi.advanceTimersByTimeAsync(10);
+
+        pi.events.emit("subagent:async-complete", { id: "run-1", success: false, state: "stopped", stopped: true });
+        await vi.advanceTimersByTimeAsync(10);
+
+        const inspected = await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1", workId: "1" });
+        expect(inspected.content[0].text).toContain("Work #1 · uncertain");
+        expect(requests.filter((request) => request.method === "spawn")).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("dispatches a bounded batch, preserves provider completion, and wakes the idle parent once", async () => {
     let nextAgent = 0;
     const { pi, toolMap, emittedEvents, sentMessages, emitExtension } = createMockPi({

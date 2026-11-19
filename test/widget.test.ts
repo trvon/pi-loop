@@ -282,7 +282,7 @@ describe("LoopWidget status rendering", () => {
     widget.update();
     expect(latestStatusCall()).toEqual([
       "loops",
-      "◇ 1 orchestration | #1 active · 0/2 complete · 0 reserved · 2 pending",
+      "◇ 1 orchestration | #1 active · 0/2 complete · 0/2 in flight · 2 pending",
     ]);
   });
 

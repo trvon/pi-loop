@@ -107,11 +107,11 @@ describe("orchestration reducer properties", () => {
   });
 
   it("keeps aimd dispatch inside the ACK window, counts every signal once, never cuts for task failures, and bounds free congestion retries", () => {
-    type Step = "fill" | "complete" | "empty" | "task_error" | "overload" | "overload_idle" | "timeout" | "spawn_failed";
+    type Step = "fill" | "complete" | "empty" | "task_error" | "overload" | "overload_idle" | "timeout" | "spawn_failed" | "spawn_refused";
     fc.assert(fc.property(
       fc.integer({ min: 1, max: 32 }),
       fc.integer({ min: 1, max: 3 }),
-      fc.array(fc.constantFrom<Step>("fill", "complete", "empty", "task_error", "overload", "overload_idle", "timeout", "spawn_failed"), { minLength: 1, maxLength: 60 }),
+      fc.array(fc.constantFrom<Step>("fill", "complete", "empty", "task_error", "overload", "overload_idle", "timeout", "spawn_failed", "spawn_refused"), { minLength: 1, maxLength: 60 }),
       (workCount, maxAttempts, steps) => {
         let state = createOrchestrationState({
           goal: "aimd property",
@@ -144,8 +144,8 @@ describe("orchestration reducer properties", () => {
           const dispatch = active?.dispatches.at(-1);
           if (!active || !dispatch?.agentId) continue;
           const windowBefore = state.window!;
-          state = step === "spawn_failed"
-            ? applyChecked(state, { type: "dispatch_spawn_failed", at: at++, expected: expected(), workId: active.id, dispatchId: dispatch.dispatchId, error: "spawn" })
+          state = step === "spawn_failed" || step === "spawn_refused"
+            ? applyChecked(state, { type: "dispatch_spawn_failed", at: at++, expected: expected(), workId: active.id, dispatchId: dispatch.dispatchId, error: step === "spawn_refused" ? "Unknown agent: x" : "spawn", ...(step === "spawn_refused" ? { permanent: true } : {}) })
             : applyChecked(state, {
                 type: "dispatch_settled",
                 at: at++,
@@ -158,7 +158,7 @@ describe("orchestration reducer properties", () => {
               });
           signals += 1;
           const window = state.window!;
-          if (step === "empty" || step === "task_error") {
+          if (step === "empty" || step === "task_error" || step === "spawn_refused") {
             expect(window.cwnd).toBe(windowBefore.cwnd);
             expect(window.ssthresh).toBe(windowBefore.ssthresh);
           }

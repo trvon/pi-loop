@@ -1,4 +1,4 @@
-import { getOrchestrationCounts } from "../orchestration-reducer.js";
+import { getOrchestrationCapacity, getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { OrchestrationCancellation } from "../runtime/subagent-orchestration-runtime.js";
 import { displayRows, type ToolDisplayDetails, type ToolDisplayTone } from "../tools/tool-result.js";
 import type {
@@ -14,7 +14,7 @@ import type {
 export function orchestrationCancellationMessage(id: string, result: OrchestrationCancellation): string {
   if (result === "deleted") return `Orchestration #${id} cancelled and deleted`;
   if (result === "paused") return `Orchestration #${id} cancelled and paused`;
-  if (result === "retained") return `Orchestration #${id} cancellation recorded; retained and paused because worker termination is unconfirmed. No automatic retry or consume. Inspect OrchestrationGet; protocol v2 cannot prove safe cleanup.`;
+  if (result === "retained") return `Orchestration #${id} cancellation recorded; retained and paused because worker termination is unconfirmed. No automatic retry or consume. Inspect OrchestrationGet; a stop request is not proof the worker ended.`;
   if (result === "context_changed") return `Orchestration #${id} session changed during cancellation; inspect the original session before retrying. Deletion is not confirmed.`;
   return `Orchestration #${id} cancellation failed; inspect OrchestrationGet and retry.`;
 }
@@ -49,11 +49,21 @@ function outputOwnershipLabel(status: OrchestrationConsumeStatus): string {
   return "not applicable";
 }
 
+/**
+ * Reserved work against what may be dispatched right now: the aimd window, or
+ * the fixed concurrency. Capacity is shown only while the controller is still
+ * dispatching; a reservation is local intent, not observed execution.
+ */
+export function orchestrationInFlightLabel(state: OrchestrationState): string {
+  const reserved = getOrchestrationCounts(state).active;
+  return state.status === "active" ? `${reserved}/${getOrchestrationCapacity(state)} in flight` : `${reserved} reserved`;
+}
+
 export function orchestrationProgressLabel(state: OrchestrationState): string {
   const counts = getOrchestrationCounts(state);
   const parts = [
     `${counts.completed}/${state.work.length} complete`,
-    `${counts.active} reserved`,
+    orchestrationInFlightLabel(state),
   ];
   for (const status of ["spawning", "queued", "running", "verifying"] as const) {
     const count = state.work.filter((item) => item.status === "active" && item.dispatches.at(-1)?.status === status).length;
@@ -91,6 +101,14 @@ export function orchestrationWorkSummary(item: OrchestrationWorkItem): string {
   return line;
 }
 
+/** Pacing limits: the aimd window against its ceiling, or the fixed concurrency. */
+export function orchestrationLimitsLabel(state: OrchestrationState): string {
+  if (!state.window) return `fixed concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`;
+  // Before any loss the threshold is the ceiling and says nothing; it is shown once it sits below.
+  const ssthresh = state.window.ssthresh < state.concurrency ? ` ssthresh=${state.window.ssthresh}` : "";
+  return `aimd window=${Math.floor(state.window.cwnd)}/${state.concurrency}${ssthresh} losses=${state.window.losses} taskLosses=${state.window.taskLosses} maxAttempts=${state.maxAttempts}`;
+}
+
 export function orchestrationControllerText(entry: LoopEntry): string {
   const state = entry.orchestration;
   if (!state) return `Orchestration #${entry.id} unavailable`;
@@ -98,10 +116,8 @@ export function orchestrationControllerText(entry: LoopEntry): string {
     `Orchestration #${entry.id} · ${orchestrationStatusLabel(state.status)}`,
     `Goal: ${state.goal}`,
     `Progress: ${orchestrationProgressLabel(state)}`,
-    state.window
-      ? `Limits: aimd window=${Math.floor(state.window.cwnd)}/${state.concurrency}${state.window.ssthresh < state.concurrency ? ` ssthresh=${state.window.ssthresh}` : ""} losses=${state.window.losses} taskLosses=${state.window.taskLosses} maxAttempts=${state.maxAttempts}`
-      : `Limits: fixed concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`,
-    "Reserved: local capacity; dispatch state is last reported, not proof of current execution.",
+    `Limits: ${orchestrationLimitsLabel(state)}`,
+    "In flight: local reservations against capacity; dispatch state is last reported, not proof of current execution.",
     ...state.work.map(orchestrationWorkSummary),
   ].join("\n");
 }

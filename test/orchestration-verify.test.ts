@@ -66,7 +66,7 @@ describe("orchestration verifier runtime", () => {
     // Initial window min(3, batch) dispatches both items at once.
     expect(h.rpc.mock.calls.filter(([channel]) => channel === "subagents:rpc:spawn")).toHaveLength(2);
 
-    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "implemented sum", durationMs: 4000, tokens: { input: 50, output: 200, total: 250 } });
+    h.pi.events.emit("subagents:completed", { id: "agent-1", result: "implemented sum", toolUses: 3, durationMs: 4000, tokens: { input: 50, output: 200, total: 250 } });
     await h.flush();
     expect(h.runVerify).toHaveBeenCalledTimes(1);
     expect(h.pendingVerifies[0]?.request).toMatchObject({ command: "node --test sum.test.js", cwd: "/work/repo" });
@@ -81,7 +81,7 @@ describe("orchestration verifier runtime", () => {
     await h.flush();
     expect(h.state().work[0]).toMatchObject({ status: "completed" });
     expect(h.state().work[0]?.dispatches[0]).toMatchObject({ verify: pass, usage: { durationMs: 4000 } });
-    expect(h.state().window).toMatchObject({ cwnd: 2, acks: 1, minMsPerToken: 20 });
+    expect(h.state().window).toMatchObject({ cwnd: 2, acks: 1, delayFloors: { "1": 20 } });
     h.runtime.dispose();
   });
 

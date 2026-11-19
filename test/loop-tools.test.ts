@@ -383,8 +383,33 @@ describe("LoopList", () => {
 
     const out = await h.text("LoopList", {});
     expect(out).toContain("[orchestration:active]");
-    expect(out).toContain("0/1 complete · 0 reserved · 1 pending");
+    expect(out).toContain("0/1 complete · 0/3 in flight · 1 pending");
     expect(out).not.toContain("pending=1 active=0");
+  });
+
+  it("shows each batch's pacing limits on its LoopList row", async () => {
+    const h = setup();
+    const owner = { sessionId: "s", runtimeId: "r", generation: 1 };
+    h.store.create({ type: "dynamic" }, "Fixed batch", {
+      recurring: true,
+      orchestration: { owner, definition: { goal: "Fixed batch", work: [{ prompt: "A" }, { prompt: "B" }], concurrency: 2 } },
+    });
+    const aimd = h.store.create({ type: "dynamic" }, "Paced batch", {
+      recurring: true,
+      orchestration: { owner, definition: { goal: "Paced batch", work: Array.from({ length: 8 }, (_, index) => ({ prompt: `P${index}` })), pacing: "aimd" } },
+    });
+
+    const before = await h.text("LoopList", {});
+    expect(before).toContain("[fixed concurrency=2 maxAttempts=1]");
+    expect(before).toContain("[aimd window=3/8 losses=0 taskLosses=0 maxAttempts=1]");
+    expect(before).not.toContain("ssthresh");
+
+    // After a loss the slow-start threshold sits below the ceiling and is shown.
+    const state = aimd.orchestration!;
+    h.store.mutateOrchestration(aimd.id, { type: "dispatch_requested", at: 10, expected: { revision: state.revision, ownerRuntimeId: "r", generation: 1 }, workId: "1", dispatchId: "d1" });
+    const requested = h.store.get(aimd.id)!.orchestration!;
+    h.store.mutateOrchestration(aimd.id, { type: "dispatch_spawn_failed", at: 11, expected: { revision: requested.revision, ownerRuntimeId: "r", generation: 1 }, workId: "1", dispatchId: "d1", error: "503 overloaded" });
+    expect(await h.text("LoopList", {})).toMatch(/\[aimd window=2\/8 ssthresh=2 losses=1 taskLosses=0 maxAttempts=1\]/);
   });
 });
 

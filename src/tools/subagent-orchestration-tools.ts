@@ -25,7 +25,10 @@ interface OrchestrationToolsOptions {
   getActor: () => OrchestrationActor | undefined;
   /** Pacing for batches that set neither `pacing` nor `concurrency` (PI_LOOP_PACING). */
   defaultPacing?: OrchestrationPacing;
-  probeSubagents: () => Promise<unknown>;
+  /** Resolves true when a compatible worker provider answers. */
+  probeSubagents: () => Promise<boolean>;
+  /** The selected provider's limits; without it protocol-v2 behaviour is assumed. */
+  getProvider?: () => { name: string; defaultAgentType: string; supportsMaxTurns: boolean } | undefined;
   updateWidget: () => void;
 }
 
@@ -75,12 +78,6 @@ function validateCreate(params: CreateParams): string | undefined {
   return undefined;
 }
 
-function protocolVersion(value: unknown): number | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const version = (value as Record<string, unknown>).version;
-  return Number.isInteger(version) ? Number(version) : undefined;
-}
-
 /** PI_LOOP_PACING: unset means aimd; anything but fixed/aimd fails activation. */
 export function resolveDefaultPacing(value: string | undefined): OrchestrationPacing {
   const normalized = value?.trim().toLowerCase();
@@ -95,12 +92,12 @@ function resolvePacing(params: CreateParams, defaultPacing: OrchestrationPacing)
   return { ...params, pacing: params.concurrency !== undefined ? "fixed" : defaultPacing };
 }
 
-function definitionFrom(params: CreateParams): OrchestrationDefinitionInput {
+function definitionFrom(params: CreateParams, defaultAgentType: string): OrchestrationDefinitionInput {
   return {
     goal: params.goal.trim(),
     work: params.work.map((item) => ({
       prompt: item.prompt.trim(),
-      agentType: item.agentType ?? params.agentType ?? "general-purpose",
+      agentType: item.agentType ?? params.agentType ?? defaultAgentType,
       ...(item.verify !== undefined ? { verify: item.verify.trim() } : {}),
     })),
     concurrency: params.concurrency ?? 3,
@@ -115,21 +112,29 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
   const registerTool: ExtensionAPI["registerTool"] = options.registerTool ?? (definition => options.pi.registerTool(definition));
   const { getStore, getScope, getPiLoopEnv, getActor, probeSubagents, updateWidget } = options;
   const defaultPacing = options.defaultPacing ?? "aimd";
+  // Registration follows provider selection, so the schema can name the default the provider will use.
+  const defaultAgentType = options.getProvider?.()?.defaultAgentType ?? "general-purpose";
 
   registerTool({
     name: "OrchestrationCreate",
     label: "OrchestrationCreate",
     renderCall: renderToolCall("Orchestration", (args) => `create · ${String(toolArg(args, "goal") ?? "batch").slice(0, 56)}`),
     renderResult: renderToolResult,
-    description: "Create a bounded session LoopStore orchestration batch.",
+    description: "Run a swarm: a bounded session LoopStore orchestration batch.",
+    promptGuidelines: [
+      "A swarm, fan-out, or parallel subagents over a finite list of independent items means OrchestrationCreate: it persists the batch, paces workers from feedback, retries proved failures, and survives restart.",
+      "Use the provider's own subagent tool for one delegation, a chain whose steps need earlier results, or foreground work to watch; never send the same items through both.",
+      "Give each item `verify`, a shell command that exits 0 only when that item is done, whenever one exists: only a fully verified batch may grow past 8 workers. Omit `concurrency` unless a fixed worker count was requested.",
+      "Not for ordered phases or rework (WorkflowCreate) or a backlog nobody was asked to run (TaskCreate).",
+    ],
     parameters: Type.Object({
       goal: Type.String({ description: "Shared batch goal", maxLength: MAX_GOAL_CHARS }),
       work: Type.Array(Type.Object({
         prompt: Type.String({ description: "Bounded independent work prompt", maxLength: MAX_PROMPT_CHARS }),
         agentType: Type.Optional(Type.String({ description: "Per-item subagent type override" })),
-        verify: Type.Optional(Type.String({ description: "exit 0=ok" })),
+        verify: Type.Optional(Type.String({ description: "Shell, exit 0=ok" })),
       }), { minItems: 1, maxItems: MAX_WORK_ITEMS }),
-      agentType: Type.Optional(Type.String({ description: "Default subagent type (default: general-purpose)" })),
+      agentType: Type.Optional(Type.String({ description: `Default subagent type (default: ${defaultAgentType})` })),
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
       maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
       concurrency: Type.Optional(Type.Integer({ description: "Sets fixed pacing: 1-8 workers", minimum: 1 })),
@@ -146,14 +151,18 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       if (!actor) return errorResult("Orchestration requires an active session runtime.");
       const validationError = validateCreate(params);
       if (validationError) return errorResult(validationError);
-
-      let probe: unknown;
-      try {
-        probe = await probeSubagents();
-      } catch (error) {
-        return errorResult(`Orchestration requires pi-subagents protocol v2: ${error instanceof Error ? error.message : String(error)}`);
+      const provider = options.getProvider?.();
+      if (params.maxTurns !== undefined && provider && !provider.supportsMaxTurns) {
+        return errorResult(`maxTurns is not supported by ${provider.name}: it has no per-worker turn limit. Omit maxTurns; workers are bounded by the provider's own run timeout.`);
       }
-      if (protocolVersion(probe) !== 2) return errorResult("Orchestration requires pi-subagents protocol v2; no compatible provider replied.");
+
+      let compatible: boolean;
+      try {
+        compatible = await probeSubagents();
+      } catch (error) {
+        return errorResult(`Orchestration requires a compatible subagent provider: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (compatible !== true) return errorResult("Orchestration requires a compatible subagent provider (@tintinweb/pi-subagents protocol v2 or pi-subagents RPC v1); none replied.");
       const currentActor = getActor();
       if (getScope() !== "session" || getPiLoopEnv() !== undefined || getStore() !== store
         || currentActor?.sessionId !== actor.sessionId
@@ -162,7 +171,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         return errorResult("Orchestration context changed during provider probing; retry in the current session.");
       }
 
-      const definition = definitionFrom(params);
+      const definition = definitionFrom(params, provider?.defaultAgentType ?? "general-purpose");
       // Session-local memory: start where this session's last aimd batch left the window.
       const seed = definition.pacing === "aimd"
         ? learnWindowSeed(store.list().flatMap((candidate) => candidate.orchestration ? [{ id: candidate.id, state: candidate.orchestration }] : []), definition.model, Date.now())
@@ -185,9 +194,14 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       const pacingLabel = stored.window
         ? `aimd window ${Math.floor(stored.window.cwnd)}-${stored.concurrency}${seed ? ` (learned from orchestration #${seed.source})` : ""}`
         : `fixed concurrency ${stored.concurrency}`;
+      // Tell the caller when the unverified ceiling is what limits this batch, at the point it can act on it.
+      const unverifiedCap = stored.window !== undefined && definition.work.length > stored.concurrency
+        ? [`Window capped at ${stored.concurrency}: not every item declares verify. A batch whose items all pass a verify command (exit 0 = done) may grow to its size.`]
+        : [];
       const message = [
         `Orchestration #${entry.id} created`,
         `${definition.work.length} work items · ${pacingLabel}`,
+        ...unverifiedCap,
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {

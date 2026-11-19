@@ -7,7 +7,10 @@ import extension from "../src/index.js";
 import { createMockPi } from "./helpers/mock-pi.js";
 
 const BASELINE_TOOL_COPY_CHARS = 15_400;
-const MAX_TOOL_COPY_CHARS = Math.floor(BASELINE_TOOL_COPY_CHARS / 2);
+// Half the audited baseline, plus a reviewed allowance for orchestration routing guidance: with a
+// provider that has its own delegation tool, one line could not say when to use which.
+const ORCHESTRATION_GUIDANCE_ALLOWANCE = 700;
+const MAX_TOOL_COPY_CHARS = Math.floor(BASELINE_TOOL_COPY_CHARS / 2) + ORCHESTRATION_GUIDANCE_ALLOWANCE;
 const contextBudget: ToolContextBudget = JSON.parse(readFileSync(new URL("./fixtures/tool-context-budget.json", import.meta.url), "utf8"));
 
 beforeEach(() => {
@@ -19,8 +22,9 @@ afterEach(() => {
 });
 
 describe("registered tool copy budget", () => {
-  it("keeps agent-facing descriptions below half the audited baseline", async () => {
-    const { pi, toolMap, extensionHandlers } = createMockPi();
+  it("keeps agent-facing descriptions within the reviewed ceiling", async () => {
+    // A compatible worker provider, so the orchestration tools are part of the measured surface.
+    const { pi, toolMap, extensionHandlers } = createMockPi({ respondToSubagentPing: 2 });
     extension(pi);
     const ctx = {
       ui: { setStatus: vi.fn(), setWidget: vi.fn() },
@@ -35,6 +39,7 @@ describe("registered tool copy budget", () => {
       description: typeof tool.description === "string" ? tool.description : "",
       parameters: tool.parameters as Tool["parameters"],
     }));
+    expect(toolMap.has("OrchestrationCreate")).toBe(true);
     expect(checkToolContextBudget(costs, contextBudget)).toEqual([]);
     const before = structuredClone(costs);
     for (const field of BUDGET_FIELDS) {
@@ -64,6 +69,7 @@ describe("registered tool copy budget", () => {
       "onDone",
       "WorkflowTransition uses id, outcome, and optional evidence",
       "session LoopStore orchestration",
+      "never send the same items through both",
       "ordered phases, conditional outcomes, rework, or durable handoff",
       "independently completable backlog items",
       "Persist in the correct owner: TaskUpdate for unfinished standalone tasks",

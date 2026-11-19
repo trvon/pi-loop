@@ -5,7 +5,7 @@ import { formatTrigger } from "../loop-format.js";
 import { parseInterval } from "../loop-parse.js";
 import type { OrchestrationCancellation } from "../runtime/subagent-orchestration-runtime.js";
 import type { LoopEntry, Trigger } from "../types.js";
-import { orchestrationCancellationMessage, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
+import { orchestrationCancellationMessage, orchestrationLimitsLabel, orchestrationProgressLabel, orchestrationStatusLabel } from "../ui/orchestration-presentation.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration, workflowListPreview } from "../ui/workflow-presentation.js";
 import { getActiveWorkflowStateLoop } from "../workflow-reducer.js";
@@ -428,6 +428,7 @@ export function registerLoopTools(options: LoopToolsOptions): void {
         if (entry.orchestration) {
           line += ` [orchestration:${orchestrationStatusLabel(entry.orchestration.status)}]`;
           line += ` ${orchestrationProgressLabel(entry.orchestration)}`;
+          line += ` [${orchestrationLimitsLabel(entry.orchestration)}]`;
           lines.push(line);
         } else if (entry.workflow && activity) {
           line += ` [workflow:${entry.workflow.currentState} ${formatCompactWorkflowDuration(activity.stateAgeMs)}]`;

@@ -30,21 +30,49 @@ export interface AckWindow {
    * it belongs to the same window and is not cut again (NewReno, RFC 6582).
    */
   recoverAt?: number;
-  /** Lowest observed milliseconds per output token: the uncongested floor. */
+  /**
+   * Lowest observed milliseconds per output token, per tool-use class: the
+   * uncongested floor for comparable work. Worker duration includes the
+   * worker's own tool time, so a tool-less answer and a tool-heavy one are not
+   * comparable and never share a floor.
+   */
+  delayFloors?: Partial<Record<DelayClass, number>>;
+  /** Written by releases that kept one floor for all work; no longer read. */
   minMsPerToken?: number;
-  /** Consecutive first-attempt samples above the delay threshold. */
+  /**
+   * Consecutive first-attempt samples above the delay threshold, per tool-use
+   * class. The sample that completes a run of DELAY_CONGESTION_STREAK is
+   * reported as congestion; later ones in the same run are not reported again
+   * until a comparable sample was fast.
+   */
+  delayRuns?: Partial<Record<DelayClass, number>>;
+  /** Written by releases that kept one streak for all work; no longer read. */
   delayStreak?: number;
+}
+
+/** Tool-use classes for the delay signal: none, light, moderate, heavy. */
+export type DelayClass = "0" | "1" | "2" | "3";
+const DELAY_CLASSES: readonly DelayClass[] = ["0", "1", "2", "3"];
+
+/** Undefined when the provider reported no tool-use count: such work has no comparable floor. */
+export function delayClass(toolUses: number | undefined): DelayClass | undefined {
+  if (toolUses === undefined || !Number.isFinite(toolUses) || toolUses < 0) return undefined;
+  if (toolUses === 0) return "0";
+  if (toolUses <= 4) return "1";
+  return toolUses <= 16 ? "2" : "3";
 }
 
 /**
  * - `ack`: externally verified (or, without a verifier, non-empty) first-attempt success.
  * - `retry_ack`: success that needed a retry; ambiguous like a retransmitted
  *   segment under Karn's algorithm, so it is counted but never grows.
+ * - `delayed_ack`: success inside a slow run that was already reported; counted, never grows,
+ *   and never cuts again, so a mis-set floor costs one reduction rather than a collapse.
  * - `task_loss`: the work itself failed (check failed, empty, generic error).
  * - `congestion`: overload evidence while other work still completes; halve once per window.
  * - `timeout`: the path stopped answering; collapse to one and slow-start.
  */
-export type AckSignal = "ack" | "retry_ack" | "task_loss" | "congestion" | "timeout";
+export type AckSignal = "ack" | "retry_ack" | "delayed_ack" | "task_loss" | "congestion" | "timeout";
 
 /** Per-token latency above this multiple of the floor means a queue is building. */
 export const DELAY_CONGESTION_FACTOR = 2;
@@ -98,7 +126,7 @@ export const ADMISSION_BACKOFF = 0.7;
 
 export function applyAckSignal(window: AckWindow, signal: AckSignal, ceiling: number, context: SignalContext): AckWindow {
   if (signal === "task_loss") return { ...window, taskLosses: window.taskLosses + 1 };
-  if (signal === "retry_ack") return { ...window, acks: window.acks + 1 };
+  if (signal === "retry_ack" || signal === "delayed_ack") return { ...window, acks: window.acks + 1 };
   if (signal === "ack") {
     const growth = window.cwnd < window.ssthresh ? 1 : 1 / window.cwnd;
     return { ...window, cwnd: Math.min(ceiling, window.cwnd + growth), acks: window.acks + 1 };
@@ -126,6 +154,7 @@ export interface SettlementEvidence {
   verifyPassed?: boolean;
   durationMs?: number;
   outputTokens?: number;
+  toolUses?: number;
 }
 
 /** Error text that names overload or a dropped connection rather than the task. */
@@ -139,7 +168,7 @@ export function msPerToken(evidence: Pick<SettlementEvidence, "durationMs" | "ou
   return durationMs / outputTokens;
 }
 
-export function classifySettlement(evidence: SettlementEvidence, window: Pick<AckWindow, "minMsPerToken" | "delayStreak">): AckSignal {
+export function classifySettlement(evidence: SettlementEvidence, window: Pick<AckWindow, "delayFloors" | "delayRuns">): AckSignal {
   if (evidence.outcome === "failed") {
     const error = evidence.error ?? "";
     if (TIMEOUT_ERROR.test(error)) return "timeout";
@@ -149,22 +178,43 @@ export function classifySettlement(evidence: SettlementEvidence, window: Pick<Ac
   if (evidence.verifyPassed === false) return "task_loss";
   if (evidence.verifyPassed === undefined && !evidence.result?.trim()) return "task_loss";
   if (evidence.attempt > 1) return "retry_ack";
-  if (isDelayed(evidence, window) && (window.delayStreak ?? 0) + 1 >= DELAY_CONGESTION_STREAK) return "congestion";
-  return "ack";
+  if (!isDelayed(evidence, window)) return "ack";
+  const run = delayRun(window, evidence) + 1;
+  if (run < DELAY_CONGESTION_STREAK) return "ack";
+  return run === DELAY_CONGESTION_STREAK ? "congestion" : "delayed_ack";
 }
 
-function isDelayed(evidence: Pick<SettlementEvidence, "durationMs" | "outputTokens">, window: Pick<AckWindow, "minMsPerToken">): boolean {
+type DelaySample = Pick<SettlementEvidence, "durationMs" | "outputTokens" | "toolUses">;
+
+function isDelayed(evidence: DelaySample, window: Pick<AckWindow, "delayFloors">): boolean {
   const sample = msPerToken(evidence);
-  return sample !== undefined && window.minMsPerToken !== undefined && sample > window.minMsPerToken * DELAY_CONGESTION_FACTOR;
+  const sampleClass = delayClass(evidence.toolUses);
+  const floor = sampleClass === undefined ? undefined : window.delayFloors?.[sampleClass];
+  return sample !== undefined && floor !== undefined && sample > floor * DELAY_CONGESTION_FACTOR;
 }
 
-/** Fold a delay sample into the floor and streak. Retried work is excluded (Karn). */
-export function observeDelay(window: AckWindow, evidence: Pick<SettlementEvidence, "durationMs" | "outputTokens" | "attempt">): AckWindow {
+function delayRun(window: Pick<AckWindow, "delayRuns">, evidence: DelaySample): number {
+  const sampleClass = delayClass(evidence.toolUses);
+  return sampleClass === undefined ? 0 : window.delayRuns?.[sampleClass] ?? 0;
+}
+
+/**
+ * Fold a delay sample into its class's floor and slow run. Retried work is
+ * excluded (Karn), as is work with no tool-use count. Only a fast sample of the
+ * same class ends that class's run; other classes neither extend nor clear it.
+ */
+export function observeDelay(window: AckWindow, evidence: DelaySample & Pick<SettlementEvidence, "attempt">): AckWindow {
   const sample = msPerToken(evidence);
-  if (sample === undefined || evidence.attempt > 1) return window;
-  const delayStreak = isDelayed(evidence, window) ? (window.delayStreak ?? 0) + 1 : 0;
-  const minMsPerToken = window.minMsPerToken === undefined ? sample : Math.min(window.minMsPerToken, sample);
-  return { ...window, minMsPerToken, delayStreak };
+  const sampleClass = delayClass(evidence.toolUses);
+  if (sample === undefined || sampleClass === undefined || evidence.attempt > 1) return window;
+  // Past the reporting point the exact length carries no information, so it is not counted further.
+  const run = isDelayed(evidence, window) ? Math.min(delayRun(window, evidence) + 1, DELAY_CONGESTION_STREAK + 1) : 0;
+  const floor = window.delayFloors?.[sampleClass];
+  return {
+    ...window,
+    delayFloors: { ...window.delayFloors, [sampleClass]: floor === undefined ? sample : Math.min(floor, sample) },
+    delayRuns: { ...window.delayRuns, [sampleClass]: run },
+  };
 }
 
 export function validateAckWindow(value: unknown, ceiling: number): value is AckWindow {
@@ -178,5 +228,21 @@ export function validateAckWindow(value: unknown, ceiling: number): value is Ack
     && count(window.acks) && count(window.losses) && count(window.taskLosses)
     && optionalFinite(window.recoverAt, 0)
     && optionalFinite(window.minMsPerToken, Number.MIN_VALUE)
+    && validDelayFloors(window.delayFloors)
+    && validDelayRuns(window.delayRuns)
     && (window.delayStreak === undefined || count(window.delayStreak));
+}
+
+function validDelayFloors(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(([key, floor]) => (DELAY_CLASSES as readonly string[]).includes(key)
+    && typeof floor === "number" && Number.isFinite(floor) && floor > 0);
+}
+
+function validDelayRuns(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.entries(value).every(([key, run]) => (DELAY_CLASSES as readonly string[]).includes(key)
+    && Number.isInteger(run) && Number(run) >= 0 && Number(run) <= DELAY_CONGESTION_STREAK + 1);
 }

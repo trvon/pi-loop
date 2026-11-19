@@ -1,5 +1,6 @@
 import { cronToNextFire } from "../src/loop-parse.js";
 import { type LoopReducerEvent, type LoopReducerState, reduceLoopState } from "../src/loop-reducer.js";
+import { applyOrchestrationEvent, createOrchestrationState, getOrchestrationCapacity, getOrchestrationCounts } from "../src/orchestration-reducer.js";
 import { LoopStore } from "../src/store.js";
 import { reduceTaskState, type TaskReducerEvent, type TaskReducerState } from "../src/task-reducer.js";
 import { TaskStore } from "../src/task-store.js";
@@ -171,6 +172,62 @@ export function runProgressPanelWorkload(): number {
   return lines.reduce((sum, line) => sum + line.length, lines.length);
 }
 
+const orchestrationOwner = { sessionId: "bench", runtimeId: "bench", generation: 1 };
+
+/**
+ * One full 32-item aimd batch through the reducer: fill the window, bind, and
+ * settle with usage evidence, including an overload, a slow run and a launch
+ * the provider refused for good, so the window's cut, delay and refusal paths
+ * are on the profile, not only the ACK path.
+ */
+export function runOrchestrationWorkload(): number {
+  let state = createOrchestrationState({
+    goal: "benchmark batch",
+    work: Array.from({ length: 32 }, (_, index) => ({ prompt: `work ${index}` })),
+    pacing: "aimd",
+    maxAttempts: 2,
+  }, orchestrationOwner, 0);
+  let at = 1;
+  let settled = 0;
+  const expected = () => ({ revision: state.revision, ownerRuntimeId: orchestrationOwner.runtimeId, generation: orchestrationOwner.generation });
+  const apply = (event: Parameters<typeof applyOrchestrationEvent>[1]) => {
+    const result = applyOrchestrationEvent(state, event);
+    if (!result.applied) throw new Error(result.reason ?? "orchestration benchmark event rejected");
+    state = result.state;
+  };
+  while (state.status === "active") {
+    for (const item of state.work) {
+      if (item.status !== "pending" || getOrchestrationCounts(state).active >= getOrchestrationCapacity(state)) continue;
+      const dispatchId = `d${at}`;
+      apply({ type: "dispatch_requested", at: at++, expected: expected(), workId: item.id, dispatchId });
+      // One launch is refused for good; the item keeps an attempt, so the batch still completes.
+      if (item.id === "5" && item.attemptCount === 0) {
+        apply({ type: "dispatch_spawn_failed", at: at++, expected: expected(), workId: item.id, dispatchId, error: "Unknown agent: bench", permanent: true });
+        continue;
+      }
+      apply({ type: "dispatch_bound", at: at++, expected: expected(), workId: item.id, dispatchId, agentId: `a${dispatchId}` });
+    }
+    const active = state.work.find((item) => item.status === "active");
+    const agentId = active?.dispatches.at(-1)?.agentId;
+    if (!agentId) throw new Error("orchestration benchmark stalled");
+    settled += 1;
+    const overloaded = settled === 9;
+    const slow = settled === 17 || settled === 18;
+    apply({
+      type: "dispatch_settled",
+      at: at++,
+      expected: expected(),
+      agentId,
+      outcome: overloaded ? "failed" : "completed",
+      result: overloaded ? undefined : "done",
+      error: overloaded ? "503 overloaded" : undefined,
+      usage: { toolUses: settled % 3 === 0 ? 0 : 6, durationMs: (slow ? 9_000 : 2_000) + settled, tokens: { input: 100, output: 100, total: 200 } },
+    });
+  }
+  const window = state.window;
+  return state.revision + settled + (window ? window.acks + window.losses + Math.floor(window.cwnd) : 0);
+}
+
 export const coreWorkloads = {
   cron: runCronWorkload,
   loopReducer: runLoopReducerWorkload,
@@ -178,4 +235,5 @@ export const coreWorkloads = {
   workflow: runWorkflowWorkload,
   storeReads: runStoreReadWorkload,
   progressPanel: runProgressPanelWorkload,
+  orchestration: runOrchestrationWorkload,
 } as const;

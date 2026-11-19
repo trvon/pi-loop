@@ -14,34 +14,20 @@ import type {
   OrchestrationWorkItem,
 } from "../types.js";
 import type { LoopScope } from "./scope.js";
+import { AmbiguousSpawnReplyError, createSubagentsV2Provider, PermanentLaunchError, type SubagentLifecycleEvent, type SubagentProvider } from "./subagent-provider.js";
 import { runVerifyCommand, type VerifyRunner } from "./verify-runner.js";
 
-const SPAWN_RPC = "subagents:rpc:spawn";
-const STOP_RPC = "subagents:rpc:stop";
-const CONSUME_RPC = "subagents:rpc:consume";
-const SPAWN_TIMEOUT_MS = 5_000;
 const STOP_TIMEOUT_MS = 1_000;
 const EARLY_EVENT_TTL_MS = 30_000;
 const MAX_EARLY_EVENTS = 64;
 const OWNER_RENEW_WINDOW_MS = 60_000;
 
-interface LifecycleEvent {
-  kind: "started" | "completed" | "failed";
-  id: string;
-  result?: string;
-  error?: string;
-  status?: string;
-  toolUses?: number;
-  durationMs?: number;
-  tokens?: { input: number; output: number; total: number };
-}
+type LifecycleEvent = SubagentLifecycleEvent;
 
 interface EarlyLifecycleEvent {
   event: LifecycleEvent;
   expiresAt: number;
 }
-
-class AmbiguousSpawnReplyError extends Error {}
 
 export interface SubagentOrchestrationRuntimeOptions {
   events: RpcEventBus;
@@ -51,6 +37,8 @@ export interface SubagentOrchestrationRuntimeOptions {
   getActor: () => OrchestrationActor | undefined;
   getGeneration: () => number;
   rpcCall: (channel: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
+  /** Worker provider; defaults to protocol-v2 pi-subagents over `events` and `rpcCall`. */
+  provider?: SubagentProvider;
   emitWake: (entry: LoopEntry, wake: OrchestrationPendingWake) => void;
   onExpired: (entry: LoopEntry, disposition: LoopExpiryDisposition) => void;
   updateWidget: () => void;
@@ -89,33 +77,6 @@ function currentDispatch(item: OrchestrationWorkItem): OrchestrationDispatch | u
     : undefined;
 }
 
-function normalizeLifecycle(kind: LifecycleEvent["kind"], raw: unknown): LifecycleEvent | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const data = raw as Record<string, unknown>;
-  if (typeof data.id !== "string" || data.id.length === 0) return undefined;
-  const tokens = data.tokens;
-  const normalizedTokens = tokens && typeof tokens === "object"
-    && Number.isFinite((tokens as Record<string, unknown>).input)
-    && Number.isFinite((tokens as Record<string, unknown>).output)
-    && Number.isFinite((tokens as Record<string, unknown>).total)
-    ? {
-        input: Number((tokens as Record<string, unknown>).input),
-        output: Number((tokens as Record<string, unknown>).output),
-        total: Number((tokens as Record<string, unknown>).total),
-      }
-    : undefined;
-  return {
-    kind,
-    id: data.id,
-    result: typeof data.result === "string" ? data.result : undefined,
-    error: typeof data.error === "string" ? data.error : undefined,
-    status: typeof data.status === "string" ? data.status : undefined,
-    toolUses: Number.isFinite(data.toolUses) ? Number(data.toolUses) : undefined,
-    durationMs: Number.isFinite(data.durationMs) ? Number(data.durationMs) : undefined,
-    tokens: normalizedTokens,
-  };
-}
-
 const RETRY_FEEDBACK_CHARS = 1_500;
 
 function buildWorkerPrompt(entry: LoopEntry, item: OrchestrationWorkItem): string {
@@ -141,12 +102,6 @@ function buildWorkerPrompt(entry: LoopEntry, item: OrchestrationWorkItem): strin
   return sections.join("\n\n");
 }
 
-function asSpawnReply(value: unknown): { id: string } | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const id = (value as Record<string, unknown>).id;
-  return typeof id === "string" && id.length > 0 ? { id } : undefined;
-}
-
 export function createSubagentOrchestrationRuntime(
   options: SubagentOrchestrationRuntimeOptions,
 ): SubagentOrchestrationRuntime {
@@ -156,11 +111,11 @@ export function createSubagentOrchestrationRuntime(
     getScope,
     getActor,
     getGeneration,
-    rpcCall,
     emitWake,
     updateWidget,
     debug,
   } = options;
+  const provider = options.provider ?? createSubagentsV2Provider(events, options.rpcCall);
   const now = options.now ?? Date.now;
   const scheduleReconcile = options.scheduleReconcile ?? queueMicrotask;
   const isContextCurrent = options.isContextCurrent ?? (() => true);
@@ -282,7 +237,7 @@ export function createSubagentOrchestrationRuntime(
     consumeInFlight.add(agentId);
     let call: Promise<unknown>;
     try {
-      call = rpcCall(CONSUME_RPC, { agentId }, STOP_TIMEOUT_MS);
+      call = provider.consume(agentId, STOP_TIMEOUT_MS);
     } catch {
       consumeInFlight.delete(agentId);
       recordConsume(loopId, agentId, false);
@@ -436,17 +391,8 @@ export function createSubagentOrchestrationRuntime(
     }
   }
 
-  const unsubStarted = events.on("subagents:started", (raw) => {
-    const event = normalizeLifecycle("started", raw);
-    if (event) handleLifecycle(event);
-  });
-  const unsubCompleted = events.on("subagents:completed", (raw) => {
-    const event = normalizeLifecycle("completed", raw);
-    if (event) handleLifecycle(event);
-  });
-  const unsubFailed = events.on("subagents:failed", (raw) => {
-    const event = normalizeLifecycle("failed", raw);
-    if (event) handleLifecycle(event);
+  const unsubLifecycle = provider.onLifecycle((event) => {
+    handleLifecycle(event);
   });
 
   function replayEarly(agentId: string): void {
@@ -466,7 +412,7 @@ export function createSubagentOrchestrationRuntime(
 
   async function requestStop(agentId: string): Promise<void> {
     try {
-      await rpcCall(STOP_RPC, { agentId }, STOP_TIMEOUT_MS);
+      await provider.stop(agentId, STOP_TIMEOUT_MS);
     } catch (error) {
       debug?.("orchestration stop request failed; termination remains unconfirmed", { agentId, error });
     }
@@ -512,24 +458,20 @@ export function createSubagentOrchestrationRuntime(
       }
       await stopUnboundSpawn(agentId);
     };
-    // Set once pi-subagents has replied with a worker: from then on a failure
+    // Set once the provider has replied with a worker: from then on a failure
     // cannot prove the worker never started.
     let spawnedId: string | undefined;
     try {
-      const rawReply = await rpcCall(SPAWN_RPC, {
-        type: item.agentType ?? "general-purpose",
+      const rawReply = await provider.spawn({
+        agentType: item.agentType ?? "general-purpose",
         prompt: buildWorkerPrompt(reservedEntry, item),
-        options: {
-          description: `Orchestration #${entry.id} work #${item.id}`,
-          model: reserved.model,
-          maxTurns: reserved.maxTurns,
-          isBackground: true,
-          isolated: true,
-          inheritContext: false,
-        },
-      }, SPAWN_TIMEOUT_MS);
-      const reply = asSpawnReply(rawReply);
-      if (!reply) throw new AmbiguousSpawnReplyError("Invalid subagent spawn reply; the worker start outcome is unknown");
+        description: `Orchestration #${entry.id} work #${item.id}`,
+        model: reserved.model,
+        maxTurns: reserved.maxTurns,
+      }, provider.spawnTimeoutMs);
+      const workerId = provider.workerId(rawReply);
+      if (workerId === undefined) throw new AmbiguousSpawnReplyError("Invalid subagent spawn reply; the worker start outcome is unknown");
+      const reply = { id: workerId };
       spawnedId = reply.id;
       if (!sourceIsCurrent()) {
         await stopUnboundSpawn(reply.id);
@@ -588,6 +530,7 @@ export function createSubagentOrchestrationRuntime(
         workId: item.id,
         dispatchId,
         error: spawnedId === undefined ? message : `Spawn reply could not be recorded: ${message}`,
+        ...(!uncertain && error instanceof PermanentLaunchError ? { permanent: true } : {}),
       });
       // Best effort: the dispatch is already uncertain, so a failed stop only leaves it for review.
       if (spawnedId !== undefined) await cleanupReply(spawnedId).catch(() => undefined);
@@ -715,6 +658,9 @@ export function createSubagentOrchestrationRuntime(
       retryPendingConsumes(entry);
       resumeVerifies(entry);
       if (entry.status !== "active" || state.status !== "active") continue;
+      // An adopted batch can be pumped before any provider has answered its probe. A launch
+      // then would be recorded as a failed spawn, so pending work waits for selection instead.
+      if (!provider.isAvailable()) continue;
 
       while (true) {
         const freshEntry = getStore().get(entry.id);
@@ -850,9 +796,7 @@ export function createSubagentOrchestrationRuntime(
     dispose() {
       active = false;
       abortVerifies();
-      unsubStarted();
-      unsubCompleted();
-      unsubFailed();
+      unsubLifecycle();
       earlyEvents.clear();
       wakeQueued.clear();
       consumeInFlight.clear();
