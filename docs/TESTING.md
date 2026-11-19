@@ -185,6 +185,14 @@ npm run test:e2e:orchestration
 
 It runs in a temporary workspace with default file-backed session scope, proves two isolated workers settle with durable consumed evidence, then creates and cancels an active worker. The extension path defaults to the standard user package location when `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` is omitted.
 
+Protocol v2 provider (`@tintinweb/pi-subagents`) wire check, no model spend:
+
+```bash
+PI_LOOP_LIVE_V2=1 npm run test:e2e:orchestration:v2
+```
+
+That provider runs workers inside the parent process with the parent's model, and this check's parent model is a scripted fixture, so workers answer from the same script and nothing is sent to a model provider. It checks provider detection and tool registration, a two-item batch with `maxTurns` through spawn, `subagents:started`, `subagents:completed`, usage evidence (including the tool-use count the delay signal needs) and provider-owned settlement, then cancels a worker that is busy in a tool call and requires an accepted stop, a `stopped` failure event and a retained controller. `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` selects the entrypoint. The model-driven `test:e2e:orchestration` scenario above remains the check of a real parent model using these tools.
+
 RPC v1 provider (npm `pi-subagents`) check:
 
 ```bash
