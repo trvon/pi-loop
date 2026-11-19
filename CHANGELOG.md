@@ -6,6 +6,31 @@
 
 * **tasks:** register the native task tools at `session_start` instead of six seconds after startup. A prompt sent inside that window used to go out with the pre-registration tool set, and the next request carried four more tools plus their prompt guidelines, so the request prefix changed once per session and every provider-side prompt cache missed (a full ~22k-token re-prefill on llama-server). The timer stays as a backstop and an external `pi-tasks` that answered the startup ping still wins.
 
+## [0.8.1](https://github.com/trvon/pi-loop/compare/pi-loop-v0.8.0...pi-loop-v0.8.1) (2026-11-19)
+
+
+### Features
+
+* **orchestration:** drive the npm pi-subagents package through its RPC v1 ([160feee](https://github.com/trvon/pi-loop/commit/160feee4481b301dd8b131139e959fb767e3b777))
+* **orchestration:** register tools only when a compatible provider answers ([1b0d747](https://github.com/trvon/pi-loop/commit/1b0d747cb57dc43afcea09eda94c4a0e4f610fcd))
+* **orchestration:** say when a swarm belongs here and when it does not ([384f0e9](https://github.com/trvon/pi-loop/commit/384f0e9eed7f81eb139e13acd98d4ef9df4ce140))
+* **orchestration:** show in-flight work against capacity and route swarms here ([5f5b623](https://github.com/trvon/pi-loop/commit/5f5b623a349ae341ff41bd18743a60707fb01c8e))
+
+
+### Bug Fixes
+
+* **orchestration:** a launch refused for good is the item's failure, not congestion ([c498322](https://github.com/trvon/pi-loop/commit/c498322eaf50a3ad904abb8e44294e488c609679))
+* **orchestration:** compare delay samples only with similar work, and cut once per slow run ([abc4f44](https://github.com/trvon/pi-loop/commit/abc4f4428b7a2db4718e23fda8ea43c3ba4cc940))
+* **orchestration:** compare delay samples only with similar work, and cut once per slow run ([bec271b](https://github.com/trvon/pi-loop/commit/bec271b89fdd9a49e1306f0d5a5bda4a8bb64ab5))
+* **orchestration:** default to the delegate agent under pi-subagents RPC v1 ([8a473bf](https://github.com/trvon/pi-loop/commit/8a473bf6a3e899929f0714a62d25ad582733a82a))
+* **orchestration:** hold dispatch until a provider is selected ([5c714d6](https://github.com/trvon/pi-loop/commit/5c714d663c30fda1ffe4432f251e94b5e52e276a))
+* **orchestration:** honour the stopped flag and hear only the selected provider ([6c5cb30](https://github.com/trvon/pi-loop/commit/6c5cb30fc7ecc4ec99f974e9f0820c250b1310ae))
+* **orchestration:** track slow runs per tool-use class and report each once ([0cee9de](https://github.com/trvon/pi-loop/commit/0cee9def5b37eadff2cba13bbf32639f266ce071))
+* **test:** cap the workflow reissue property so the fuzz campaign can finish ([eced036](https://github.com/trvon/pi-loop/commit/eced0362caf69d98512ba663044590a123847f7d))
+* **test:** read npm 12 pack reports in the package smoke test ([9b2fbc7](https://github.com/trvon/pi-loop/commit/9b2fbc7597d81c7361c58806a90b871813dcba2c))
+* **ui:** label fixed pacing and show ssthresh after a loss ([a945ed4](https://github.com/trvon/pi-loop/commit/a945ed4f4ed5d28822ac49f4c32f2e491326a492))
+* **ui:** show pacing limits on LoopList orchestration rows ([6be79b0](https://github.com/trvon/pi-loop/commit/6be79b07d6813e7c616bfc0540652b29b5eff8e4))
+
 ## [0.8.0](https://github.com/trvon/pi-loop/compare/pi-loop-v0.7.21...pi-loop-v0.8.0) (2026-11-14)
 
 
