@@ -589,9 +589,9 @@ describe("registerLoopCommand", () => {
 
     await h.command.handler!("", { ui } as any);
 
-    expect(selectedChoice).toContain("[active: 0/1 complete · 0 reserved · 1 pending]");
+    expect(selectedChoice).toContain("[active: 0/1 complete · 0/3 in flight · 1 pending]");
     expect(detail).toContain("Orchestration #1 · active");
-    expect(detail).toContain("Progress: 0/1 complete · 0 reserved · 1 pending");
+    expect(detail).toContain("Progress: 0/1 complete · 0/3 in flight · 1 pending");
     expect(detail).not.toContain('Trigger: {"type":"dynamic"}');
     expect(h.cancelOrchestration).toHaveBeenCalledWith("1", "delete");
     if (retained) {

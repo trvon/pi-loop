@@ -146,7 +146,7 @@ describe("progress panel layout", () => {
 
   it("summarizes orchestration progress without claiming observed execution", () => {
     const lines = text({ loops: [panelOrchestration("7", ["completed", "active", "pending"])], tasks: [], now });
-    expect(lines).toEqual(["◇ #7 1/3 1 reserved"]);
+    expect(lines).toEqual(["◇ #7 1/3 · 1/2 in flight"]);
     expect(text({ loops: [panelOrchestration("8", ["failed"], "needs_attention")], tasks: [], now })).toEqual(["◇ #8 0/1 needs attention"]);
   });
 

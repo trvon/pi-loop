@@ -4,7 +4,7 @@ import type { TaskEntry } from "../task-types.js";
 import type { LoopEntry, MonitorEntry } from "../types.js";
 import { getWorkflowOutcomeAvailability } from "../workflow-reducer.js";
 import { activeCardGlyphs } from "./card-style.js";
-import { orchestrationStatusLabel } from "./orchestration-presentation.js";
+import { orchestrationInFlightLabel, orchestrationStatusLabel } from "./orchestration-presentation.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration, workflowAttemptLabel } from "./workflow-presentation.js";
 
 /**
@@ -167,7 +167,7 @@ function orchestrationLine(entry: LoopEntry): PanelLine {
   const counts = getOrchestrationCounts(state);
   const tone: PanelTone = state.status === "needs_attention" ? "warning" : state.status === "completed" ? "success" : "accent";
   const detail = state.status === "active"
-    ? `${counts.active} reserved`
+    ? `· ${orchestrationInFlightLabel(state)}`
     : orchestrationStatusLabel(state.status);
   return [
     seg("◇ ", tone),

@@ -86,7 +86,7 @@ describe("subagent orchestration tools", () => {
     expect(created.details).toMatchObject({
       kind: "orchestration",
       tone: "success",
-      summary: "Orchestration #1 active · 0/2 complete · 0 reserved · 2 pending",
+      summary: "Orchestration #1 active · 0/2 complete · 0/2 in flight · 2 pending",
     });
     expect(h.probeSubagents).toHaveBeenCalledTimes(1);
     expect(h.store.get("1")!.expiresAt - h.store.get("1")!.createdAt).toBe(14 * 24 * 60 * 60 * 1000);
@@ -229,7 +229,7 @@ describe("subagent orchestration tools", () => {
 
     const summary = await h.text("OrchestrationGet", { id: "1" });
     expect(summary).toContain("Orchestration #1 · active");
-    expect(summary).toContain("0/1 complete · 0 reserved · 1 pending");
+    expect(summary).toContain("0/1 complete · 0/1 in flight · 1 pending");
     expect(summary).toContain("#1 [pending] Explore · Inspect API compatibility");
 
     let state = h.store.get("1")!.orchestration!;

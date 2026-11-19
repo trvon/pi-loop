@@ -11,7 +11,7 @@ const DESCRIPTIONS = new Map<string, string>([
   ["WorkflowClaim", "Claim/renew current workflow work; no bearer token."],
   ["WorkflowRevise", "Revise workflow via typed CAS; reissue stale active work."],
   ["WorkflowTransition", "Advance owned workflow work; paused terminal outcomes need typed blocker admission."],
-  ["OrchestrationCreate", "Run an explicit independent batch in session LoopStore."],
+  ["OrchestrationCreate", "Run a swarm: an explicit independent subagent batch in session LoopStore."],
   ["OrchestrationGet", "Inspect batch evidence; not workflow/task ownership."],
   ["MonitorCreate", "Run a background command; timeout measures inactivity."],
   ["MonitorList", "Inspect process-local monitors and buffered output."],

@@ -38,7 +38,7 @@ describe("orchestration presentation", () => {
 
     expect(orchestrationStatusLabel(state.status)).toBe("active");
     expect(orchestrationWorkStatusLabel(state.work[0]!.status)).toBe("pending");
-    expect(orchestrationProgressLabel(state)).toBe("0/2 complete · 0 reserved · 2 pending");
+    expect(orchestrationProgressLabel(state)).toBe("0/2 complete · 0/2 in flight · 2 pending");
     expect(orchestrationTone(state)).toBe("info");
     expect(orchestrationWakeHeading("1", state)).toBe("[pi-loop] Orchestration #1 active.");
   });
@@ -66,7 +66,7 @@ describe("orchestration presentation", () => {
     item.dispatches.push({ dispatchId: "d", attempt: 1, ownerRuntimeId: "runtime", ownerGeneration: 1, status, requestedAt: 1, consumeStatus: "none", consumeAttempts: 0 });
     const before = structuredClone(entry);
     const label = status === "spawning" ? "starting" : status === "running" ? "reported running" : "queued";
-    expect(orchestrationProgressLabel(state)).toBe(`0/2 complete · 1 reserved · 1 ${label} · 1 pending`);
+    expect(orchestrationProgressLabel(state)).toBe(`0/2 complete · 1/2 in flight · 1 ${label} · 1 pending`);
     expect(orchestrationWorkText(entry, item)).toContain("Work #1 · reserved");
     expect(orchestrationWorkText(entry, item)).toContain(`Dispatch 1: ${label}`);
     expect(orchestrationControllerText(entry)).toContain("last reported");
@@ -197,5 +197,51 @@ describe("review regressions: attempts label", () => {
     item.attemptCount = 1;
     expect(orchestrationWorkText(entry, item)).toContain("Attempts: 1/2");
     expect(orchestrationWorkText(entry, item)).not.toContain("re-send");
+  });
+});
+
+describe("in-flight work against capacity", () => {
+  function reserve(entry: ReturnType<typeof createEntry>, index: number): void {
+    const item = entry.orchestration!.work[index]!;
+    item.status = "active";
+    item.attemptCount = 1;
+    item.dispatches.push({ dispatchId: `d${index}`, attempt: 1, ownerRuntimeId: "runtime", ownerGeneration: 1, status: "running", requestedAt: 1, consumeStatus: "none", consumeAttempts: 0 });
+  }
+
+  it("F1: an active fixed batch shows reserved work against its concurrency", () => {
+    const entry = createEntry();
+    expect(orchestrationProgressLabel(entry.orchestration!)).toBe("0/2 complete · 0/2 in flight · 2 pending");
+    reserve(entry, 0);
+    expect(orchestrationProgressLabel(entry.orchestration!)).toBe("0/2 complete · 1/2 in flight · 1 reported running · 1 pending");
+  });
+
+  it("F2: an aimd batch shows reserved work against the current window, not the ceiling", () => {
+    const entry = createEntry();
+    const state = entry.orchestration!;
+    state.concurrency = 8;
+    state.window = { mode: "aimd", cwnd: 1.6, ssthresh: 8, acks: 0, losses: 0, taskLosses: 0 };
+    reserve(entry, 0);
+    expect(orchestrationProgressLabel(state)).toContain("1/1 in flight");
+    state.window.cwnd = 4.9;
+    expect(orchestrationProgressLabel(state)).toContain("1/4 in flight");
+  });
+
+  it("F3: a controller that is no longer dispatching shows no capacity", () => {
+    const entry = createEntry();
+    const state = entry.orchestration!;
+    state.status = "needs_attention";
+    state.work[0]!.status = "failed";
+    expect(orchestrationProgressLabel(state)).toBe("0/2 complete · 0 reserved · 1 pending · 1 failed");
+    expect(orchestrationProgressLabel(state)).not.toContain("in flight");
+  });
+
+  it("F4: the count is a reservation, never a liveness claim, and rendering changes nothing", () => {
+    const entry = createEntry();
+    reserve(entry, 0);
+    const before = structuredClone(entry);
+    const text = orchestrationControllerText(entry);
+    expect(text).toContain("In flight: local reservations against capacity; dispatch state is last reported, not proof of current execution.");
+    expect(text).not.toMatch(/\d+ running\b/);
+    expect(entry).toEqual(before);
   });
 });

@@ -383,7 +383,7 @@ describe("LoopList", () => {
 
     const out = await h.text("LoopList", {});
     expect(out).toContain("[orchestration:active]");
-    expect(out).toContain("0/1 complete · 0 reserved · 1 pending");
+    expect(out).toContain("0/1 complete · 0/3 in flight · 1 pending");
     expect(out).not.toContain("pending=1 active=0");
   });
 });

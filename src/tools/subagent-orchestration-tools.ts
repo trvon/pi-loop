@@ -121,13 +121,15 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
     label: "OrchestrationCreate",
     renderCall: renderToolCall("Orchestration", (args) => `create · ${String(toolArg(args, "goal") ?? "batch").slice(0, 56)}`),
     renderResult: renderToolResult,
-    description: "Create a bounded session LoopStore orchestration batch.",
+    description: "Run a swarm: a bounded session LoopStore orchestration batch.",
+    // The copy budget leaves room for one line; the verify hint is given in the create result instead.
+    promptGuidelines: ["For swarms of independent items; one delegation: provider's tool."],
     parameters: Type.Object({
       goal: Type.String({ description: "Shared batch goal", maxLength: MAX_GOAL_CHARS }),
       work: Type.Array(Type.Object({
         prompt: Type.String({ description: "Bounded independent work prompt", maxLength: MAX_PROMPT_CHARS }),
         agentType: Type.Optional(Type.String({ description: "Per-item subagent type override" })),
-        verify: Type.Optional(Type.String({ description: "exit 0=ok" })),
+        verify: Type.Optional(Type.String({ description: "Shell, exit 0=ok" })),
       }), { minItems: 1, maxItems: MAX_WORK_ITEMS }),
       agentType: Type.Optional(Type.String({ description: "Default subagent type (default: general-purpose)" })),
       model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
@@ -185,9 +187,14 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       const pacingLabel = stored.window
         ? `aimd window ${Math.floor(stored.window.cwnd)}-${stored.concurrency}${seed ? ` (learned from orchestration #${seed.source})` : ""}`
         : `fixed concurrency ${stored.concurrency}`;
+      // Tell the caller when the unverified ceiling is what limits this batch, at the point it can act on it.
+      const unverifiedCap = stored.window !== undefined && definition.work.length > stored.concurrency
+        ? [`Window capped at ${stored.concurrency}: not every item declares verify. A batch whose items all pass a verify command (exit 0 = done) may grow to its size.`]
+        : [];
       const message = [
         `Orchestration #${entry.id} created`,
         `${definition.work.length} work items · ${pacingLabel}`,
+        ...unverifiedCap,
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {

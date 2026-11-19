@@ -1,4 +1,4 @@
-import { getOrchestrationCounts } from "../orchestration-reducer.js";
+import { getOrchestrationCapacity, getOrchestrationCounts } from "../orchestration-reducer.js";
 import type { OrchestrationCancellation } from "../runtime/subagent-orchestration-runtime.js";
 import { displayRows, type ToolDisplayDetails, type ToolDisplayTone } from "../tools/tool-result.js";
 import type {
@@ -49,11 +49,21 @@ function outputOwnershipLabel(status: OrchestrationConsumeStatus): string {
   return "not applicable";
 }
 
+/**
+ * Reserved work against what may be dispatched right now: the aimd window, or
+ * the fixed concurrency. Capacity is shown only while the controller is still
+ * dispatching; a reservation is local intent, not observed execution.
+ */
+export function orchestrationInFlightLabel(state: OrchestrationState): string {
+  const reserved = getOrchestrationCounts(state).active;
+  return state.status === "active" ? `${reserved}/${getOrchestrationCapacity(state)} in flight` : `${reserved} reserved`;
+}
+
 export function orchestrationProgressLabel(state: OrchestrationState): string {
   const counts = getOrchestrationCounts(state);
   const parts = [
     `${counts.completed}/${state.work.length} complete`,
-    `${counts.active} reserved`,
+    orchestrationInFlightLabel(state),
   ];
   for (const status of ["spawning", "queued", "running", "verifying"] as const) {
     const count = state.work.filter((item) => item.status === "active" && item.dispatches.at(-1)?.status === status).length;
@@ -101,7 +111,7 @@ export function orchestrationControllerText(entry: LoopEntry): string {
     state.window
       ? `Limits: aimd window=${Math.floor(state.window.cwnd)}/${state.concurrency}${state.window.ssthresh < state.concurrency ? ` ssthresh=${state.window.ssthresh}` : ""} losses=${state.window.losses} taskLosses=${state.window.taskLosses} maxAttempts=${state.maxAttempts}`
       : `Limits: fixed concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`,
-    "Reserved: local capacity; dispatch state is last reported, not proof of current execution.",
+    "In flight: local reservations against capacity; dispatch state is last reported, not proof of current execution.",
     ...state.work.map(orchestrationWorkSummary),
   ].join("\n");
 }
