@@ -18,7 +18,7 @@ function register(profile?: "compact") {
       getScope: () => "session",
       getPiLoopEnv: () => undefined,
       getActor: () => ({ sessionId: "s", runtimeId: "r", generation: 1 }),
-      probeSubagents: vi.fn(async () => ({ version: 2 })),
+      probeSubagents: vi.fn(async () => true),
       updateWidget: vi.fn(),
     });
   } finally {
