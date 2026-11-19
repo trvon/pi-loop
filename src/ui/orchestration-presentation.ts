@@ -101,6 +101,14 @@ export function orchestrationWorkSummary(item: OrchestrationWorkItem): string {
   return line;
 }
 
+/** Pacing limits: the aimd window against its ceiling, or the fixed concurrency. */
+export function orchestrationLimitsLabel(state: OrchestrationState): string {
+  if (!state.window) return `fixed concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`;
+  // Before any loss the threshold is the ceiling and says nothing; it is shown once it sits below.
+  const ssthresh = state.window.ssthresh < state.concurrency ? ` ssthresh=${state.window.ssthresh}` : "";
+  return `aimd window=${Math.floor(state.window.cwnd)}/${state.concurrency}${ssthresh} losses=${state.window.losses} taskLosses=${state.window.taskLosses} maxAttempts=${state.maxAttempts}`;
+}
+
 export function orchestrationControllerText(entry: LoopEntry): string {
   const state = entry.orchestration;
   if (!state) return `Orchestration #${entry.id} unavailable`;
@@ -108,9 +116,7 @@ export function orchestrationControllerText(entry: LoopEntry): string {
     `Orchestration #${entry.id} · ${orchestrationStatusLabel(state.status)}`,
     `Goal: ${state.goal}`,
     `Progress: ${orchestrationProgressLabel(state)}`,
-    state.window
-      ? `Limits: aimd window=${Math.floor(state.window.cwnd)}/${state.concurrency}${state.window.ssthresh < state.concurrency ? ` ssthresh=${state.window.ssthresh}` : ""} losses=${state.window.losses} taskLosses=${state.window.taskLosses} maxAttempts=${state.maxAttempts}`
-      : `Limits: fixed concurrency=${state.concurrency} maxAttempts=${state.maxAttempts}`,
+    `Limits: ${orchestrationLimitsLabel(state)}`,
     "In flight: local reservations against capacity; dispatch state is last reported, not proof of current execution.",
     ...state.work.map(orchestrationWorkSummary),
   ].join("\n");
