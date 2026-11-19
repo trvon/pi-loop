@@ -25,7 +25,10 @@ interface OrchestrationToolsOptions {
   getActor: () => OrchestrationActor | undefined;
   /** Pacing for batches that set neither `pacing` nor `concurrency` (PI_LOOP_PACING). */
   defaultPacing?: OrchestrationPacing;
+  /** Resolves true when a provider adapter vouches for compatibility, or a protocol-v2 ping reply. */
   probeSubagents: () => Promise<unknown>;
+  /** The selected provider's limits; without it protocol-v2 behaviour is assumed. */
+  getProvider?: () => { name: string; defaultAgentType: string; supportsMaxTurns: boolean } | undefined;
   updateWidget: () => void;
 }
 
@@ -95,12 +98,12 @@ function resolvePacing(params: CreateParams, defaultPacing: OrchestrationPacing)
   return { ...params, pacing: params.concurrency !== undefined ? "fixed" : defaultPacing };
 }
 
-function definitionFrom(params: CreateParams): OrchestrationDefinitionInput {
+function definitionFrom(params: CreateParams, defaultAgentType: string): OrchestrationDefinitionInput {
   return {
     goal: params.goal.trim(),
     work: params.work.map((item) => ({
       prompt: item.prompt.trim(),
-      agentType: item.agentType ?? params.agentType ?? "general-purpose",
+      agentType: item.agentType ?? params.agentType ?? defaultAgentType,
       ...(item.verify !== undefined ? { verify: item.verify.trim() } : {}),
     })),
     concurrency: params.concurrency ?? 3,
@@ -148,14 +151,18 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       if (!actor) return errorResult("Orchestration requires an active session runtime.");
       const validationError = validateCreate(params);
       if (validationError) return errorResult(validationError);
+      const provider = options.getProvider?.();
+      if (params.maxTurns !== undefined && provider && !provider.supportsMaxTurns) {
+        return errorResult(`maxTurns is not supported by ${provider.name}: it has no per-worker turn limit. Omit maxTurns; workers are bounded by the provider's own run timeout.`);
+      }
 
       let probe: unknown;
       try {
         probe = await probeSubagents();
       } catch (error) {
-        return errorResult(`Orchestration requires pi-subagents protocol v2: ${error instanceof Error ? error.message : String(error)}`);
+        return errorResult(`Orchestration requires a compatible subagent provider: ${error instanceof Error ? error.message : String(error)}`);
       }
-      if (protocolVersion(probe) !== 2) return errorResult("Orchestration requires pi-subagents protocol v2; no compatible provider replied.");
+      if (probe !== true && protocolVersion(probe) !== 2) return errorResult("Orchestration requires a compatible subagent provider (@tintinweb/pi-subagents protocol v2 or pi-subagents RPC v1); none replied.");
       const currentActor = getActor();
       if (getScope() !== "session" || getPiLoopEnv() !== undefined || getStore() !== store
         || currentActor?.sessionId !== actor.sessionId
@@ -164,7 +171,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         return errorResult("Orchestration context changed during provider probing; retry in the current session.");
       }
 
-      const definition = definitionFrom(params);
+      const definition = definitionFrom(params, provider?.defaultAgentType ?? "general-purpose");
       // Session-local memory: start where this session's last aimd batch left the window.
       const seed = definition.pacing === "aimd"
         ? learnWindowSeed(store.list().flatMap((candidate) => candidate.orchestration ? [{ id: candidate.id, state: candidate.orchestration }] : []), definition.model, Date.now())

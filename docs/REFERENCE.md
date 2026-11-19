@@ -94,7 +94,20 @@ Wake delivery is idle-driven. A due timer or event mutates loop state, emits `lo
 
 ## Subagent orchestration model
 
-`OrchestrationCreate` persists an explicit finite batch of independent work directly in one dynamic `LoopEntry`. It requires the default file-backed session scope and a protocol-v2 `@tintinweb/pi-subagents` responder before writing state. `OrchestrationCreate` and `OrchestrationGet` are registered only once such a provider answers the probe (at activation, at `session_start`, or when it broadcasts `subagents:ready`); without one the model is not offered them, and persisted batches remain visible through `LoopList` and cancellable through `LoopDelete`. The unscoped npm `pi-subagents` package speaks a different RPC protocol (`subagents:rpc:v1:*`) and is not a compatible provider. Worker access goes through the `SubagentProvider` interface in `src/runtime/subagent-provider.ts`; protocol v2 is its only adapter. It does not discover TaskStore records, execute workflow phases, or use the generic scheduler.
+`OrchestrationCreate` persists an explicit finite batch of independent work directly in one dynamic `LoopEntry`. It requires the default file-backed session scope and a protocol-v2 `@tintinweb/pi-subagents` responder before writing state. `OrchestrationCreate` and `OrchestrationGet` are registered only once such a provider answers the probe (at activation, at `session_start`, or when it broadcasts `subagents:ready`); without one the model is not offered them, and persisted batches remain visible through `LoopList` and cancellable through `LoopDelete`. Worker access goes through the `SubagentProvider` interface in `src/runtime/subagent-provider.ts`, which has two adapters. Both are probed together; protocol v2 is preferred when both answer, and the first selection is kept for the runtime's lifetime because persisted dispatches carry that provider's worker ids.
+
+| | `@tintinweb/pi-subagents` (protocol v2) | npm `pi-subagents` (RPC v1) |
+|---|---|---|
+| Default agent type | `general-purpose` | `worker` |
+| `maxTurns` | forwarded | rejected at creation: the provider has no turn limit, only its own run timeout |
+| Worker id | agent id | run id of one detached async run per work item |
+| Launch reply timeout | 5 s | 60 s (the reply waits for the detached runner's startup) |
+| Tool-use count on completion | yes | no: no delay signal, no free congestion re-sends, no gentle admission cut |
+| Provider queue | queues beyond its own pool | none: a launch starts or fails; `Active async run capacity exhausted` is classified as congestion |
+| `stopped` / interrupted (`paused`) run | uncertain | uncertain |
+| Consume | supported | unsupported; results stay provider-owned |
+
+Under RPC v1 the window is limited only by errors, timeouts and its ceiling. Its completion event is delivered at least once and may repeat for a run that pauses and later stops; a repeat for an already settled dispatch is ignored. It does not discover TaskStore records, execute workflow phases, or use the generic scheduler.
 
 The parent `agent_end`, existing 30-second heartbeat, session recovery, and direct `subagents:started|completed|failed` events drive reconciliation. Before each spawn, LoopStore records a generated dispatch ID and consumes local capacity. Spawn forces background execution, disables inherited extension tools, and leaves global queue/concurrency authority with `pi-subagents`. `spawning`, `queued`, and `running` all count against the local limit.
 

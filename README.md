@@ -55,7 +55,7 @@ OrchestrationGet id="1"
 - Observable loop expiry with a seven-day default, configurable through `PI_LOOP_EXPIRES_IN` or per-creation `expiresIn`
 - Background command monitoring with buffered output, `onDone` wakes, and renewable inactivity alerts
 - Optional `pi-tasks` integration and a native task fallback
-- Session-scoped, bounded async subagent orchestration through `@tintinweb/pi-subagents` (protocol v2). The orchestration tools are registered only when that provider answers; the unscoped npm `pi-subagents` package speaks a different protocol and is not yet supported
+- Session-scoped, bounded async subagent orchestration ("swarms") through either `@tintinweb/pi-subagents` (protocol v2) or the unscoped npm `pi-subagents` package (RPC v1). The orchestration tools are registered only when one of them answers
 - Session-isolated persistence and a compact TUI status line
 
 > **Research note:** These features are designed to benefit my research. The loop may drive this tool toward unexpected design choices, so treat those choices as experimental and review them before relying on them.

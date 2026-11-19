@@ -806,6 +806,86 @@ describe("subagent orchestration runtime wiring", () => {
     });
   });
 
+  describe("pi-subagents RPC v1 provider", () => {
+    const start = { type: "session_start", reason: "startup" };
+    const ping = { version: 1, methods: ["ping", "status", "spawn", "stop"], capabilities: { asyncSpawn: true, stop: true } };
+
+    function serveV1(pi: any, handle: (method: string, params: any) => unknown) {
+      const requests: Array<{ method: string; params: any }> = [];
+      pi.events.on("subagents:rpc:v1:request", (raw: any) => {
+        requests.push({ method: raw.method, params: raw.params });
+        const data = handle(raw.method, raw.params);
+        if (data === undefined) return;
+        queueMicrotask(() => pi.events.emit(`subagents:rpc:v1:reply:${raw.requestId}`, { version: 1, requestId: raw.requestId, method: raw.method, success: true, data }));
+      });
+      return requests;
+    }
+
+    it("I1: runs a batch end to end through the v1 provider", async () => {
+      vi.useFakeTimers();
+      try {
+        let nextRun = 0;
+        const { pi, toolMap, emittedEvents, emitExtension } = createMockPi();
+        const requests = serveV1(pi, (method) => method === "ping" ? ping : method === "spawn" ? { text: "Async", details: { mode: "single", runId: `run-${++nextRun}` } } : method === "stop" ? { state: "stopping" } : undefined);
+        extension(pi as any);
+        const ctx = createCtx({ sessionId });
+        await emitExtension("session_start", start, ctx);
+        // The v2 probe has to time out before the second-choice provider is selected.
+        await vi.advanceTimersByTimeAsync(1_100);
+        await emitExtension("turn_start", null, ctx);
+        expect(toolMap.has("OrchestrationCreate")).toBe(true);
+
+        const created = await toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Fix modules", work: [{ prompt: "Fix A" }, { prompt: "Fix B", agentType: "reviewer" }], concurrency: 2 });
+        expect(created.content[0].text).toContain("Orchestration #1 created");
+        await emitExtension("agent_end", null, ctx);
+        await vi.advanceTimersByTimeAsync(10);
+
+        const spawns = requests.filter((request) => request.method === "spawn");
+        expect(spawns.map((request) => request.params.agent)).toEqual(["worker", "reviewer"]);
+        expect(spawns.every((request) => request.params.context === "fresh" && !("maxTurns" in request.params))).toBe(true);
+        expect(emittedEvents.filter((event) => event.name === "subagents:rpc:spawn")).toHaveLength(0);
+
+        pi.events.emit("subagent:async-complete", { id: "run-1", success: true, state: "complete", durationMs: 2_000, totalTokens: { input: 10, output: 100, total: 110 }, results: [{ output: "A fixed." }] });
+        pi.events.emit("subagent:async-complete", { id: "run-2", success: false, state: "failed", results: [{ error: "TypeError: x" }] });
+        await vi.advanceTimersByTimeAsync(10);
+
+        const first = await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1", workId: "1" });
+        expect(first.content[0].text).toContain("Work #1 · complete");
+        expect(first.content[0].text).toContain("Result: A fixed.");
+        const second = await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1", workId: "2" });
+        expect(second.content[0].text).toContain("Work #2 · failed");
+        expect(second.content[0].text).toContain("Error: TypeError: x");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("I2: a v1 run reported stopped is kept uncertain, never retried", async () => {
+      vi.useFakeTimers();
+      try {
+        const { pi, toolMap, emitExtension } = createMockPi();
+        const requests = serveV1(pi, (method) => method === "ping" ? ping : method === "spawn" ? { details: { runId: "run-1" } } : method === "stop" ? { state: "stopping" } : undefined);
+        extension(pi as any);
+        const ctx = createCtx({ sessionId });
+        await emitExtension("session_start", start, ctx);
+        await vi.advanceTimersByTimeAsync(1_100);
+        await emitExtension("turn_start", null, ctx);
+        await toolMap.get("OrchestrationCreate")!.execute!("create", { goal: "Fix", work: [{ prompt: "Fix A" }], maxAttempts: 3 });
+        await emitExtension("agent_end", null, ctx);
+        await vi.advanceTimersByTimeAsync(10);
+
+        pi.events.emit("subagent:async-complete", { id: "run-1", success: false, state: "stopped", stopped: true });
+        await vi.advanceTimersByTimeAsync(10);
+
+        const inspected = await toolMap.get("OrchestrationGet")!.execute!("inspect", { id: "1", workId: "1" });
+        expect(inspected.content[0].text).toContain("Work #1 · uncertain");
+        expect(requests.filter((request) => request.method === "spawn")).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("dispatches a bounded batch, preserves provider completion, and wakes the idle parent once", async () => {
     let nextAgent = 0;
     const { pi, toolMap, emittedEvents, sentMessages, emitExtension } = createMockPi({

@@ -22,7 +22,7 @@ import { sameLoopActivation } from "./loop-activation.js";
 import { resolveDefaultLoopExpiryMs } from "./loop-expiry.js";
 import { atMaxFires } from "./loop-reducer.js";
 import { MonitorManager } from "./monitor-manager.js";
-import { rpcCall, rpcProbe } from "./rpc/cross-extension-rpc.js";
+import { rpcCall } from "./rpc/cross-extension-rpc.js";
 import { buildLoopExpiredPayload } from "./runtime/loop-events.js";
 import { createMonitorOnDoneRuntime } from "./runtime/monitor-ondone-runtime.js";
 import {
@@ -33,7 +33,7 @@ import { resolveLoopStorageScope, resolveLoopStorePath, resolveTaskStorePath } f
 import { registerSessionRuntimeHooks } from "./runtime/session-runtime.js";
 import { isStaleExtensionContextError } from "./runtime/stale-context.js";
 import { createSubagentOrchestrationRuntime, type SubagentOrchestrationRuntime } from "./runtime/subagent-orchestration-runtime.js";
-import { createSubagentsV2Provider } from "./runtime/subagent-provider.js";
+import { createSubagentProviderSelector, createSubagentsV1Provider, createSubagentsV2Provider } from "./runtime/subagent-provider.js";
 import { createTaskBacklogRuntime } from "./runtime/task-backlog-runtime.js";
 import { createTaskProviderRuntime, type TaskProviderRuntime } from "./runtime/task-provider-runtime.js";
 import { createWorkflowVerifier } from "./runtime/verify-runner.js";
@@ -434,7 +434,11 @@ export default function (pi: ExtensionAPI) {
 
   // ── Session lifecycle ──
 
-  const subagentProvider = createSubagentsV2Provider(pi.events, (channel, params, timeoutMs) => rpcCall(pi.events, channel, params, timeoutMs));
+  // Protocol v2 is preferred when both are installed; whichever answers first in that order is kept.
+  const subagentProvider = createSubagentProviderSelector([
+    createSubagentsV2Provider(pi.events, (channel, params, timeoutMs) => rpcCall(pi.events, channel, params, timeoutMs)),
+    createSubagentsV1Provider(pi.events),
+  ]);
   orchestrationRuntime = createSubagentOrchestrationRuntime({
     provider: subagentProvider,
     events: pi.events,
@@ -583,7 +587,8 @@ export default function (pi: ExtensionAPI) {
           getScope: () => loopScope,
           getPiLoopEnv: () => piLoopEnv,
           getActor: () => _sessionId ? { sessionId: _sessionId, runtimeId, generation: sessionGeneration } : undefined,
-          probeSubagents: () => rpcProbe(pi.events, "subagents:rpc:ping", 1_000),
+          probeSubagents: () => subagentProvider.probe(1_000),
+          getProvider: () => subagentProvider,
           updateWidget: () => widget.update(),
           defaultPacing: defaultOrchestrationPacing,
         });

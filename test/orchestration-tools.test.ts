@@ -205,11 +205,65 @@ describe("subagent orchestration tools", () => {
     expect(h.store.get("1")?.orchestration?.work[0]?.verify).toBeUndefined();
   });
 
-  it("requires pi-subagents protocol v2 before persisting", async () => {
+  it("requires a compatible provider before persisting", async () => {
     h = setup({ protocol: 1 });
 
-    expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }] })).toContain("requires pi-subagents protocol v2");
+    expect(await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "Inspect" }] })).toContain("requires a compatible subagent provider");
     expect(h.store.list()).toHaveLength(0);
+  });
+
+  describe("provider traits", () => {
+    function withProvider(provider: { name: string; defaultAgentType: string; supportsMaxTurns: boolean }, compatible = true) {
+      const { pi, toolMap } = createMockPi();
+      const store = new LoopStore();
+      registerSubagentOrchestrationTools({
+        pi,
+        getStore: () => store,
+        getScope: () => "session",
+        getPiLoopEnv: () => undefined,
+        getActor: () => ({ sessionId: "session-a", runtimeId: "runtime-a", generation: 1 }),
+        probeSubagents: async () => compatible,
+        getProvider: () => provider,
+        updateWidget: vi.fn(),
+      });
+      const text = async (args: unknown) => (await toolMap.get("OrchestrationCreate")!.execute!("call", args)).content[0].text as string;
+      return { store, text };
+    }
+    const v1 = { name: "pi-subagents (RPC v1)", defaultAgentType: "worker", supportsMaxTurns: false };
+
+    it("T1: accepts an adapter's own compatibility answer", async () => {
+      const ok = withProvider(v1);
+      expect(await ok.text({ goal: "Review", work: [{ prompt: "Inspect" }] })).toContain("Orchestration #1 created");
+      const absent = withProvider(v1, false);
+      expect(await absent.text({ goal: "Review", work: [{ prompt: "Inspect" }] })).toContain("requires a compatible subagent provider");
+      expect(absent.store.list()).toHaveLength(0);
+    });
+
+    it("T2: work without an agent type gets the provider's default, and an explicit type is kept", async () => {
+      const h1 = withProvider(v1);
+      await h1.text({ goal: "Review", work: [{ prompt: "A" }, { prompt: "B", agentType: "reviewer" }] });
+      expect(h1.store.list()[0]?.orchestration?.work.map((item) => item.agentType)).toEqual(["worker", "reviewer"]);
+      const h2 = withProvider(v1);
+      await h2.text({ goal: "Review", agentType: "scout", work: [{ prompt: "A" }] });
+      expect(h2.store.list()[0]?.orchestration?.work[0]?.agentType).toBe("scout");
+    });
+
+    it("T3: rejects maxTurns for a provider with no turn limit, naming the next action, without persisting", async () => {
+      const h1 = withProvider(v1);
+      const out = await h1.text({ goal: "Review", work: [{ prompt: "A" }], maxTurns: 20 });
+      expect(out).toContain("maxTurns is not supported by pi-subagents (RPC v1)");
+      expect(out).toContain("Omit maxTurns");
+      expect(h1.store.list()).toHaveLength(0);
+      // Control: a provider with turn limits still accepts it.
+      const h2 = withProvider({ name: "@tintinweb/pi-subagents (protocol v2)", defaultAgentType: "general-purpose", supportsMaxTurns: true });
+      expect(await h2.text({ goal: "Review", work: [{ prompt: "A" }], maxTurns: 20 })).toContain("Orchestration #1 created");
+      expect(h2.store.list()[0]?.orchestration?.maxTurns).toBe(20);
+    });
+
+    it("T4 (control): with no provider traits the default agent type is unchanged", async () => {
+      await h.text("OrchestrationCreate", { goal: "Review", work: [{ prompt: "A" }], maxTurns: 5 });
+      expect(h.store.list()[0]?.orchestration).toMatchObject({ maxTurns: 5, work: [{ agentType: "general-purpose" }] });
+    });
   });
 
   it("bounds work, concurrency, attempts, turns, and serialized input", async () => {

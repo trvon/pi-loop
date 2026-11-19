@@ -17,7 +17,6 @@ import type { LoopScope } from "./scope.js";
 import { AmbiguousSpawnReplyError, createSubagentsV2Provider, type SubagentLifecycleEvent, type SubagentProvider } from "./subagent-provider.js";
 import { runVerifyCommand, type VerifyRunner } from "./verify-runner.js";
 
-const SPAWN_TIMEOUT_MS = 5_000;
 const STOP_TIMEOUT_MS = 1_000;
 const EARLY_EVENT_TTL_MS = 30_000;
 const MAX_EARLY_EVENTS = 64;
@@ -469,7 +468,7 @@ export function createSubagentOrchestrationRuntime(
         description: `Orchestration #${entry.id} work #${item.id}`,
         model: reserved.model,
         maxTurns: reserved.maxTurns,
-      }, SPAWN_TIMEOUT_MS);
+      }, provider.spawnTimeoutMs);
       const workerId = provider.workerId(rawReply);
       if (workerId === undefined) throw new AmbiguousSpawnReplyError("Invalid subagent spawn reply; the worker start outcome is unknown");
       const reply = { id: workerId };
