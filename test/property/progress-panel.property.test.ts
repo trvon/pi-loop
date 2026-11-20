@@ -144,6 +144,41 @@ describe("progress panel properties", () => {
     );
   });
 
+  it("shows every in-progress swarm exactly once, nested under its phase or on its own", () => {
+    const linkedSwarm = fc.tuple(orchestration, fc.option(fc.record({ workflowId: fc.integer({ min: 1, max: 6 }).map(String), state: fc.constantFrom("plan", "implement", "review", "done", "ghost") }), { nil: undefined }))
+      .map(([entry, phase]) => {
+        if (phase) entry.orchestration!.phase = { ...phase, executionId: "exec-1" };
+        return entry;
+      });
+    const namedWorkflow = fc.record({ id: fc.integer({ min: 1, max: 6 }).map(String), status: fc.constantFrom("active", "paused", "expired"), lease: fc.constantFrom("live", "expired", "none") })
+      .map((spec) => panelWorkflow({ id: spec.id, status: spec.status as LoopEntry["status"], lease: spec.lease as "live" | "expired" | "none" }));
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(namedWorkflow, { maxLength: 4, selector: (entry) => entry.id }),
+        fc.uniqueArray(linkedSwarm, { maxLength: 6, selector: (entry) => entry.id }),
+        timestamp,
+        (workflows, swarms, now) => {
+          // Controller ids are unique in a store; keep the generated snapshot realistic.
+          const taken = new Set(workflows.map((entry) => entry.id));
+          const loops = [...workflows, ...swarms.filter((entry) => !taken.has(entry.id))];
+          const before = JSON.stringify(loops);
+          const lines = layoutProgressPanel({ loops, tasks: [], now }, 80, 1_000).map(panelLineText);
+          const headers = lines.flatMap((line) => line.match(/^(?: {4})?◇ #(\d+) /)?.[1] ?? []);
+          const withheld = Number(lines.find((line) => /^◇ … \d+ more$/.test(line))?.match(/(\d+)/)?.[1] ?? 0);
+          const inProgress = loops.filter((entry) => entry.orchestration && ["active", "paused"].includes(entry.status) && ["active", "needs_attention"].includes(entry.orchestration.status));
+          expect(new Set(headers).size).toBe(headers.length);
+          expect(headers.length + withheld).toBe(inProgress.length);
+          for (const id of headers) expect(inProgress.some((entry) => entry.id === id)).toBe(true);
+          // Each workflow still has exactly one current-state row.
+          const detailed = Math.min(2, workflows.filter((entry) => entry.status === "active" || entry.status === "paused").length);
+          expect(lines.filter((line) => line.startsWith("  ▶ "))).toHaveLength(detailed);
+          expect(JSON.stringify(loops)).toBe(before);
+        },
+      ),
+      propertyOptions(300),
+    );
+  });
+
   it("keeps task, monitor, and controller rows on their own authority", () => {
     fc.assert(
       fc.property(input, (snapshot) => {
