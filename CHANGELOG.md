@@ -6,6 +6,24 @@
 
 * **tasks:** register the native task tools at `session_start` instead of six seconds after startup. A prompt sent inside that window used to go out with the pre-registration tool set, and the next request carried four more tools plus their prompt guidelines, so the request prefix changed once per session and every provider-side prompt cache missed (a full ~22k-token re-prefill on llama-server). The timer stays as a backstop and an external `pi-tasks` that answered the startup ping still wins.
 
+## [0.8.2](https://github.com/trvon/pi-loop/compare/pi-loop-v0.8.1...pi-loop-v0.8.2) (2026-11-20)
+
+
+### Features
+
+* **orchestration:** let a work item carry a display label ([f55bae8](https://github.com/trvon/pi-loop/commit/f55bae81a2ccb5237b2172871fa56c6065981619))
+* **orchestration:** offer maxTurns only where it works, and name a serial batch ([3ab7163](https://github.com/trvon/pi-loop/commit/3ab71632d749580c02bf1b1b0fd43c05626988f8))
+* **orchestration:** record the workflow phase a swarm was started from ([1f68d4d](https://github.com/trvon/pi-loop/commit/1f68d4d9446f6115b7c607b6bd8d1a68f9ada4f7))
+* **orchestration:** tell the model a workflow phase may run its swarm here ([72e4df3](https://github.com/trvon/pi-loop/commit/72e4df3d6c9bab16037b1796f277ca3d7ac5cb0d))
+* **ui:** list each work item under its orchestration in the progress panel ([64c21fa](https://github.com/trvon/pi-loop/commit/64c21fae211470ebfdb0f49773e92df5eaede121))
+* **ui:** show a workflow's swarms under the phases that started them ([6c9405c](https://github.com/trvon/pi-loop/commit/6c9405cadb5f3b453cd6eb832ad2b4985c8a1cd0))
+
+
+### Bug Fixes
+
+* **store:** stop finished orchestrations from using up the loop limit ([d275cc9](https://github.com/trvon/pi-loop/commit/d275cc99f429496d47747ecdfa30257822f20400))
+* **ui:** drop finished orchestrations from the status line and panel ([8ce2642](https://github.com/trvon/pi-loop/commit/8ce26420aa0c888a5a1a2ed97b4f95ea0fc7da8a))
+
 ## [0.8.1](https://github.com/trvon/pi-loop/compare/pi-loop-v0.8.0...pi-loop-v0.8.1) (2026-11-19)
 
 
