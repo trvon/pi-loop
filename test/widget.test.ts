@@ -325,6 +325,30 @@ describe("LoopWidget status rendering", () => {
       expect(latestStatusCall()?.[1]).toContain("◇ 1 orchestration | #1 needs attention");
     });
 
+    it("W5: repaints each minute while a batch has work in flight, and not otherwise", () => {
+      vi.useFakeTimers();
+      try {
+        const entry = start();
+        const list = vi.spyOn(store, "list");
+        widget.update();
+        // Control: pending work shows no elapsed time, so nothing needs a repaint.
+        expect(vi.getTimerCount()).toBe(0);
+        entry.orchestration!.work[0]!.status = "active";
+        widget.update();
+        const before = list.mock.calls.length;
+        vi.advanceTimersByTime(59_999);
+        expect(list.mock.calls.length).toBe(before);
+        vi.advanceTimersByTime(1);
+        expect(list.mock.calls.length).toBe(before + 1);
+        // Finished: the repaint stops with the work.
+        settle(entry, "completed");
+        widget.update();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("W4: finished batches do not inflate the count of later ones", () => {
       for (let index = 0; index < 5; index++) settle(start(), "completed");
       start();

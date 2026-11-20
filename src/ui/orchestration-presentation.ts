@@ -10,6 +10,7 @@ import type {
   OrchestrationWorkItem,
   OrchestrationWorkStatus,
 } from "../types.js";
+import { formatCompactWorkflowDuration } from "./workflow-presentation.js";
 
 export function orchestrationCancellationMessage(id: string, result: OrchestrationCancellation): string {
   if (result === "deleted") return `Orchestration #${id} cancelled and deleted`;
@@ -98,6 +99,10 @@ export function orchestrationWorkSummary(item: OrchestrationWorkItem): string {
   let line = `#${item.id} [${orchestrationWorkStatusLabel(item.status)}] ${label} · ${item.label ?? compactPrompt(item.prompt)}`;
   if (dispatch?.agentId) line += ` · agent=${dispatch.agentId}`;
   if (item.attemptCount > 0) line += ` · attempts=${item.attemptCount}`;
+  // Evidence the batch holds for the item; a field is absent when nothing was reported.
+  if (dispatch?.verify) line += dispatch.verify.passed ? " · verify ok" : ` · verify failed (exit ${dispatch.verify.exitCode ?? "none"})`;
+  if (dispatch?.usage?.durationMs !== undefined) line += ` · ${formatCompactWorkflowDuration(dispatch.usage.durationMs)}`;
+  if (dispatch?.usage?.tokens) line += ` · ${dispatch.usage.tokens.total} tokens`;
   return line;
 }
 

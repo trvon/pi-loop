@@ -133,6 +133,8 @@ export class LoopWidget {
     };
     for (const entry of entries) {
       if (entry.workflow && isStatusVisibleLoop(entry)) consider(entry.workflow.activeExecution?.lease?.expiresAt);
+      // In-flight item rows show elapsed time at minute resolution, like monitor rows.
+      if (isOrchestrationInProgress(entry) && entry.orchestration?.work.some((item) => item.status === "active")) consider(now + MONITOR_REFRESH_MS);
     }
     for (const task of tasks) {
       if (task.status === "in_progress") consider(task.claim?.leaseExpiresAt);

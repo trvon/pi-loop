@@ -52,7 +52,18 @@ const orchestration: fc.Arbitrary<LoopEntry> = fc.record({
   id: fc.integer({ min: 1, max: 999 }).map(String),
   work: fc.array(fc.constantFrom("pending", "active", "completed", "failed", "uncertain", "cancelled"), { maxLength: 32 }),
   status: fc.constantFrom("active", "needs_attention", "completed", "cancelled"),
-}).map(({ id, work, status }) => panelOrchestration(id, work as never, status as never));
+  labels: fc.array(fc.option(hostileText, { nil: undefined }), { maxLength: 32 }),
+  startedAgo: fc.array(fc.option(fc.integer({ min: -86_400_000, max: 30 * 86_400_000 }), { nil: undefined }), { maxLength: 32 }),
+  tokens: fc.option(fc.nat(), { nil: undefined }),
+}).map(({ id, work, status, labels, startedAgo, tokens }) => panelOrchestration(id, work as never, status as never, (index) => ({
+  ...(labels[index] !== undefined ? { label: labels[index] } : {}),
+  ...(startedAgo[index] !== undefined ? {
+    dispatches: [{
+      dispatchId: "d", attempt: 1, ownerRuntimeId: "r", ownerGeneration: 0, status: "running", requestedAt: PANEL_NOW - startedAgo[index]!,
+      consumeStatus: "provider_owned", consumeAttempts: 0, ...(tokens !== undefined ? { usage: { tokens: { input: tokens, output: 0, total: tokens } } } : {}),
+    }] as never,
+  } : {}),
+})));
 
 const monitor: fc.Arbitrary<MonitorEntry> = fc.record({
   id: fc.oneof(fc.integer({ min: 1, max: 999 }).map(String), hostileText),
@@ -103,6 +114,31 @@ describe("progress panel properties", () => {
           .filter((line) => line.startsWith("  ▶ "));
         expect(current).toHaveLength(Math.min(shown, 2));
         for (const line of current) expect(line).toMatch(/ · try \d+(\/\d+)?$/);
+      }),
+      propertyOptions(300),
+    );
+  });
+
+  it("accounts for every work item of a shown orchestration: rows listed plus rows withheld", () => {
+    fc.assert(
+      fc.property(fc.uniqueArray(orchestration, { maxLength: 4, selector: (entry) => entry.id }), timestamp, (loops, now) => {
+        const lines = layoutProgressPanel({ loops, tasks: [], now }, 80, 1_000).map(panelLineText);
+        const shown = loops.filter((entry) => ["active", "needs_attention"].includes(entry.orchestration!.status)).slice(0, 2);
+        const blocks: string[][] = [];
+        for (const line of lines) {
+          if (/^◇ #\d+ /.test(line)) blocks.push([]);
+          else if (!line.startsWith("◇")) blocks.at(-1)!.push(line);
+        }
+        expect(blocks).toHaveLength(shown.length);
+        shown.forEach((entry, index) => {
+          const block = blocks[index]!;
+          const withheld = Number(block.at(-1)?.match(/^ {4}… (\d+) more$/)?.[1] ?? 0);
+          const listed = block.length - (withheld > 0 ? 1 : 0);
+          expect(listed).toBeLessThanOrEqual(5);
+          expect(listed + withheld).toBe(entry.orchestration!.work.length);
+          // No item row may read as a workflow's current state or a top-level controller row.
+          for (const line of block) expect(line).toMatch(/^ {2}(?:[●✗?○✓–] | {2}… )/);
+        });
       }),
       propertyOptions(300),
     );

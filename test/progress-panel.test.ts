@@ -146,14 +146,68 @@ describe("progress panel layout", () => {
 
   it("lists only orchestrations still running or needing attention, so a running batch is never crowded out", () => {
     const loops = [panelOrchestration("1", ["completed"], "completed"), panelOrchestration("2", ["cancelled"], "cancelled"), panelOrchestration("3", ["active"]), panelOrchestration("4", ["failed"], "needs_attention")];
-    expect(text({ loops, tasks: [], now })).toEqual(["◇ #3 0/1 · 1/2 in flight", "◇ #4 0/1 needs attention"]);
+    expect(text({ loops, tasks: [], now }).filter((line) => line.startsWith("◇"))).toEqual(["◇ #3 0/1 · 1/2 in flight", "◇ #4 0/1 needs attention"]);
     expect(text({ loops: loops.slice(0, 2), tasks: [], now })).toEqual([]);
   });
 
   it("summarizes orchestration progress without claiming observed execution", () => {
     const lines = text({ loops: [panelOrchestration("7", ["completed", "active", "pending"])], tasks: [], now });
-    expect(lines).toEqual(["◇ #7 1/3 · 1/2 in flight"]);
-    expect(text({ loops: [panelOrchestration("8", ["failed"], "needs_attention")], tasks: [], now })).toEqual(["◇ #8 0/1 needs attention"]);
+    expect(lines[0]).toBe("◇ #7 1/3 · 1/2 in flight");
+    expect(text({ loops: [panelOrchestration("8", ["failed"], "needs_attention")], tasks: [], now })[0]).toBe("◇ #8 0/1 needs attention");
+  });
+
+  describe("orchestration item rows", () => {
+    const dispatch = (fields: Record<string, unknown>) => ({ dispatchId: "d", attempt: 1, ownerRuntimeId: "r", ownerGeneration: 0, status: "running", requestedAt: now - 600_000, consumeStatus: "provider_owned", consumeAttempts: 0, ...fields });
+    const rows = (entry: ReturnType<typeof panelOrchestration>, width = 60, max = 40) => text({ loops: [entry], tasks: [], now }, width, max);
+
+    it("R1: lists each item under its batch, in flight first, then problems, pending and done", () => {
+      const entry = panelOrchestration("7", ["completed", "active", "pending", "failed"], "active", (index) => [
+        { label: "seatbelt", dispatches: [dispatch({ status: "completed", startedAt: now - 600_000, settledAt: now - 180_000, usage: { durationMs: 421_000, tokens: { input: 160_000, output: 1_800, total: 161_800 } } })] },
+        { label: "native-pi", attemptCount: 2, dispatches: [dispatch({ status: "failed" }), dispatch({ attempt: 2, startedAt: now - 180_000 })] },
+        {},
+        { label: "tls", attemptCount: 1, dispatches: [dispatch({ status: "failed" })] },
+      ][index] as never);
+      expect(rows(entry)).toEqual([
+        "◇ #7 1/4 · 1/2 in flight",
+        "  ● running 3m · try 2 native-pi",
+        "  ✗ failed tls",
+        "  ○ p",
+        "  ✓ 7m · 162k tok seatbelt",
+      ]);
+    });
+
+    it("R2: shows the last reported dispatch state and elapsed time, never more than was reported", () => {
+      const entry = panelOrchestration("7", ["active", "active", "active", "uncertain"], "active", (index) => [
+        { label: "a", dispatches: [dispatch({ status: "spawning", requestedAt: now - 5_000 })] },
+        { label: "b", dispatches: [dispatch({ status: "queued", requestedAt: now - 120_000 })] },
+        { label: "c", dispatches: [dispatch({ status: "verifying", startedAt: now - 3_600_000 })] },
+        { label: "d", dispatches: [dispatch({ status: "uncertain" })] },
+      ][index] as never);
+      expect(rows(entry).slice(1)).toEqual(["  ● starting 5s a", "  ● queued 2m b", "  ● verifying 1h c", "  ? uncertain d"]);
+    });
+
+    it("R3: a finished item without usage evidence shows no token or duration figures", () => {
+      const entry = panelOrchestration("7", ["completed", "completed", "active"], "active", (index) => [
+        { label: "bare", dispatches: [dispatch({ status: "completed" })] },
+        { label: "timed", dispatches: [dispatch({ status: "completed", usage: { durationMs: 61_000 } })] },
+        { label: "run" },
+      ][index] as never);
+      expect(rows(entry).slice(1)).toEqual(["  ● run", "  ✓ bare", "  ✓ 1m timed"]);
+    });
+
+    it("R4: bounds the rows of one batch and says how many are not shown", () => {
+      const entry = panelOrchestration("7", Array.from({ length: 9 }, () => "pending" as const));
+      const lines = rows(entry);
+      expect(lines).toHaveLength(7);
+      expect(lines.at(-1)).toBe("    … 4 more");
+      // A cancelled item is listed last and dimmed out, not dropped.
+      expect(rows(panelOrchestration("8", ["cancelled", "active"])).slice(1)).toEqual(["  ● p", "  – p"]);
+    });
+
+    it("R5: names an item by its label, else its prompt, with control bytes removed", () => {
+      const entry = panelOrchestration("7", ["pending", "pending"], "active", (index) => [{ label: "ok\u001b[31m" }, { prompt: "line one\nline\ttwo" }][index] as never);
+      expect(rows(entry).slice(1)).toEqual(["  ○ ok [31m", "  ○ line one line two"]);
+    });
   });
 
   it("bounds rows and width, and strips control and escape bytes", () => {

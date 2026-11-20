@@ -39,6 +39,7 @@ const MAX_DETAILED_WORKFLOWS = 2;
 const MAX_STATE_ROWS = 6;
 const MAX_TASK_ROWS = 5;
 const MAX_ORCHESTRATION_ROWS = 2;
+const MAX_ORCHESTRATION_ITEM_ROWS = 5;
 const MAX_MONITOR_ROWS = 3;
 /** Silence longer than this is flagged; a long build with no output is worth a glance. */
 const MONITOR_QUIET_MS = 5 * 60_000;
@@ -237,6 +238,54 @@ function taskLines(tasks: readonly TaskEntry[], now: number): PanelLine[] {
   return lines;
 }
 
+/** Compact token count: the panel has room for magnitude, not digits. */
+function compactTokens(total: number): string {
+  if (total < 1_000) return String(total);
+  if (total < 999_500) return `${Math.round(total / 1_000)}k`;
+  return `${(total / 1_000_000).toFixed(1)}M`;
+}
+
+type WorkItem = NonNullable<LoopEntry["orchestration"]>["work"][number];
+
+// What still needs watching comes first; finished work is the first to scroll out of the bounded rows.
+const ITEM_ORDER: Record<WorkItem["status"], number> = { active: 0, failed: 1, uncertain: 1, pending: 2, completed: 3, cancelled: 4 };
+const REPORTED_STATE: Partial<Record<WorkItem["dispatches"][number]["status"], string>> = { spawning: "starting", queued: "queued", running: "running", verifying: "verifying" };
+
+function orchestrationItemLine(item: WorkItem, now: number): PanelLine {
+  const name = seg(plainPanelText(item.label ?? item.prompt), item.status === "active" ? "text" : "muted");
+  const dispatch = item.dispatches.at(-1);
+  if (item.status === "active") {
+    // Last reported state and time since it was asked for: evidence of dispatch, not of a live worker.
+    const reported = dispatch ? REPORTED_STATE[dispatch.status] : undefined;
+    const detail = dispatch && reported
+      ? `${reported} ${formatCompactWorkflowDuration(now - (dispatch.startedAt ?? dispatch.requestedAt))}${dispatch.attempt > 1 ? ` · try ${dispatch.attempt}` : ""} `
+      : "";
+    return [seg("  ● ", "accent"), seg(detail, "dim"), name];
+  }
+  if (item.status === "completed") {
+    const duration = dispatch?.usage?.durationMs;
+    const tokens = dispatch?.usage?.tokens?.total;
+    const detail = [
+      ...(duration !== undefined ? [formatCompactWorkflowDuration(duration)] : []),
+      ...(tokens !== undefined ? [`${compactTokens(tokens)} tok`] : []),
+    ].join(" · ");
+    return [seg("  ✓ ", "success"), seg(detail ? `${detail} ` : "", "dim"), name];
+  }
+  if (item.status === "failed") return [seg("  ✗ ", "warning"), seg("failed ", "warning"), name];
+  if (item.status === "uncertain") return [seg("  ? ", "warning"), seg("uncertain ", "warning"), name];
+  if (item.status === "cancelled") return [seg("  – ", "dim"), name];
+  return [seg("  ○ ", "dim"), name];
+}
+
+function orchestrationLines(entry: LoopEntry, now: number): PanelLine[] {
+  const work = entry.orchestration?.work ?? [];
+  // Array.prototype.sort is stable, so items keep batch order within a rank.
+  const ordered = [...work].sort((a, b) => ITEM_ORDER[a.status] - ITEM_ORDER[b.status]);
+  const lines = [orchestrationLine(entry), ...ordered.slice(0, MAX_ORCHESTRATION_ITEM_ROWS).map((item) => orchestrationItemLine(item, now))];
+  if (ordered.length > MAX_ORCHESTRATION_ITEM_ROWS) lines.push([seg(`    … ${ordered.length - MAX_ORCHESTRATION_ITEM_ROWS} more`, "dim")]);
+  return lines;
+}
+
 /**
  * Lays out the panel body. Every returned line fits `width` visible columns and
  * at most `maxRows` lines are returned; an empty result means "hide the panel".
@@ -260,7 +309,7 @@ export function layoutProgressPanel(input: ProgressPanelInput, width: number, ma
   }
 
   const orchestrations = input.loops.filter(isPanelOrchestration);
-  for (const entry of orchestrations.slice(0, MAX_ORCHESTRATION_ROWS)) lines.push(orchestrationLine(entry));
+  for (const entry of orchestrations.slice(0, MAX_ORCHESTRATION_ROWS)) lines.push(...orchestrationLines(entry, now));
   if (orchestrations.length > MAX_ORCHESTRATION_ROWS) {
     lines.push([seg(`◇ … ${orchestrations.length - MAX_ORCHESTRATION_ROWS} more`, "dim")]);
   }

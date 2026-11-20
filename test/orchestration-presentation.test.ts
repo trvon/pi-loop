@@ -57,6 +57,29 @@ describe("orchestration presentation", () => {
     expect(orchestrationTone(state)).toBe("warning");
   });
 
+  it("E1: a listing row ends with the evidence held for the item: verify result, time and tokens", () => {
+    const entry = createEntry();
+    const [first, second] = entry.orchestration!.work;
+    first!.status = "completed";
+    first!.attemptCount = 1;
+    first!.dispatches.push({
+      dispatchId: "d", attempt: 1, ownerRuntimeId: "runtime", ownerGeneration: 1, status: "completed", requestedAt: 1, agentId: "a1", consumeStatus: "provider_owned", consumeAttempts: 0,
+      usage: { durationMs: 421_000, tokens: { input: 160_000, output: 1_800, total: 161_800 } },
+      verify: { passed: true, exitCode: 0, durationMs: 12 },
+    });
+    second!.status = "failed";
+    second!.attemptCount = 1;
+    second!.dispatches.push({ dispatchId: "e", attempt: 1, ownerRuntimeId: "runtime", ownerGeneration: 1, status: "failed", requestedAt: 1, consumeStatus: "none", consumeAttempts: 0, verify: { passed: false, exitCode: 1, durationMs: 9 } });
+    const before = structuredClone(entry);
+    const rows = orchestrationControllerText(entry).split("\n");
+    // Existing fields keep their order; evidence is appended.
+    expect(rows.at(-2)).toBe("#1 [complete] Explore · Inspect API compatibility · agent=a1 · attempts=1 · verify ok · 7m · 161800 tokens");
+    expect(rows.at(-1)).toBe("#2 [failed] Plan · Review rollout risks · attempts=1 · verify failed (exit 1)");
+    expect(entry).toEqual(before);
+    // Control: an item with no evidence gets no evidence fields.
+    expect(orchestrationControllerText(createEntry()).split("\n").at(-1)).toBe("#2 [pending] Plan · Review rollout risks");
+  });
+
   it.each(["spawning", "queued", "running"] as const)("separates reservations from %s observations", (status) => {
     const entry = createEntry();
     const state = entry.orchestration!;
