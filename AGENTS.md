@@ -161,7 +161,7 @@ Lint has two established optional-chain warnings; do not add new warnings. Workf
 
 ## Limits
 
-- 25 active loops
+- 25 loops, excluding completed or cancelled orchestrations (100 of those may be retained)
 - 25 running monitors
 - 32 orchestration work items
 - 8 local orchestration workers under fixed pacing; `pacing: "aimd"` (the default unless `concurrency` or `PI_LOOP_PACING=fixed` is given) is bounded by its feedback window and the batch size, or by 8 unless every item declares `verify` (protocol-v2 pi-subagents queues beyond its own pool; npm pi-subagents has no queue and a launch starts or fails)

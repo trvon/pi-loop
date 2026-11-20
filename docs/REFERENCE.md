@@ -231,7 +231,8 @@ External consumers import only `@trevonistrevon/pi-loop/api`. Deep `src/` import
 
 ## Limits and recovery gaps
 
-- 25 active loops
+- 25 loops, not counting completed or cancelled orchestrations retained for inspection
+- 100 retained completed or cancelled orchestrations
 - 25 running monitors
 - 32 orchestration work items, 8 local workers, and 3 attempts per item
 - 8,192 result characters and 2,048 error characters per orchestration dispatch
