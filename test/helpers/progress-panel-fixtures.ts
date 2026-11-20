@@ -88,7 +88,14 @@ export function panelWorkflow(options: PanelWorkflowOptions = {}): LoopEntry {
   };
 }
 
-export function panelOrchestration(id: string, statuses: OrchestrationState["work"][number]["status"][], status: OrchestrationState["status"] = "active"): LoopEntry {
+type PanelWorkItem = OrchestrationState["work"][number];
+
+export function panelOrchestration(
+  id: string,
+  statuses: PanelWorkItem["status"][],
+  status: OrchestrationState["status"] = "active",
+  decorate: (index: number) => Partial<PanelWorkItem> = () => ({}),
+): LoopEntry {
   return {
     id,
     prompt: "Fan out",
@@ -106,7 +113,7 @@ export function panelOrchestration(id: string, statuses: OrchestrationState["wor
       concurrency: 2,
       maxAttempts: 2,
       owner: { sessionId: "s", runtimeId: "r", generation: 0 },
-      work: statuses.map((workStatus, index) => ({ id: String(index + 1), prompt: "p", status: workStatus, attemptCount: 0, dispatches: [] })),
+      work: statuses.map((workStatus, index) => ({ id: String(index + 1), prompt: "p", status: workStatus, attemptCount: 0, dispatches: [], ...decorate(index) })),
       nextWakeSequence: 1,
       createdAt: PANEL_NOW - 60_000,
       updatedAt: PANEL_NOW,

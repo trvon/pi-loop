@@ -116,6 +116,8 @@ export interface OrchestrationVerification {
 export interface OrchestrationWorkItem {
   id: string;
   prompt: string;
+  /** Short display name for progress rows; never sent to the worker. */
+  label?: string;
   agentType?: string;
   /** Shell command run after the worker completes; exit 0 is the ACK. */
   verify?: string;
@@ -152,18 +154,28 @@ export interface OrchestrationState {
   pendingWake?: OrchestrationPendingWake;
   /** Present only for `pacing: "aimd"`; `concurrency` remains the hard ceiling. */
   window?: AckWindow;
+  /** Display link to the workflow phase this batch was started from; never consulted for dispatch or admission. */
+  phase?: OrchestrationPhaseLink;
   createdAt: number;
   updatedAt: number;
 }
 
+/** Names one visit to a workflow state: a state re-entered on rework is a different execution. */
+export interface OrchestrationPhaseLink {
+  workflowId: string;
+  executionId: string;
+  state: string;
+}
+
 export interface OrchestrationDefinitionInput {
   goal: string;
-  work: Array<{ prompt: string; agentType?: string; verify?: string }>;
+  work: Array<{ prompt: string; label?: string; agentType?: string; verify?: string }>;
   concurrency?: number;
   pacing?: OrchestrationPacing;
   maxAttempts?: number;
   model?: string;
   maxTurns?: number;
+  phase?: OrchestrationPhaseLink;
   /** aimd only: start from a window an earlier batch in this session learned. */
   initialWindow?: WindowSeed;
 }

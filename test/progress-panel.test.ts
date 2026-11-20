@@ -144,10 +144,133 @@ describe("progress panel layout", () => {
     expect(text({ loops: [panelWorkflow()], tasks: [], now }, 34, 0)).toEqual([]);
   });
 
+  it("lists only orchestrations still running or needing attention, so a running batch is never crowded out", () => {
+    const loops = [panelOrchestration("1", ["completed"], "completed"), panelOrchestration("2", ["cancelled"], "cancelled"), panelOrchestration("3", ["active"]), panelOrchestration("4", ["failed"], "needs_attention")];
+    expect(text({ loops, tasks: [], now }).filter((line) => line.startsWith("◇"))).toEqual(["◇ #3 0/1 · 1/2 in flight", "◇ #4 0/1 needs attention"]);
+    expect(text({ loops: loops.slice(0, 2), tasks: [], now })).toEqual([]);
+  });
+
   it("summarizes orchestration progress without claiming observed execution", () => {
     const lines = text({ loops: [panelOrchestration("7", ["completed", "active", "pending"])], tasks: [], now });
-    expect(lines).toEqual(["◇ #7 1/3 · 1/2 in flight"]);
-    expect(text({ loops: [panelOrchestration("8", ["failed"], "needs_attention")], tasks: [], now })).toEqual(["◇ #8 0/1 needs attention"]);
+    expect(lines[0]).toBe("◇ #7 1/3 · 1/2 in flight");
+    expect(text({ loops: [panelOrchestration("8", ["failed"], "needs_attention")], tasks: [], now })[0]).toBe("◇ #8 0/1 needs attention");
+  });
+
+  describe("workflow phases with swarms", () => {
+    const linked = (id: string, state: string, statuses: Parameters<typeof panelOrchestration>[1], status: Parameters<typeof panelOrchestration>[2] = "active", workflowId = "3", tokens?: number) => {
+      const entry = panelOrchestration(id, statuses, status, () => (tokens === undefined ? {} : {
+        dispatches: [{ dispatchId: "d", attempt: 1, ownerRuntimeId: "r", ownerGeneration: 0, status: "completed", requestedAt: now, consumeStatus: "provider_owned", consumeAttempts: 0, usage: { tokens: { input: tokens, output: 0, total: tokens } } }] as never,
+      }));
+      entry.orchestration!.phase = { workflowId, executionId: "exec-1", state };
+      if (status !== "active" && status !== "needs_attention") entry.status = "paused";
+      return entry;
+    };
+    const wide = (loops: Parameters<typeof layoutProgressPanel>[0]["loops"]) => text({ loops, tasks: [], now }, 60, 60);
+
+    it("V1: a phase's swarm is listed under that phase, and finished phases carry their agent counts", () => {
+      const lines = wide([panelWorkflow(), linked("4", "plan", ["completed", "completed"], "completed", "3", 1_000), linked("5", "implement", ["active", "pending", "pending"])]);
+      expect(lines).toEqual([
+        "◆ #3 Ship migration",
+        "  ∑ 2/5 agents · 2k tok",
+        "  ✓ plan 2/2",
+        "  ▶ implement · try 1/3",
+        "    claimed 4m",
+        "    ◇ #5 0/3 · 1/2 in flight",
+        "    ● p",
+        "    ○ p",
+        "    ○ p",
+        "  ○ review",
+        "  ○ done",
+        "  → pass, retry",
+      ]);
+    });
+
+    it("V2: a swarm is shown once: under its phase when that row is visible, on its own otherwise", () => {
+      const swarm = linked("5", "implement", ["active"]);
+      const count = (lines: string[]) => lines.filter((line) => line.trimStart().startsWith("◇ #5 ")).length;
+      const nested = wide([panelWorkflow(), swarm]);
+      expect(count(nested)).toBe(1);
+      expect(nested.some((line) => line.startsWith("◇"))).toBe(false);
+      // Workflow gone (completed workflows are deleted), expired, or not one of the two detailed: standalone.
+      for (const loops of [[swarm], [panelWorkflow({ status: "expired" as never }), swarm], [panelWorkflow({ id: "1" }), panelWorkflow({ id: "2" }), panelWorkflow(), swarm]]) {
+        const lines = wide(loops);
+        expect(count(lines)).toBe(1);
+        expect(lines).toContain("◇ #5 0/1 · 1/2 in flight");
+      }
+      // A phase row scrolled out of the bounded state trail cannot hold it either.
+      const long = panelWorkflow({ states: ["a", "b", "c", "d", "e", "f", "g", "h", "i", "done"], current: "i" });
+      expect(wide([long, linked("5", "a", ["active"])])).toContain("◇ #5 0/1 · 1/2 in flight");
+    });
+
+    it("V3: a swarm still running after its phase was left stays under that phase", () => {
+      const lines = wide([panelWorkflow(), linked("4", "plan", ["active", "completed"])]);
+      const at = lines.indexOf("  ✓ plan 1/2");
+      expect(at).toBeGreaterThan(0);
+      expect(lines.slice(at + 1, at + 4)).toEqual(["    ◇ #4 1/2 · 1/2 in flight", "    ● p", "    ✓ p"]);
+    });
+
+    it("V4 (controls): unlinked swarms, other workflows' swarms and deleted swarms leave the trail as it was", () => {
+      const plain = wide([panelWorkflow()]);
+      expect(plain).toEqual(["◆ #3 Ship migration", "  ✓ plan", "  ▶ implement · try 1/3", "    claimed 4m", "  ○ review", "  ○ done", "  → pass, retry"]);
+      expect(wide([panelWorkflow(), panelOrchestration("5", ["active"])]).slice(0, plain.length)).toEqual(plain);
+      expect(wide([panelWorkflow(), linked("5", "implement", ["active"], "active", "99")]).slice(0, plain.length)).toEqual(plain);
+      // The latest swarm of a re-entered phase is the one counted.
+      expect(wide([panelWorkflow(), linked("4", "plan", ["failed"], "completed"), linked("6", "plan", ["completed", "completed", "completed"], "completed")])).toContain("  ✓ plan 3/3");
+    });
+  });
+
+  describe("orchestration item rows", () => {
+    const dispatch = (fields: Record<string, unknown>) => ({ dispatchId: "d", attempt: 1, ownerRuntimeId: "r", ownerGeneration: 0, status: "running", requestedAt: now - 600_000, consumeStatus: "provider_owned", consumeAttempts: 0, ...fields });
+    const rows = (entry: ReturnType<typeof panelOrchestration>, width = 60, max = 40) => text({ loops: [entry], tasks: [], now }, width, max);
+
+    it("R1: lists each item under its batch, in flight first, then problems, pending and done", () => {
+      const entry = panelOrchestration("7", ["completed", "active", "pending", "failed"], "active", (index) => [
+        { label: "seatbelt", dispatches: [dispatch({ status: "completed", startedAt: now - 600_000, settledAt: now - 180_000, usage: { durationMs: 421_000, tokens: { input: 160_000, output: 1_800, total: 161_800 } } })] },
+        { label: "native-pi", attemptCount: 2, dispatches: [dispatch({ status: "failed" }), dispatch({ attempt: 2, startedAt: now - 180_000 })] },
+        {},
+        { label: "tls", attemptCount: 1, dispatches: [dispatch({ status: "failed" })] },
+      ][index] as never);
+      expect(rows(entry)).toEqual([
+        "◇ #7 1/4 · 1/2 in flight",
+        "  ● running 3m · try 2 native-pi",
+        "  ✗ failed tls",
+        "  ○ p",
+        "  ✓ 7m · 162k tok seatbelt",
+      ]);
+    });
+
+    it("R2: shows the last reported dispatch state and elapsed time, never more than was reported", () => {
+      const entry = panelOrchestration("7", ["active", "active", "active", "uncertain"], "active", (index) => [
+        { label: "a", dispatches: [dispatch({ status: "spawning", requestedAt: now - 5_000 })] },
+        { label: "b", dispatches: [dispatch({ status: "queued", requestedAt: now - 120_000 })] },
+        { label: "c", dispatches: [dispatch({ status: "verifying", startedAt: now - 3_600_000 })] },
+        { label: "d", dispatches: [dispatch({ status: "uncertain" })] },
+      ][index] as never);
+      expect(rows(entry).slice(1)).toEqual(["  ● starting 5s a", "  ● queued 2m b", "  ● verifying 1h c", "  ? uncertain d"]);
+    });
+
+    it("R3: a finished item without usage evidence shows no token or duration figures", () => {
+      const entry = panelOrchestration("7", ["completed", "completed", "active"], "active", (index) => [
+        { label: "bare", dispatches: [dispatch({ status: "completed" })] },
+        { label: "timed", dispatches: [dispatch({ status: "completed", usage: { durationMs: 61_000 } })] },
+        { label: "run" },
+      ][index] as never);
+      expect(rows(entry).slice(1)).toEqual(["  ● run", "  ✓ bare", "  ✓ 1m timed"]);
+    });
+
+    it("R4: bounds the rows of one batch and says how many are not shown", () => {
+      const entry = panelOrchestration("7", Array.from({ length: 9 }, () => "pending" as const));
+      const lines = rows(entry);
+      expect(lines).toHaveLength(7);
+      expect(lines.at(-1)).toBe("    … 4 more");
+      // A cancelled item is listed last and dimmed out, not dropped.
+      expect(rows(panelOrchestration("8", ["cancelled", "active"])).slice(1)).toEqual(["  ● p", "  – p"]);
+    });
+
+    it("R5: names an item by its label, else its prompt, with control bytes removed", () => {
+      const entry = panelOrchestration("7", ["pending", "pending"], "active", (index) => [{ label: "ok\u001b[31m" }, { prompt: "line one\nline\ttwo" }][index] as never);
+      expect(rows(entry).slice(1)).toEqual(["  ○ ok [31m", "  ○ line one line two"]);
+    });
   });
 
   it("bounds rows and width, and strips control and escape bytes", () => {

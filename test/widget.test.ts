@@ -286,24 +286,76 @@ describe("LoopWidget status rendering", () => {
     ]);
   });
 
-  it("keeps a completed orchestration visible until its durable results are deleted", () => {
-    const entry = store.create({ type: "dynamic" }, "Parallel review", {
+  describe("orchestration endings", () => {
+    const start = () => store.create({ type: "dynamic" }, "Parallel review", {
       recurring: true,
       orchestration: {
         owner: { sessionId: "s", runtimeId: "r", generation: 1 },
         definition: { goal: "Parallel review", work: [{ prompt: "Inspect API" }] },
       },
     });
-    entry.orchestration!.status = "completed";
-    entry.orchestration!.work[0]!.status = "completed";
-    store.pause(entry.id, "orchestration_settlement", "batch complete");
+    const settle = (entry: ReturnType<typeof start>, status: "completed" | "cancelled" | "needs_attention") => {
+      entry.orchestration!.status = status;
+      if (status === "completed") entry.orchestration!.work[0]!.status = "completed";
+      store.pause(entry.id, "orchestration_settlement", "batch settled");
+    };
 
-    widget.update();
+    it("W1: a completed orchestration leaves the status line while its results stay stored", () => {
+      const entry = start();
+      widget.update();
+      expect(latestStatusCall()?.[1]).toContain("◇ 1 orchestration");
+      settle(entry, "completed");
+      widget.update();
+      expect(latestStatusCall()).toEqual(["loops", undefined]);
+      expect(store.list()).toHaveLength(1);
+    });
 
-    expect(latestStatusCall()).toEqual([
-      "loops",
-      "◇ 1 orchestration | #1 complete · 1/1 complete · 0 reserved",
-    ]);
+    it("W2: a cancelled orchestration leaves the status line", () => {
+      settle(start(), "cancelled");
+      start();
+      widget.update();
+      expect(latestStatusCall()).toEqual(["loops", "◇ 1 orchestration | #2 active · 0/1 complete · 0/3 in flight · 1 pending"]);
+    });
+
+    it("W3 (control): an orchestration that needs attention stays until it is dealt with", () => {
+      const entry = start();
+      entry.orchestration!.work[0]!.status = "failed";
+      settle(entry, "needs_attention");
+      widget.update();
+      expect(latestStatusCall()?.[1]).toContain("◇ 1 orchestration | #1 needs attention");
+    });
+
+    it("W5: repaints each minute while a batch has work in flight, and not otherwise", () => {
+      vi.useFakeTimers();
+      try {
+        const entry = start();
+        const list = vi.spyOn(store, "list");
+        widget.update();
+        // Control: pending work shows no elapsed time, so nothing needs a repaint.
+        expect(vi.getTimerCount()).toBe(0);
+        entry.orchestration!.work[0]!.status = "active";
+        widget.update();
+        const before = list.mock.calls.length;
+        vi.advanceTimersByTime(59_999);
+        expect(list.mock.calls.length).toBe(before);
+        vi.advanceTimersByTime(1);
+        expect(list.mock.calls.length).toBe(before + 1);
+        // Finished: the repaint stops with the work.
+        settle(entry, "completed");
+        widget.update();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("W4: finished batches do not inflate the count of later ones", () => {
+      for (let index = 0; index < 5; index++) settle(start(), "completed");
+      start();
+      start();
+      widget.update();
+      expect(latestStatusCall()?.[1]).toBe("◇ 2 orchestrations");
+    });
   });
 
   it("does not count one-shot monitor completion loops as visible loops in status", () => {

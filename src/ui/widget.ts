@@ -3,7 +3,7 @@ import type { MonitorManager } from "../monitor-manager.js";
 import type { LoopStore } from "../store.js";
 import type { TaskEntry } from "../task-types.js";
 import type { LoopEntry } from "../types.js";
-import { orchestrationWidgetSummary } from "./orchestration-presentation.js";
+import { isOrchestrationInProgress, orchestrationWidgetSummary } from "./orchestration-presentation.js";
 import { type ProgressPanelMode, ProgressPanelOverlay } from "./progress-panel-overlay.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration } from "./workflow-presentation.js";
 
@@ -133,6 +133,8 @@ export class LoopWidget {
     };
     for (const entry of entries) {
       if (entry.workflow && isStatusVisibleLoop(entry)) consider(entry.workflow.activeExecution?.lease?.expiresAt);
+      // In-flight item rows show elapsed time at minute resolution, like monitor rows.
+      if (isOrchestrationInProgress(entry) && entry.orchestration?.work.some((item) => item.status === "active")) consider(now + MONITOR_REFRESH_MS);
     }
     for (const task of tasks) {
       if (task.status === "in_progress") consider(task.claim?.leaseExpiresAt);
@@ -192,7 +194,8 @@ function formatCount(count: number, noun: string): string {
 }
 
 function isStatusVisibleLoop(loop: LoopEntry): boolean {
-  if ((loop.workflow || loop.orchestration) && loop.status === "paused") return true;
+  if (loop.orchestration) return isOrchestrationInProgress(loop);
+  if (loop.workflow && loop.status === "paused") return true;
   if (loop.status !== "active") return false;
   if (loop.recurring) return true;
   return !(loop.trigger.type === "event" && loop.trigger.source === "monitor:done");

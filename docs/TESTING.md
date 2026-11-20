@@ -9,7 +9,9 @@ npm install
 npm run hooks:install
 ```
 
-Contributions use focused branches and signed, thematic commits. Open the first pull request against `master`; dependent pull requests target their predecessor branch. Run the local gate at every PR tip and relevant checks at each intermediate commit. Push normally with hooks; do not rewrite published stack history. Contributions are MIT licensed.
+Contributions use focused branches and signed, thematic commits. Open the first pull request against `master`. Dependent pull requests target their predecessor branch.
+
+Run the local gate at every PR tip and the relevant checks at each intermediate commit. Push normally with hooks, and do not rewrite published stack history. Contributions are MIT licensed.
 
 ## Local gate
 
@@ -25,7 +27,7 @@ npm audit --audit-level=moderate
 git diff --check
 ```
 
-Lint currently reports two established optional-chain warnings; new warnings are not accepted.
+Lint currently reports two established optional-chain warnings. New warnings are not accepted.
 
 ## Test layers
 
@@ -43,14 +45,16 @@ Lint currently reports two established optional-chain warnings; new warnings are
 | Tool context | `npm run profile:tools` | Native SDK declarations, instructions, discovery and result sizes |
 | Fuzz profile | `npm run profile:fuzz` | Allowlisted property-worker CPU capture and campaign evidence |
 
-Unit tests use Vitest, fake timers for schedules, in-memory stores for pure behavior, temporary files for persistence/restart, and one shared Pi event-bus mock. Vitest pins `PI_LOOP_CONTEXT=full`; compact-profile tests opt in explicitly rather than inheriting the caller's shell.
+Unit tests use Vitest, fake timers for schedules, in-memory stores for pure behavior, temporary files for persistence/restart, and one shared Pi event-bus mock.
+
+Vitest pins `PI_LOOP_CONTEXT=full`. Compact-profile tests opt in explicitly and do not inherit the caller's shell.
 
 ## Harness review campaigns
 
 See [bounded review campaigns](./HARNESS_REVIEW_CAMPAIGNS.md) for the test-only
 coverage/closure reference policy and traceable boundary inventory. Failed or
 skipped mandatory discovery is incomplete, never a clean review. The inventory
-checks references; the normal suite executes the underlying regressions.
+checks references. The normal suite executes the underlying regressions.
 
 ## Native code mode
 
@@ -60,18 +64,25 @@ npx vitest run test/native-codemode.test.ts
 
 The suite uses the pinned Pi SDK's session and native code-mode extension with a
 scripted provider. It makes no remote model calls and reads no user credentials
-or project context. Stores use memory; SDK files use isolated temporary directories.
+or project context. Stores use memory. SDK files use isolated temporary directories.
 
-Coverage includes absent/inactive code mode, `on` and `only` request declarations,
-first-request native task availability, task claim/completion, zero-inline-budget
-guideline discovery, inactive-tool exclusion, nested validation and permission
-checks, and text business rejections. Fixture prompts fence automatic wake runs before
-provider requests, retain cancellation counts, and wait for settlement. Each session
-emits shutdown and is disposed.
+Coverage includes:
+
+- absent/inactive code mode;
+- `on` and `only` request declarations;
+- first-request native task availability;
+- task claim/completion;
+- zero-inline-budget guideline discovery;
+- inactive-tool exclusion;
+- nested validation and permission checks;
+- text business rejections.
+
+Fixture prompts fence automatic wake runs before provider requests, retain cancellation
+counts, and wait for settlement. Each session emits shutdown and is disposed.
 
 These tests establish SDK conformance, not model routing quality, provider cache
 behavior, token savings, or compatibility with untested Pi versions. Tool exposure
-remains `direct`; discovery does not activate tools.
+remains `direct`. Discovery does not activate tools.
 
 ## Workflow coverage
 
@@ -102,7 +113,22 @@ test/property/workflow.property.test.ts
 
 ## Subagent orchestration coverage
 
-The orchestration suites prove finite-batch bounds, capacity reservation before spawn, reducer/store CAS immutability, lifecycle identity, early-start replay, bounded settlement before consume, retry/uncertainty policy, durable wake acknowledgement, session teardown, cancellation, scheduler exclusion, tool scope gating, compact presentation, and extension wiring.
+The orchestration suites prove:
+
+- finite-batch bounds;
+- capacity reservation before spawn;
+- reducer/store CAS immutability;
+- lifecycle identity;
+- early-start replay;
+- bounded settlement before consume;
+- retry/uncertainty policy;
+- durable wake acknowledgement;
+- session teardown;
+- cancellation;
+- scheduler exclusion;
+- tool scope gating;
+- compact presentation;
+- extension wiring.
 
 Primary files:
 
@@ -114,17 +140,17 @@ test/orchestration-tools.test.ts
 test/property/orchestration.property.test.ts
 ```
 
-Deterministic integration tests own timeout ambiguity and exact lifecycle ordering because upstream lacks status/list and idempotent dispatch keys. The opt-in live scenario additionally validates the supported protocol-v2 spawn, settlement, consume, and active-cancellation path against a real provider.
+Deterministic integration tests own timeout ambiguity and exact lifecycle ordering because upstream lacks status/list and idempotent dispatch keys. The opt-in live scenario also validates the supported protocol-v2 spawn, settlement, consume, and active-cancellation path against a real provider.
 
 ## Task-backlog coverage
 
 A backlog wake must call `TaskList`, inspect `TaskGet`, claim or resume one task, perform work, run observable validation, and settle the task in the same turn. Tests reject status-only progress, missing claims, reasoning-only validation, and deferral to a later wake.
 
-Description-declared prerequisites are followed through `TaskGet`; TaskStore has no dependency-edge field.
+Description-declared prerequisites are followed through `TaskGet`. TaskStore has no dependency-edge field.
 
 ## Live E2E
 
-Live tests are opt-in and run in isolated temporary workspaces. Stateful workflow and backlog scenarios use project scope; orchestration uses default file-backed session scope.
+Live tests are opt-in and run in isolated temporary workspaces. Stateful workflow and backlog scenarios use project scope. Orchestration uses default file-backed session scope.
 
 ```bash
 PI_LOOP_LIVE_MODEL="openai-codex/gpt-5.6-sol:minimal" npm run test:e2e
@@ -170,9 +196,10 @@ same six prompts across direct, `only`/3,000 and `only`/zero arms:
 PI_LOOP_NATIVE_ROUTING_MODEL="provider/model" npm run test:e2e:routing:native
 ```
 
-The native comparison is separate opt-in, keeps Pi credentials in memory, and
-runs 18 sessions. Without its model variable it reports `SKIP`, not a pass. See
-[controller routing evaluation](./CONTROLLER_ROUTING_EVAL.md) for inventories,
+The native comparison is a separate opt-in. It keeps Pi credentials in memory and
+runs 18 sessions. Without its model variable it reports `SKIP`, not a pass.
+
+See [controller routing evaluation](./CONTROLLER_ROUTING_EVAL.md) for inventories,
 observation boundaries, judgment rules and artifact paths.
 
 Subagent orchestration scenario:
@@ -183,7 +210,12 @@ PI_LOOP_LIVE_SUBAGENTS_EXTENSION="$HOME/.pi/agent/npm/node_modules/@tintinweb/pi
 npm run test:e2e:orchestration
 ```
 
-It runs in a temporary workspace with default file-backed session scope, proves two isolated workers settle with durable consumed evidence, then creates and cancels an active worker. The extension path defaults to the standard user package location when `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` is omitted.
+The scenario runs in a temporary workspace with default file-backed session scope. It does two things:
+
+1. It proves that two isolated workers settle with durable consumed evidence.
+2. It creates and cancels an active worker.
+
+The extension path defaults to the standard user package location when `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` is omitted.
 
 Protocol v2 provider (`@tintinweb/pi-subagents`) wire check, no model spend:
 
@@ -191,7 +223,22 @@ Protocol v2 provider (`@tintinweb/pi-subagents`) wire check, no model spend:
 PI_LOOP_LIVE_V2=1 npm run test:e2e:orchestration:v2
 ```
 
-That provider runs workers inside the parent process with the parent's model, and this check's parent model is a scripted fixture, so workers answer from the same script and nothing is sent to a model provider. It checks provider detection and tool registration, a two-item batch with `maxTurns` through spawn, `subagents:started`, `subagents:completed`, usage evidence (including the tool-use count the delay signal needs) and provider-owned settlement, then cancels a worker that is busy in a tool call and requires an accepted stop, a `stopped` failure event and a retained controller. `PI_LOOP_LIVE_SUBAGENTS_EXTENSION` selects the entrypoint. The model-driven `test:e2e:orchestration` scenario above remains the check of a real parent model using these tools.
+Why it spends nothing: that provider runs workers inside the parent process with the parent's model, and this check's parent model is a scripted fixture. So workers answer from the same script and nothing is sent to a model provider.
+
+The check does the following:
+
+1. It checks provider detection and tool registration.
+2. It follows a two-item batch with `maxTurns` through these stages:
+   - spawn;
+   - `subagents:started`;
+   - `subagents:completed`;
+   - usage evidence (including the tool-use count the delay signal needs);
+   - provider-owned settlement.
+3. It cancels a worker that is busy in a tool call. This step requires an accepted stop, a `stopped` failure event and a retained controller.
+
+`PI_LOOP_LIVE_SUBAGENTS_EXTENSION` selects the entrypoint.
+
+The model-driven `test:e2e:orchestration` scenario above remains the check of a real parent model using these tools.
 
 RPC v1 provider (npm `pi-subagents`) check:
 
@@ -204,9 +251,30 @@ PI_LOOP_LIVE_V1=1 PI_LOOP_LIVE_V1_AGENT_DIR="$HOME/.pi/agent" PI_LOOP_LIVE_MODEL
 npm run test:e2e:orchestration:v1
 ```
 
-The parent session is scripted (no parent inference) and loads the real provider from `PI_LOOP_LIVE_SUBAGENTS_V1_EXTENSION` (default: the standard user package location). It checks provider detection and tool registration, `maxTurns` rejection, an unknown agent as a proved launch failure, and one launch through run id, `subagent:async-started`, `subagent:async-complete` and settlement. With real credentials it also cancels an active worker and checks that the provider accepted the stop request, reported the run `stopped`, and that the controller was retained rather than deleted. The provider keeps a headless parent turn open while its workers run, so the check cancels through pi-loop's own tool executor instead of a second parent turn. The report is written to `.artifacts/live-orchestration-v1/report.json`.
+The parent session is scripted (no parent inference). It loads the real provider from `PI_LOOP_LIVE_SUBAGENTS_V1_EXTENSION` (default: the standard user package location).
 
-Without `PI_LOOP_LIVE_MODEL` (or `PI_LOOP_LIVE_V1=1` for the RPC v1 check), live scripts exit with `SKIP`. Reports are bounded JSON under `.artifacts/` and do not record credentials; claim IDs are redacted where applicable.
+The check verifies:
+
+- provider detection and tool registration;
+- `maxTurns` rejection;
+- an unknown agent as a proved launch failure;
+- one launch, followed through these stages:
+  - run id;
+  - `subagent:async-started`;
+  - `subagent:async-complete`;
+  - settlement.
+
+With real credentials it also cancels an active worker and checks that:
+
+- the provider accepted the stop request;
+- the provider reported the run `stopped`;
+- the controller was retained and not deleted.
+
+The provider keeps a headless parent turn open while its workers run. For that reason the check cancels through pi-loop's own tool executor instead of a second parent turn.
+
+The report is written to `.artifacts/live-orchestration-v1/report.json`.
+
+Without `PI_LOOP_LIVE_MODEL` (or `PI_LOOP_LIVE_V1=1` for the RPC v1 check), live scripts exit with `SKIP`. Reports are bounded JSON under `.artifacts/` and do not record credentials. Claim IDs are redacted where applicable.
 
 ## Property and fuzz replay
 
@@ -235,7 +303,11 @@ npm run bench:compare
 npm run profile:core
 ```
 
-Core workloads live in `benchmarks/workloads.ts`. The `progressPanel` workload measures one side-panel frame (store reads, layout, framing) over four twelve-state workflows and 200 tasks. `bench:baseline` writes `.artifacts/benchmarks/baseline.json`; `bench:compare` reports throughput changes. Load `.cpuprofile` files in a V8-compatible viewer. Compare only the same machine, Node version, architecture, timezone, and power state.
+Core workloads live in `benchmarks/workloads.ts`. The `progressPanel` workload measures one side-panel frame (store reads, layout, framing) over four twelve-state workflows and 200 tasks.
+
+`bench:baseline` writes `.artifacts/benchmarks/baseline.json`, and `bench:compare` reports throughput changes. Load `.cpuprofile` files in a V8-compatible viewer.
+
+Compare only the same machine, Node version, architecture, timezone, and power state.
 
 ### Tool context
 
@@ -246,32 +318,54 @@ npm run profile:tools -- --out .artifacts/profiles/tool-context-compact --contex
 npx vitest run test/native-codemode.test.ts test/tool-context-profile.test.ts test/compact-context.test.ts test/tool-context-registration.test.ts
 ```
 
-The fixed matrix runs code mode absent, registered but inactive, and `on`/`only`
-with Pi's estimated-token inline budgets of 3,000 and zero. Each isolated SDK session sends an initial
-request, a repeated request, and read-only list calls. Active code-mode cases also
-request three controller declarations, a three-hit search, and callable tool names.
-The provider is scripted. Native model helpers and external extensions are disabled;
-no remote model or operator configuration is used. `--context full|compact` selects
-pi-loop metadata explicitly rather than inheriting the operator environment.
-Compact discovery retrieves three original controller contracts through `LoopHelp`;
-full mode uses native declaration discovery. These outputs are not byte-identical.
+What the matrix runs:
+
+- The fixed matrix runs code mode absent, registered but inactive, and `on`/`only`
+  with Pi's estimated-token inline budgets of 3,000 and zero.
+- Each isolated SDK session sends an initial request, a repeated request, and
+  read-only list calls.
+- Active code-mode cases also request three controller declarations, a three-hit
+  search, and callable tool names.
+
+The provider is scripted. Native model helpers and external extensions are disabled.
+No remote model or operator configuration is used.
+
+`--context full|compact` selects pi-loop metadata explicitly and does not inherit the
+operator environment. Compact discovery retrieves three original controller contracts
+through `LoopHelp`. Full mode uses native declaration discovery. These outputs are not
+byte-identical.
 
 Each unique run directory contains `report.json` and six request capture files.
-The report records source hashes, SDK versions, registered/active/callable/declared
-tools, per-tool schema/description sizes, effective instructions, transcript sizes,
-and discovery/result traffic. Counts use UTF-16 code units and UTF-8 bytes before
-synthetic workspace paths are replaced in saved captures. JSON metrics include
-serialization overhead. Instructions, declarations and transcript metrics overlap;
-do not sum them. Capture-file checksums cover the saved, normalized files.
+The report records:
+
+- source hashes;
+- SDK versions;
+- registered/active/callable/declared tools;
+- per-tool schema/description sizes;
+- effective instructions;
+- transcript sizes;
+- discovery/result traffic.
+
+How to read the counts:
+
+- Counts use UTF-16 code units and UTF-8 bytes before synthetic workspace paths are
+  replaced in saved captures.
+- JSON metrics include serialization overhead.
+- Instructions, declarations and transcript metrics overlap. Do not sum them.
+- Capture-file checksums cover the saved, normalized files.
 
 Limits: 12 requests per case, 2 MiB per original request, 16 MiB per artifact.
 Exceeding a limit fails without truncation. Case failures retain an incomplete
 report and completed-case artifacts. Temporary SDK workspaces are removed.
 
-This is the native SDK provider boundary, not a provider's HTTP payload. Token
-counts and cache reuse remain `null`; fixture usage zeros are not measurements.
-Disabled cases have no discovery stage, so total traffic is not an equivalent-work
-savings comparison. Read-only profiling does not change exposure or activate tools.
+What the profile does and does not measure:
+
+- This is the native SDK provider boundary, not a provider's HTTP payload.
+- Token counts and cache reuse remain `null`. Fixture usage zeros are not measurements.
+- Disabled cases have no discovery stage, so total traffic is not an equivalent-work
+  savings comparison.
+- Read-only profiling does not change exposure or activate tools.
+
 Compact acceptance includes the extra help declaration and retained prompt section
 in its direct-request budget. Default metadata, all 21 existing schemas, late native
 tasks, inactive/external contract exclusions and native ownership checks have
@@ -299,11 +393,14 @@ npx vitest run test/tool-copy-budget.test.ts test/tool-context-profile.test.ts
 
 `test/fixtures/tool-context-budget.json` fixes per-tool and aggregate UTF-8 ceilings
 for descriptions, input-schema JSON, schema-description text and declaration JSON.
-Per-tool ceilings add 10%, rounded up to 32 bytes; aggregate ceilings round up to
-100 bytes. Review fixture changes explicitly; tests never rebaseline themselves.
-The older combined description/guideline character budget remains independent.
+Per-tool ceilings add 10%, rounded up to 32 bytes. Aggregate ceilings round up to
+100 bytes.
+
+Review fixture changes explicitly. Tests never rebaseline themselves. The older
+combined description/guideline character budget remains independent.
+
 Schema-description text walks schema-bearing keywords, not enum/example/default
-instance data or referenced documents. Fields overlap; do not sum them or call them
+instance data or referenced documents. Fields overlap. Do not sum them or call them
 tokens. Mutation controls check schema-only inflation and Unicode parameter copy.
 
 ### Startup
@@ -314,9 +411,25 @@ Keep the prior compiled `dist` tree for comparison. Both builds must resolve the
 npm run profile:startup -- --baseline /path/to/prior/dist/index.js --candidate dist/index.js --profiles
 ```
 
-The default is 15 measured rounds after 3 warmups, serial fresh processes, alternating case order. `--rounds` accepts 3–100; `--warmups` accepts 0–10. `--cli` selects a compiled Pi CLI. `--out` selects the artifact root; default `.artifacts/profiles/startup`. Each run owns a unique directory.
+The default is 15 measured rounds after 3 warmups, serial fresh processes, alternating case order. Options:
 
-`report.json` retains raw wall time, physical child status, CPU/RSS, versions, static graph hashes, paired medians and a seeded bootstrap interval. Owned wrappers require affirmative factory-return receipts. CPU-profile children run separately; their timings do not enter comparisons. Profiles are capped at 64 MiB before write. Static graphs are not observed runtime-loading traces. CLI `--list-models` is not TUI first render or first-request latency. Do not run timing comparisons alongside fuzz campaigns or gates.
+- `--rounds` accepts 3 to 100.
+- `--warmups` accepts 0 to 10.
+- `--cli` selects a compiled Pi CLI.
+- `--out` selects the artifact root (default `.artifacts/profiles/startup`).
+
+Each run owns a unique directory.
+
+`report.json` retains raw wall time, physical child status, CPU/RSS, versions, static graph hashes, paired medians and a seeded bootstrap interval. Owned wrappers require affirmative factory-return receipts.
+
+CPU-profile children run separately, and their timings do not enter comparisons. Profiles are capped at 64 MiB before write.
+
+Limits on what the results mean:
+
+- Static graphs are not observed runtime-loading traces.
+- CLI `--list-models` is not TUI first render or first-request latency.
+
+Do not run timing comparisons alongside fuzz campaigns or gates.
 
 ### Fuzz workers
 
@@ -326,22 +439,48 @@ npm run profile:fuzz -- --suite monitor-runtime --runs 100 --seed 130363 \
   --test fault-injected --path '0'
 ```
 
-Suites: `monitor-runtime`, `monitor-inactivity`, `monitor-native`, `workflow-restart`. Runs and seeds are positive safe integers. The runner caps cases at 1,000; native cases retain their existing cap of 64. Replay requires an explicit seed and a pattern selecting exactly one property, with no control tests. Each invocation runs one serial Vitest child without a shell or retries.
+Suites: `monitor-runtime`, `monitor-inactivity`, `monitor-native`, `workflow-restart`.
 
-Artifacts default to `.artifacts/profiles/fuzz/<suite>-<unique>/`. `--out` changes the root. `--timeout-ms` defaults to and cannot exceed 600,000. Retained output is capped at 1 MiB per stream; hashes also cover observed discarded bytes. Worker profiles are capped at 64 MiB before write.
+Inputs and runs:
 
-`summary.json` links raw campaign/reporter files and checksums. It distinguishes requested, capped, and observed counts. Unreported counters remain `null`. Failed, interrupted, skipped, missing-profile and missing-source-identity runs do not pass. Primary assertion logs survive reporting failures. Profiling is opt-in through `PI_LOOP_FUZZ_PROFILE_DIR`, set by the runner; normal tests do not start an inspector. Capture covers suite hooks in the actual property worker, not startup, the coordinator, or native descendants. Worker RSS is a process-lifetime high-water mark. Native POSIX skips are not Windows passes. Timing and profiles do not certify correctness.
+- Runs and seeds are positive safe integers.
+- The runner caps cases at 1,000. Native cases retain their existing cap of 64.
+- Replay requires an explicit seed and a pattern selecting exactly one property, with no control tests.
+- Each invocation runs one serial Vitest child without a shell or retries.
+
+Artifacts and caps:
+
+- Artifacts default to `.artifacts/profiles/fuzz/<suite>-<unique>/`. `--out` changes the root.
+- `--timeout-ms` defaults to and cannot exceed 600,000.
+- Retained output is capped at 1 MiB per stream. Hashes also cover observed discarded bytes.
+- Worker profiles are capped at 64 MiB before write.
+
+What `summary.json` reports:
+
+- It links raw campaign/reporter files and checksums.
+- It distinguishes requested, capped, and observed counts.
+- Unreported counters remain `null`.
+
+Failed, interrupted, skipped, missing-profile and missing-source-identity runs do not pass. Primary assertion logs survive reporting failures.
+
+What profiling covers:
+
+- Profiling is opt-in through `PI_LOOP_FUZZ_PROFILE_DIR`, set by the runner. Normal tests do not start an inspector.
+- Capture covers suite hooks in the actual property worker, not startup, the coordinator, or native descendants.
+- Worker RSS is a process-lifetime high-water mark.
+
+Native POSIX skips are not Windows passes. Timing and profiles do not certify correctness.
 
 ## Change evidence
 
 Follow `AGENTS.md` for the testing contract:
 
 - Bug: behavioral regression fails on unchanged code, nearby control passes, same regression passes after repair.
-- Feature: acceptance expectations precede implementation; test the affected surface and applicable boundaries.
+- Feature: acceptance expectations precede implementation. Test the affected surface and applicable boundaries.
 - Invariant: independently test authority, ownership, rejection, lifecycle, bounds, and persistence properties that must remain unchanged.
-- Model-facing guidance: validate examples and misuse deterministically; report bounded live model/fixture/attempt evidence separately. A text match is not a model-behavior result.
+- Model-facing guidance: validate examples and misuse deterministically. Report bounded live model/fixture/attempt evidence separately. A text match is not a model-behavior result.
 
-Name the expectations and invariants in the PR body. Record exact red/green commands and limitations. Compilation, fixture, or provider failures do not establish a product defect; skipped live checks do not pass.
+Name the expectations and invariants in the PR body. Record exact red/green commands and limitations. Compilation, fixture, or provider failures do not establish a product defect. Skipped live checks do not pass.
 
 ## Change-specific minimums
 

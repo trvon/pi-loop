@@ -10,6 +10,7 @@ import type {
   OrchestrationWorkItem,
   OrchestrationWorkStatus,
 } from "../types.js";
+import { formatCompactWorkflowDuration } from "./workflow-presentation.js";
 
 export function orchestrationCancellationMessage(id: string, result: OrchestrationCancellation): string {
   if (result === "deleted") return `Orchestration #${id} cancelled and deleted`;
@@ -95,9 +96,13 @@ function compactPrompt(prompt: string): string {
 export function orchestrationWorkSummary(item: OrchestrationWorkItem): string {
   const dispatch = item.dispatches.at(-1);
   const label = item.agentType ?? "general-purpose";
-  let line = `#${item.id} [${orchestrationWorkStatusLabel(item.status)}] ${label} · ${compactPrompt(item.prompt)}`;
+  let line = `#${item.id} [${orchestrationWorkStatusLabel(item.status)}] ${label} · ${item.label ?? compactPrompt(item.prompt)}`;
   if (dispatch?.agentId) line += ` · agent=${dispatch.agentId}`;
   if (item.attemptCount > 0) line += ` · attempts=${item.attemptCount}`;
+  // Evidence the batch holds for the item; a field is absent when nothing was reported.
+  if (dispatch?.verify) line += dispatch.verify.passed ? " · verify ok" : ` · verify failed (exit ${dispatch.verify.exitCode ?? "none"})`;
+  if (dispatch?.usage?.durationMs !== undefined) line += ` · ${formatCompactWorkflowDuration(dispatch.usage.durationMs)}`;
+  if (dispatch?.usage?.tokens) line += ` · ${dispatch.usage.tokens.total} tokens`;
   return line;
 }
 
@@ -128,6 +133,7 @@ export function orchestrationWorkText(entry: LoopEntry, item: OrchestrationWorkI
   const lines = [
     `Orchestration #${entry.id} · Work #${item.id} · ${orchestrationWorkStatusLabel(item.status)}`,
     `Agent type: ${item.agentType ?? "general-purpose"}`,
+    ...(item.label ? [`Label: ${item.label}`] : []),
     `Prompt: ${item.prompt}`,
     `Attempts: ${item.attemptCount - (item.congestionRetries ?? 0)}/${state.maxAttempts}${item.congestionRetries ? ` (+${item.congestionRetries} congestion re-send${item.congestionRetries === 1 ? "" : "s"})` : ""}`,
   ];
@@ -169,6 +175,16 @@ export function orchestrationDisplayDetails(
 
 export function formatOrchestrationInspection(entry: LoopEntry): string {
   return displayRows(orchestrationControllerText(entry).split("\n"), 10).join("\n");
+}
+
+/**
+ * Whether live surfaces (status line, progress panel) should show this batch.
+ * A finished or cancelled batch stays stored for inspection but is no longer in progress;
+ * counting it would make the bar grow with every batch ever started.
+ */
+export function isOrchestrationInProgress(entry: LoopEntry): boolean {
+  const status = entry.orchestration?.status;
+  return (entry.status === "active" || entry.status === "paused") && (status === "active" || status === "needs_attention");
 }
 
 export function orchestrationWidgetSummary(entry: LoopEntry): string {

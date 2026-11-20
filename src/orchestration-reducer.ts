@@ -3,6 +3,7 @@ import type {
   OrchestrationActor,
   OrchestrationDefinitionInput,
   OrchestrationDispatch,
+  OrchestrationPhaseLink,
   OrchestrationState,
   OrchestrationUsage,
   OrchestrationVerification,
@@ -24,6 +25,8 @@ export const LEARNED_WINDOW_TTL_MS = 30 * 60_000;
 export const MAX_CONGESTION_RETRIES_PER_ITEM = 3;
 export const MAX_ORCHESTRATION_INPUT_BYTES = 65_536;
 export const MAX_ORCHESTRATION_VERIFY_CHARS = 2_048;
+/** Long enough for a role or file name, short enough for one progress row. */
+export const MAX_ORCHESTRATION_LABEL_CHARS = 40;
 export const MAX_ORCHESTRATION_VERIFY_OUTPUT_CHARS = 2_048;
 
 const ORCHESTRATION_STATUSES = new Set(["active", "needs_attention", "completed", "cancelled"]);
@@ -31,6 +34,14 @@ const WORK_STATUSES = new Set(["pending", "active", "completed", "failed", "unce
 const DISPATCH_STATUSES = new Set(["spawning", "queued", "running", "verifying", "completed", "failed", "interrupted", "stopped", "uncertain"]);
 const CONSUME_STATUSES = new Set(["not_applicable", "provider_owned", "pending", "consumed", "unavailable"]);
 const WAKE_REASONS = new Set(["completed", "failed", "uncertain", "recovery"]);
+
+function isPhaseLink(value: unknown): value is OrchestrationPhaseLink {
+  return isRecord(value) && [value.workflowId, value.executionId, value.state].every((field) => typeof field === "string" && field.length > 0);
+}
+
+function isOrchestrationLabel(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= MAX_ORCHESTRATION_LABEL_CHARS;
+}
 
 export function validateOrchestrationDefinition(input: OrchestrationDefinitionInput): string | undefined {
   if (!input.goal.trim()) return "goal must not be empty";
@@ -45,10 +56,12 @@ export function validateOrchestrationDefinition(input: OrchestrationDefinitionIn
   if (!Number.isInteger(attempts) || attempts < 1 || attempts > MAX_ORCHESTRATION_ATTEMPTS) return "invalid maxAttempts";
   if (input.maxTurns !== undefined && (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 100)) return "invalid maxTurns";
   if (input.work.some((item) => !item.prompt.trim())) return "work prompts must not be empty";
+  if (input.work.some((item) => item.label !== undefined && !isOrchestrationLabel(item.label))) return "invalid label";
   if (input.work.some((item) => item.verify !== undefined && (!item.verify.trim() || item.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS))) return "invalid verify command";
   if (input.initialWindow !== undefined && !isWindowSeed(input.initialWindow)) return "invalid initialWindow";
+  if (input.phase !== undefined && !isPhaseLink(input.phase)) return "invalid phase link";
   // The limit bounds what the caller sent; a seed injected by OrchestrationCreate does not count.
-  const { initialWindow: _seed, ...callerInput } = input;
+  const { initialWindow: _seed, phase: _phase, ...callerInput } = input;
   if (Buffer.byteLength(JSON.stringify(callerInput), "utf8") > MAX_ORCHESTRATION_INPUT_BYTES) return "serialized input exceeds limit";
   return undefined;
 }
@@ -89,6 +102,7 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
     if (!isRecord(rawItem) || typeof rawItem.id !== "string" || !rawItem.id || ids.has(rawItem.id) || typeof rawItem.prompt !== "string" || !rawItem.prompt.trim() || (rawItem.agentType !== undefined && (typeof rawItem.agentType !== "string" || !rawItem.agentType)) || !WORK_STATUSES.has(String(rawItem.status)) || !Number.isInteger(rawItem.attemptCount) || !Array.isArray(rawItem.dispatches)) {
       throw new Error("Malformed orchestration state: invalid work item");
     }
+    if (rawItem.label !== undefined && !isOrchestrationLabel(rawItem.label)) throw new Error("Malformed orchestration state: invalid work item label");
     if (rawItem.verify !== undefined && (typeof rawItem.verify !== "string" || !rawItem.verify.trim() || rawItem.verify.length > MAX_ORCHESTRATION_VERIFY_CHARS)) throw new Error("Malformed orchestration state: invalid verify command");
     ids.add(rawItem.id);
     if (rawItem.status !== "completed") allWorkCompleted = false;
@@ -129,6 +143,7 @@ export function validatePersistedOrchestration(value: unknown): OrchestrationSta
   }
   if (value.status === "completed" && !allWorkCompleted) throw new Error("Malformed orchestration state: incomplete completed batch");
   if (!Number.isInteger(value.nextWakeSequence) || Number(value.nextWakeSequence) < 0 || !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt)) throw new Error("Malformed orchestration state: invalid sequence or timestamp");
+  if (value.phase !== undefined && !isPhaseLink(value.phase)) throw new Error("Malformed orchestration state: invalid phase link");
   if (value.window !== undefined && !validateAckWindow(value.window, Number(value.concurrency))) throw new Error("Malformed orchestration state: invalid window");
   if (value.pendingWake !== undefined && (!isRecord(value.pendingWake) || !Number.isInteger(value.pendingWake.sequence) || Number(value.pendingWake.sequence) < 1 || Number(value.pendingWake.sequence) > Number(value.nextWakeSequence) || !WAKE_REASONS.has(String(value.pendingWake.reason)) || !Number.isFinite(value.pendingWake.createdAt))) {
     throw new Error("Malformed orchestration state: invalid pending wake");
@@ -438,6 +453,7 @@ export function createOrchestrationState(
     work: input.work.map((item, index) => ({
       id: String(index + 1),
       prompt: item.prompt,
+      ...(item.label !== undefined ? { label: item.label } : {}),
       agentType: item.agentType,
       ...(item.verify !== undefined ? { verify: item.verify } : {}),
       status: "pending",
@@ -446,6 +462,7 @@ export function createOrchestrationState(
     })),
     nextWakeSequence: 0,
     ...(input.pacing === "aimd" ? { window: createAckWindow(concurrency, seed) } : {}),
+    ...(input.phase ? { phase: { workflowId: input.phase.workflowId, executionId: input.phase.executionId, state: input.phase.state } } : {}),
     createdAt: at,
     updatedAt: at,
   };

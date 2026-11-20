@@ -4,7 +4,7 @@ import type { TaskEntry } from "../task-types.js";
 import type { LoopEntry, MonitorEntry } from "../types.js";
 import { getWorkflowOutcomeAvailability } from "../workflow-reducer.js";
 import { activeCardGlyphs } from "./card-style.js";
-import { orchestrationInFlightLabel, orchestrationStatusLabel } from "./orchestration-presentation.js";
+import { isOrchestrationInProgress, orchestrationInFlightLabel, orchestrationStatusLabel } from "./orchestration-presentation.js";
 import { deriveWorkflowActivity, formatCompactWorkflowDuration, workflowAttemptLabel } from "./workflow-presentation.js";
 
 /**
@@ -39,6 +39,7 @@ const MAX_DETAILED_WORKFLOWS = 2;
 const MAX_STATE_ROWS = 6;
 const MAX_TASK_ROWS = 5;
 const MAX_ORCHESTRATION_ROWS = 2;
+const MAX_ORCHESTRATION_ITEM_ROWS = 5;
 const MAX_MONITOR_ROWS = 3;
 /** Silence longer than this is flagged; a long build with no output is worth a glance. */
 const MONITOR_QUIET_MS = 5 * 60_000;
@@ -102,7 +103,7 @@ function isPanelWorkflow(entry: LoopEntry): boolean {
 }
 
 function isPanelOrchestration(entry: LoopEntry): boolean {
-  return entry.orchestration !== undefined && (entry.status === "active" || entry.status === "paused");
+  return isOrchestrationInProgress(entry);
 }
 
 export const ACTIVITY_TONE = {
@@ -132,11 +133,46 @@ export function trailStateNames(workflow: NonNullable<LoopEntry["workflow"]>): s
   return names.includes(workflow.currentState) ? names : [workflow.currentState, ...names];
 }
 
-function workflowLines(entry: LoopEntry, now: number): PanelLine[] {
+/** Stored swarms started from one of this workflow's phases, oldest first. */
+function phaseSwarms(workflowId: string, loops: readonly LoopEntry[]): LoopEntry[] {
+  return loops
+    .filter((loop) => loop.orchestration?.phase?.workflowId === workflowId && (loop.status === "active" || loop.status === "paused"))
+    .sort((a, b) => Number(a.id) - Number(b.id));
+}
+
+/** Agents finished out of all agents across a workflow's swarms, with the tokens they reported. */
+function swarmTotalsLine(swarms: readonly LoopEntry[]): PanelLine {
+  let done = 0;
+  let total = 0;
+  let tokens = 0;
+  for (const swarm of swarms) {
+    for (const item of swarm.orchestration?.work ?? []) {
+      total++;
+      if (item.status === "completed") done++;
+      for (const dispatch of item.dispatches) tokens += dispatch.usage?.tokens?.total ?? 0;
+    }
+  }
+  return [seg("  ∑ ", "dim"), seg(`${done}/${total} agents`, "muted"), seg(tokens > 0 ? ` · ${compactTokens(tokens)} tok` : "", "dim")];
+}
+
+/**
+ * A workflow's state trail. A swarm started from a phase is listed under that phase's row, and
+ * `nested` receives its id so the caller does not list it a second time on its own.
+ */
+function workflowLines(entry: LoopEntry, now: number, loops: readonly LoopEntry[] = [], nested: Set<string> = new Set()): PanelLine[] {
   const workflow = entry.workflow;
   if (!workflow) return [];
   const activity = deriveWorkflowActivity(entry, now);
   const lines: PanelLine[] = [[seg("◆ ", "accent"), seg(`#${entry.id} `, "dim"), seg(plainPanelText(entry.prompt))]];
+  const swarms = phaseSwarms(entry.id, loops);
+  if (swarms.length > 0) lines.push(swarmTotalsLine(swarms));
+  const pushRunning = (name: string) => {
+    for (const swarm of swarms) {
+      if (swarm.orchestration?.phase?.state !== name || !isOrchestrationInProgress(swarm)) continue;
+      nested.add(swarm.id);
+      for (const line of orchestrationLines(swarm, now)) lines.push([seg("    "), ...line.map((part, index) => index === 0 ? { ...part, text: part.text.trimStart() } : part)]);
+    }
+  };
   const window = stateWindow(trailStateNames(workflow), workflow.currentState);
   if (window.before > 0) lines.push([seg(`  ⋮ ${window.before} earlier`, "dim")]);
   for (const name of window.names) {
@@ -150,10 +186,14 @@ function workflowLines(entry: LoopEntry, now: number): PanelLine[] {
         ACTIVITY_TONE[activity.status],
       )]);
     } else if ((workflow.attemptsByState[name] ?? 0) > 0) {
-      lines.push([seg("  ✓ ", "success"), seg(label, "dim")]);
+      // A phase re-entered on rework is counted by its latest swarm.
+      const latest = swarms.filter((swarm) => swarm.orchestration?.phase?.state === name).at(-1)?.orchestration;
+      const counts = latest ? ` ${getOrchestrationCounts(latest).completed}/${latest.work.length}` : "";
+      lines.push([seg("  ✓ ", "success"), seg(label, "dim"), seg(counts, "muted")]);
     } else {
       lines.push([seg("  ○ ", "dim"), seg(label, "muted")]);
     }
+    pushRunning(name);
   }
   if (window.after > 0) lines.push([seg(`  ⋮ ${window.after} later`, "dim")]);
   const outcomes = getWorkflowOutcomeAvailability(workflow).available;
@@ -165,7 +205,8 @@ function orchestrationLine(entry: LoopEntry): PanelLine {
   const state = entry.orchestration;
   if (!state) return [];
   const counts = getOrchestrationCounts(state);
-  const tone: PanelTone = state.status === "needs_attention" ? "warning" : state.status === "completed" ? "success" : "accent";
+  // Only in-progress batches reach the panel, so the row is either dispatching or waiting on the user.
+  const tone: PanelTone = state.status === "needs_attention" ? "warning" : "accent";
   const detail = state.status === "active"
     ? `· ${orchestrationInFlightLabel(state)}`
     : orchestrationStatusLabel(state.status);
@@ -236,6 +277,54 @@ function taskLines(tasks: readonly TaskEntry[], now: number): PanelLine[] {
   return lines;
 }
 
+/** Compact token count: the panel has room for magnitude, not digits. */
+function compactTokens(total: number): string {
+  if (total < 1_000) return String(total);
+  if (total < 999_500) return `${Math.round(total / 1_000)}k`;
+  return `${(total / 1_000_000).toFixed(1)}M`;
+}
+
+type WorkItem = NonNullable<LoopEntry["orchestration"]>["work"][number];
+
+// What still needs watching comes first; finished work is the first to scroll out of the bounded rows.
+const ITEM_ORDER: Record<WorkItem["status"], number> = { active: 0, failed: 1, uncertain: 1, pending: 2, completed: 3, cancelled: 4 };
+const REPORTED_STATE: Partial<Record<WorkItem["dispatches"][number]["status"], string>> = { spawning: "starting", queued: "queued", running: "running", verifying: "verifying" };
+
+function orchestrationItemLine(item: WorkItem, now: number): PanelLine {
+  const name = seg(plainPanelText(item.label ?? item.prompt), item.status === "active" ? "text" : "muted");
+  const dispatch = item.dispatches.at(-1);
+  if (item.status === "active") {
+    // Last reported state and time since it was asked for: evidence of dispatch, not of a live worker.
+    const reported = dispatch ? REPORTED_STATE[dispatch.status] : undefined;
+    const detail = dispatch && reported
+      ? `${reported} ${formatCompactWorkflowDuration(now - (dispatch.startedAt ?? dispatch.requestedAt))}${dispatch.attempt > 1 ? ` · try ${dispatch.attempt}` : ""} `
+      : "";
+    return [seg("  ● ", "accent"), seg(detail, "dim"), name];
+  }
+  if (item.status === "completed") {
+    const duration = dispatch?.usage?.durationMs;
+    const tokens = dispatch?.usage?.tokens?.total;
+    const detail = [
+      ...(duration !== undefined ? [formatCompactWorkflowDuration(duration)] : []),
+      ...(tokens !== undefined ? [`${compactTokens(tokens)} tok`] : []),
+    ].join(" · ");
+    return [seg("  ✓ ", "success"), seg(detail ? `${detail} ` : "", "dim"), name];
+  }
+  if (item.status === "failed") return [seg("  ✗ ", "warning"), seg("failed ", "warning"), name];
+  if (item.status === "uncertain") return [seg("  ? ", "warning"), seg("uncertain ", "warning"), name];
+  if (item.status === "cancelled") return [seg("  – ", "dim"), name];
+  return [seg("  ○ ", "dim"), name];
+}
+
+function orchestrationLines(entry: LoopEntry, now: number): PanelLine[] {
+  const work = entry.orchestration?.work ?? [];
+  // Array.prototype.sort is stable, so items keep batch order within a rank.
+  const ordered = [...work].sort((a, b) => ITEM_ORDER[a.status] - ITEM_ORDER[b.status]);
+  const lines = [orchestrationLine(entry), ...ordered.slice(0, MAX_ORCHESTRATION_ITEM_ROWS).map((item) => orchestrationItemLine(item, now))];
+  if (ordered.length > MAX_ORCHESTRATION_ITEM_ROWS) lines.push([seg(`    … ${ordered.length - MAX_ORCHESTRATION_ITEM_ROWS} more`, "dim")]);
+  return lines;
+}
+
 /**
  * Lays out the panel body. Every returned line fits `width` visible columns and
  * at most `maxRows` lines are returned; an empty result means "hide the panel".
@@ -253,13 +342,15 @@ export function layoutProgressPanel(input: ProgressPanelInput, width: number, ma
     };
     return rank(a) - rank(b) || Number(a.id) - Number(b.id);
   });
-  for (const entry of workflows.slice(0, MAX_DETAILED_WORKFLOWS)) lines.push(...workflowLines(entry, now));
+  const nested = new Set<string>();
+  for (const entry of workflows.slice(0, MAX_DETAILED_WORKFLOWS)) lines.push(...workflowLines(entry, now, input.loops, nested));
   if (workflows.length > MAX_DETAILED_WORKFLOWS) {
     lines.push([seg(`◆ … ${workflows.length - MAX_DETAILED_WORKFLOWS} more workflows`, "dim")]);
   }
 
-  const orchestrations = input.loops.filter(isPanelOrchestration);
-  for (const entry of orchestrations.slice(0, MAX_ORCHESTRATION_ROWS)) lines.push(orchestrationLine(entry));
+  // A swarm listed under its workflow phase is not listed again on its own.
+  const orchestrations = input.loops.filter((entry) => isPanelOrchestration(entry) && !nested.has(entry.id));
+  for (const entry of orchestrations.slice(0, MAX_ORCHESTRATION_ROWS)) lines.push(...orchestrationLines(entry, now));
   if (orchestrations.length > MAX_ORCHESTRATION_ROWS) {
     lines.push([seg(`◇ … ${orchestrations.length - MAX_ORCHESTRATION_ROWS} more`, "dim")]);
   }

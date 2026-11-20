@@ -48,6 +48,9 @@ describe("orchestration routing guidance", () => {
     // One controller per job.
     expect(guidance).toContain("WorkflowCreate");
     expect(guidance).toContain("TaskCreate");
+    // Phased fan-out: the workflow owns the phases and a phase runs its swarm here; a swarm is not refused for being a phase.
+    expect(guidance).toMatch(/Ordered phases or rework: WorkflowCreate owns them, and a phase's state runs its swarm here/);
+    expect(guidance).not.toMatch(/Not for ordered phases/);
     // What verify buys, and that a worker count is not the default.
     expect(guidance).toMatch(/`verify`, a shell command that exits 0 only when that item is done/);
     expect(guidance).toMatch(/only a fully verified batch may grow past 8 workers/);

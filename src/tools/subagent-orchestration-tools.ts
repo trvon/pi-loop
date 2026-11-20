@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { learnWindowSeed, MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
+import { learnWindowSeed, MAX_ORCHESTRATION_LABEL_CHARS, MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
 import type { LoopScope } from "../runtime/scope.js";
 import type { LoopStore } from "../store.js";
-import type { OrchestrationActor, OrchestrationDefinitionInput, OrchestrationPacing } from "../types.js";
+import type { LoopEntry, OrchestrationActor, OrchestrationDefinitionInput, OrchestrationPacing, OrchestrationPhaseLink } from "../types.js";
 import { orchestrationControllerText, orchestrationDisplayDetails, orchestrationProgressLabel, orchestrationWorkText } from "../ui/orchestration-presentation.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { textResult } from "./tool-result.js";
@@ -34,7 +34,7 @@ interface OrchestrationToolsOptions {
 
 interface CreateParams {
   goal: string;
-  work: Array<{ prompt: string; agentType?: string; verify?: string }>;
+  work: Array<{ prompt: string; label?: string; agentType?: string; verify?: string }>;
   agentType?: string;
   model?: string;
   maxTurns?: number;
@@ -92,11 +92,34 @@ function resolvePacing(params: CreateParams, defaultPacing: OrchestrationPacing)
   return { ...params, pacing: params.concurrency !== undefined ? "fixed" : defaultPacing };
 }
 
+/**
+ * The workflow phase this session is working in, when that is unambiguous: exactly one active
+ * workflow whose current execution this runtime holds under a live lease. The link only groups
+ * the batch under that phase for display, so anything less certain is left unlinked.
+ */
+function claimedPhase(entries: readonly LoopEntry[], actor: { sessionId: string; runtimeId: string }, now: number): OrchestrationPhaseLink | undefined {
+  const held = entries.filter((entry) => {
+    const lease = entry.workflow?.activeExecution?.lease;
+    return entry.status === "active" && lease !== undefined && lease.expiresAt > now
+      && lease.ownerSessionId === actor.sessionId && lease.ownerRuntimeId === actor.runtimeId;
+  });
+  const [only] = held;
+  if (held.length !== 1 || !only?.workflow?.activeExecution) return undefined;
+  return { workflowId: only.id, executionId: only.workflow.activeExecution.id, state: only.workflow.currentState };
+}
+
+/** A label is a display name: tidy it instead of rejecting the batch over it. */
+function labelFrom(raw: string | undefined): { label?: string } {
+  const label = typeof raw === "string" ? raw.replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, " ").trim().slice(0, MAX_ORCHESTRATION_LABEL_CHARS).trim() : "";
+  return label ? { label } : {};
+}
+
 function definitionFrom(params: CreateParams, defaultAgentType: string): OrchestrationDefinitionInput {
   return {
     goal: params.goal.trim(),
     work: params.work.map((item) => ({
       prompt: item.prompt.trim(),
+      ...labelFrom(item.label),
       agentType: item.agentType ?? params.agentType ?? defaultAgentType,
       ...(item.verify !== undefined ? { verify: item.verify.trim() } : {}),
     })),
@@ -114,6 +137,9 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
   const defaultPacing = options.defaultPacing ?? "aimd";
   // Registration follows provider selection, so the schema can name the default the provider will use.
   const defaultAgentType = options.getProvider?.()?.defaultAgentType ?? "general-purpose";
+  // An offered field gets used: a provider with no turn limit would cost the caller a rejected call.
+  const offersMaxTurns = options.getProvider?.()?.supportsMaxTurns ?? true;
+  const maxTurnsSchema = Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS }));
 
   registerTool({
     name: "OrchestrationCreate",
@@ -125,22 +151,24 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       "A swarm, fan-out, or parallel subagents over a finite list of independent items means OrchestrationCreate: it persists the batch, paces workers from feedback, retries proved failures, and survives restart.",
       "Use the provider's own subagent tool for one delegation, a chain whose steps need earlier results, or foreground work to watch; never send the same items through both.",
       "Give each item `verify`, a shell command that exits 0 only when that item is done, whenever one exists: only a fully verified batch may grow past 8 workers. Omit `concurrency` unless a fixed worker count was requested.",
-      "Not for ordered phases or rework (WorkflowCreate) or a backlog nobody was asked to run (TaskCreate).",
+      "Ordered phases or rework: WorkflowCreate owns them, and a phase's state runs its swarm here. A backlog nobody asked to run: TaskCreate.",
     ],
     parameters: Type.Object({
       goal: Type.String({ description: "Shared batch goal", maxLength: MAX_GOAL_CHARS }),
       work: Type.Array(Type.Object({
         prompt: Type.String({ description: "Bounded independent work prompt", maxLength: MAX_PROMPT_CHARS }),
-        agentType: Type.Optional(Type.String({ description: "Per-item subagent type override" })),
+        label: Type.Optional(Type.String({ description: "Short display name" })),
+        agentType: Type.Optional(Type.String({ description: "Per-item subagent type" })),
         verify: Type.Optional(Type.String({ description: "Shell, exit 0=ok" })),
       }), { minItems: 1, maxItems: MAX_WORK_ITEMS }),
       agentType: Type.Optional(Type.String({ description: `Default subagent type (default: ${defaultAgentType})` })),
-      model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
-      maxTurns: Type.Optional(Type.Integer({ description: "Per-worker turn bound", minimum: 1, maximum: MAX_TURNS })),
+      model: Type.Optional(Type.String({ description: "Model override" })),
+      // Typed as always present so the executor's parameter type does not depend on the provider.
+      ...((offersMaxTurns ? { maxTurns: maxTurnsSchema } : {}) as { maxTurns: typeof maxTurnsSchema }),
       concurrency: Type.Optional(Type.Integer({ description: "Sets fixed pacing: 1-8 workers", minimum: 1 })),
       pacing: Type.Optional(Type.String({ description: `Omitted: ${defaultPacing} (PI_LOOP_PACING)`, enum: ["fixed", "aimd"] })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
-      expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new batch, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
+      expiresIn: Type.Optional(Type.String({ description: "Lifetime, e.g. 12h; overrides PI_LOOP_EXPIRES_IN" })),
     }),
     async execute(_toolCallId, input: CreateParams) {
       const params = resolvePacing(input, defaultPacing);
@@ -176,6 +204,8 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       const seed = definition.pacing === "aimd"
         ? learnWindowSeed(store.list().flatMap((candidate) => candidate.orchestration ? [{ id: candidate.id, state: candidate.orchestration }] : []), definition.model, Date.now())
         : undefined;
+      const phase = claimedPhase(store.list(), actor, Date.now());
+      if (phase) definition.phase = phase;
       if (seed) definition.initialWindow = seed.ssthresh === undefined ? { cwnd: seed.cwnd } : { cwnd: seed.cwnd, ssthresh: seed.ssthresh };
       let entry: ReturnType<LoopStore["create"]>;
       try {
@@ -198,10 +228,16 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       const unverifiedCap = stored.window !== undefined && definition.work.length > stored.concurrency
         ? [`Window capped at ${stored.concurrency}: not every item declares verify. A batch whose items all pass a verify command (exit 0 = done) may grow to its size.`]
         : [];
+      // A one-worker cap on several items is easy to set by habit; say what it costs where the caller can undo it.
+      const serial = stored.window === undefined && stored.concurrency === 1 && definition.work.length > 1
+        ? ["Serial: one worker at a time. Omit `concurrency` if the items can safely run together."]
+        : [];
       const message = [
         `Orchestration #${entry.id} created`,
         `${definition.work.length} work items · ${pacingLabel}`,
         ...unverifiedCap,
+        ...serial,
+        ...(stored.phase ? [`Phase: workflow #${stored.phase.workflowId} · ${stored.phase.state}`] : []),
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {

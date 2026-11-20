@@ -483,6 +483,43 @@ describe("LoopStore (in-memory)", () => {
     expect(s.get("2")!.status).toBe("active");
   });
 
+  describe("finished swarms and the loop limit", () => {
+    const swarm = (target: LoopStore = store) => target.create({ type: "dynamic" }, "Swarm", {
+      recurring: true,
+      orchestration: { owner: { sessionId: "s", runtimeId: "r", generation: 1 }, definition: { goal: "Swarm", work: [{ prompt: "A" }] } },
+    });
+    const finish = (entry: ReturnType<typeof swarm>, status: "completed" | "cancelled" | "needs_attention") => {
+      entry.orchestration!.status = status;
+      store.pause(entry.id, "orchestration_settlement", "batch settled");
+    };
+
+    it("L1: completed and cancelled swarms kept for inspection do not use up the loop limit", () => {
+      for (let i = 0; i < 30; i++) finish(swarm(), i % 2 === 0 ? "completed" : "cancelled");
+      for (let i = 0; i < 25; i++) store.create(cronTrigger, `loop ${i}`, { recurring: true });
+      expect(store.list()).toHaveLength(55);
+      expect(() => store.create(cronTrigger, "overflow", { recurring: true })).toThrow("Maximum of 25 loops");
+    });
+
+    it("L2: a running swarm, and one that needs attention, still count until it finishes", () => {
+      for (let i = 0; i < 24; i++) store.create(cronTrigger, `loop ${i}`, { recurring: true });
+      const running = swarm();
+      expect(() => swarm()).toThrow("Maximum of 25 loops");
+      finish(running, "needs_attention");
+      expect(() => swarm()).toThrow("Maximum of 25 loops");
+      finish(running, "completed");
+      expect(swarm().orchestration?.status).toBe("active");
+    });
+
+    it("L3: finished swarms are themselves bounded, and the refusal says what to delete", () => {
+      for (let i = 0; i < 100; i++) finish(swarm(), "completed");
+      expect(() => swarm()).toThrow("Maximum of 100 finished orchestrations retained. Delete some with LoopDelete before creating new ones.");
+      // Control: other controllers are not blocked by retained swarm results.
+      expect(store.create(cronTrigger, "still fine", { recurring: true }).status).toBe("active");
+      store.delete("1");
+      expect(swarm().orchestration?.status).toBe("active");
+    });
+  });
+
   it("enforces max loop limit", () => {
     for (let i = 0; i < 25; i++) {
       store.create(cronTrigger, `loop ${i}`, { recurring: true });

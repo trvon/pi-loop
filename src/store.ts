@@ -181,6 +181,12 @@ function workflowTransitionPausePolicy(
 }
 
 const MAX_LOOPS = 25;
+/** Finished batches are kept only for their results, so they get a storage bound of their own. */
+const MAX_FINISHED_ORCHESTRATIONS = 100;
+
+function isFinishedOrchestration(entry: LoopEntry): boolean {
+  return entry.orchestration?.status === "completed" || entry.orchestration?.status === "cancelled";
+}
 const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
 
 export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, LoopReducerEvent, LoopStoreData, LoopReducerEffect> {
@@ -205,8 +211,14 @@ export class LoopStore extends ReducerBackedStore<LoopEntry, LoopReducerState, L
 
   create(trigger: Trigger, prompt: string, opts: { recurring: boolean; autoTask?: boolean; taskBacklog?: boolean; readOnly?: boolean; maxFires?: number; expiresIn?: string; dynamic?: Partial<DynamicLoopState>; workflow?: WorkflowDefinition; actor?: WorkflowRuntimeActor; orchestration?: { definition: OrchestrationDefinitionInput; owner: OrchestrationActor } }): LoopEntry {
     return this.withLock(() => {
-      if (this.entries.size >= MAX_LOOPS) {
+      // The limit bounds controllers that can still act; a finished batch never dispatches or wakes again.
+      let finished = 0;
+      for (const entry of this.entries.values()) if (isFinishedOrchestration(entry)) finished++;
+      if (this.entries.size - finished >= MAX_LOOPS) {
         throw new Error(`Maximum of ${MAX_LOOPS} loops reached. Delete some before creating new ones.`);
+      }
+      if (opts.orchestration && finished >= MAX_FINISHED_ORCHESTRATIONS) {
+        throw new Error(`Maximum of ${MAX_FINISHED_ORCHESTRATIONS} finished orchestrations retained. Delete some with LoopDelete before creating new ones.`);
       }
       validateControllerDomain({ trigger, ...opts });
       if (opts.workflow) {

@@ -24,6 +24,10 @@ function setup(options: { scope?: LoopScope; env?: string; protocol?: number; de
   return { store, toolMap, probeSubagents, result, text };
 }
 
+function setupFields() {
+  return Object.keys((setup().toolMap.get("OrchestrationCreate")!.parameters as { properties: Record<string, unknown> }).properties);
+}
+
 describe("subagent orchestration tools", () => {
   let h: ReturnType<typeof setup>;
   beforeEach(() => {
@@ -133,6 +137,84 @@ describe("subagent orchestration tools", () => {
     expect(h.store.list()).toHaveLength(1);
   });
 
+  it("N3: stores a tidy label per item and shows it in place of the prompt snippet", async () => {
+    await h.text("OrchestrationCreate", {
+      goal: "Audit",
+      work: [
+        { prompt: "Inspect the sandbox profile in depth", label: "  seat\u001b[31mbelt\n " },
+        { prompt: "Inspect paths", label: "   " },
+        { prompt: "Inspect services", label: "s".repeat(90) },
+        { prompt: "Inspect tests" },
+      ],
+    });
+    const work = h.store.get("1")!.orchestration!.work;
+    // Obvious mistakes are recovered, not rejected: controls collapse, blanks drop, long names clip.
+    expect(work.map((item) => item.label)).toEqual(["seat [31mbelt", undefined, "s".repeat(40), undefined]);
+    const listing = await h.text("OrchestrationGet", { id: "1" });
+    expect(listing).toContain("#1 [pending] general-purpose · seat [31mbelt");
+    expect(listing).not.toContain("Inspect the sandbox profile");
+    // Control: an unlabelled item keeps its prompt snippet.
+    expect(listing).toContain("#4 [pending] general-purpose · Inspect tests");
+    const detail = await h.text("OrchestrationGet", { id: "1", workId: "1" });
+    expect(detail).toContain("Label: seat [31mbelt");
+    expect(detail).toContain("Prompt: Inspect the sandbox profile in depth");
+    expect(await h.text("OrchestrationGet", { id: "1", workId: "4" })).not.toContain("Label:");
+  });
+
+  describe("workflow phase link", () => {
+    const me = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const definition = {
+      version: 1 as const,
+      initialState: "audit",
+      states: { audit: { prompt: "Audit.", task: { subject: "Audit", description: "Audit it" }, on: { done: "done" } }, done: { prompt: "Done.", terminal: "completed" as const } },
+    };
+    const claim = (actor = me) => h.store.create({ type: "dynamic" }, "Audit the thing", { recurring: true, workflow: definition, actor });
+    const swarm = () => h.text("OrchestrationCreate", { goal: "Fan out", work: [{ prompt: "A" }, { prompt: "B" }] });
+    const lastPhase = () => h.store.list().filter((entry) => entry.orchestration).at(-1)?.orchestration?.phase;
+
+    it("K1: a swarm started while this session holds one workflow's claim is tied to that phase", async () => {
+      const workflow = claim();
+      const out = await swarm();
+      expect(lastPhase()).toEqual({ workflowId: workflow.id, executionId: workflow.workflow!.activeExecution!.id, state: "audit" });
+      expect(out).toContain(`Phase: workflow #${workflow.id} · audit`);
+      // The workflow itself is untouched by the link.
+      expect(h.store.get(workflow.id)).toEqual(workflow);
+    });
+
+    it("K2 (controls): no claim, another session's claim, an expired claim, a paused workflow or two claims leave the swarm unlinked", async () => {
+      expect(await swarm()).not.toContain("Phase:");
+      expect(lastPhase()).toBeUndefined();
+
+      const other = claim({ sessionId: "session-b", runtimeId: "runtime-b" });
+      await swarm();
+      expect(lastPhase()).toBeUndefined();
+      h.store.delete(other.id);
+
+      vi.useFakeTimers();
+      try {
+        claim();
+        vi.advanceTimersByTime(31 * 60_000);
+        await swarm();
+        expect(lastPhase()).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("K2b (controls): a paused workflow or two live claims leave the swarm unlinked", async () => {
+      const paused = claim();
+      h.store.pause(paused.id, "administrative", "hold");
+      await swarm();
+      expect(lastPhase()).toBeUndefined();
+      h.store.delete(paused.id);
+
+      claim();
+      claim();
+      expect(await swarm()).not.toContain("Phase:");
+      expect(lastPhase()).toBeUndefined();
+    });
+  });
+
   describe("default pacing", () => {
     it("paces a batch with aimd when neither pacing nor concurrency is given", async () => {
       h = setup();
@@ -227,7 +309,8 @@ describe("subagent orchestration tools", () => {
         updateWidget: vi.fn(),
       });
       const text = async (args: unknown) => (await toolMap.get("OrchestrationCreate")!.execute!("call", args)).content[0].text as string;
-      return { store, text };
+      const fields = Object.keys((toolMap.get("OrchestrationCreate")!.parameters as { properties: Record<string, unknown> }).properties);
+      return { store, text, fields };
     }
     const v1 = { name: "pi-subagents (RPC v1)", defaultAgentType: "worker", supportsMaxTurns: false };
 
@@ -258,6 +341,27 @@ describe("subagent orchestration tools", () => {
       const h2 = withProvider({ name: "@tintinweb/pi-subagents (protocol v2)", defaultAgentType: "general-purpose", supportsMaxTurns: true });
       expect(await h2.text({ goal: "Review", work: [{ prompt: "A" }], maxTurns: 20 })).toContain("Orchestration #1 created");
       expect(h2.store.list()[0]?.orchestration?.maxTurns).toBe(20);
+    });
+
+    it("T6: the schema offers maxTurns only when the provider has a turn limit", () => {
+      expect(withProvider(v1).fields).not.toContain("maxTurns");
+      // Controls: a provider with turn limits, and no declared traits, keep the field; nothing else is dropped.
+      const v2 = withProvider({ name: "@tintinweb/pi-subagents (protocol v2)", defaultAgentType: "general-purpose", supportsMaxTurns: true });
+      expect(v2.fields).toContain("maxTurns");
+      expect(setupFields()).toContain("maxTurns");
+      expect(v2.fields.filter((field) => field !== "maxTurns")).toEqual(withProvider(v1).fields);
+    });
+
+    it("T7: a multi-item batch held to one worker says it is serial and how to lift that", async () => {
+      const serial = "Serial: one worker at a time. Omit `concurrency` if the items can safely run together.";
+      const h1 = withProvider(v1);
+      expect(await h1.text({ goal: "Review", concurrency: 1, work: [{ prompt: "A" }, { prompt: "B" }] })).toContain(serial);
+      // Controls: one item, more than one worker, and adaptive pacing are not serial batches.
+      expect(await withProvider(v1).text({ goal: "Review", concurrency: 1, work: [{ prompt: "A" }] })).not.toContain("Serial");
+      expect(await withProvider(v1).text({ goal: "Review", concurrency: 2, work: [{ prompt: "A" }, { prompt: "B" }] })).not.toContain("Serial");
+      expect(await withProvider(v1).text({ goal: "Review", work: [{ prompt: "A" }, { prompt: "B" }] })).not.toContain("Serial");
+      // The stored batch is unchanged by the note.
+      expect(h1.store.list()[0]?.orchestration?.concurrency).toBe(1);
     });
 
     it("T5: rejects malformed input and a failing probe with a specific message, without persisting", async () => {
