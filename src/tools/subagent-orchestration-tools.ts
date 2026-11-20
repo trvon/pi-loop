@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { learnWindowSeed, MAX_ORCHESTRATION_LABEL_CHARS, MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
 import type { LoopScope } from "../runtime/scope.js";
 import type { LoopStore } from "../store.js";
-import type { OrchestrationActor, OrchestrationDefinitionInput, OrchestrationPacing } from "../types.js";
+import type { LoopEntry, OrchestrationActor, OrchestrationDefinitionInput, OrchestrationPacing, OrchestrationPhaseLink } from "../types.js";
 import { orchestrationControllerText, orchestrationDisplayDetails, orchestrationProgressLabel, orchestrationWorkText } from "../ui/orchestration-presentation.js";
 import { renderToolCall, renderToolResult, toolArg } from "../ui/tool-renderer.js";
 import { textResult } from "./tool-result.js";
@@ -90,6 +90,22 @@ export function resolveDefaultPacing(value: string | undefined): OrchestrationPa
 function resolvePacing(params: CreateParams, defaultPacing: OrchestrationPacing): CreateParams {
   if (params.pacing !== undefined) return params;
   return { ...params, pacing: params.concurrency !== undefined ? "fixed" : defaultPacing };
+}
+
+/**
+ * The workflow phase this session is working in, when that is unambiguous: exactly one active
+ * workflow whose current execution this runtime holds under a live lease. The link only groups
+ * the batch under that phase for display, so anything less certain is left unlinked.
+ */
+function claimedPhase(entries: readonly LoopEntry[], actor: { sessionId: string; runtimeId: string }, now: number): OrchestrationPhaseLink | undefined {
+  const held = entries.filter((entry) => {
+    const lease = entry.workflow?.activeExecution?.lease;
+    return entry.status === "active" && lease !== undefined && lease.expiresAt > now
+      && lease.ownerSessionId === actor.sessionId && lease.ownerRuntimeId === actor.runtimeId;
+  });
+  const [only] = held;
+  if (held.length !== 1 || !only?.workflow?.activeExecution) return undefined;
+  return { workflowId: only.id, executionId: only.workflow.activeExecution.id, state: only.workflow.currentState };
 }
 
 /** A label is a display name: tidy it instead of rejecting the batch over it. */
@@ -188,6 +204,8 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       const seed = definition.pacing === "aimd"
         ? learnWindowSeed(store.list().flatMap((candidate) => candidate.orchestration ? [{ id: candidate.id, state: candidate.orchestration }] : []), definition.model, Date.now())
         : undefined;
+      const phase = claimedPhase(store.list(), actor, Date.now());
+      if (phase) definition.phase = phase;
       if (seed) definition.initialWindow = seed.ssthresh === undefined ? { cwnd: seed.cwnd } : { cwnd: seed.cwnd, ssthresh: seed.ssthresh };
       let entry: ReturnType<LoopStore["create"]>;
       try {
@@ -219,6 +237,7 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
         `${definition.work.length} work items · ${pacingLabel}`,
         ...unverifiedCap,
         ...serial,
+        ...(stored.phase ? [`Phase: workflow #${stored.phase.workflowId} · ${stored.phase.state}`] : []),
         "Dispatch begins after the parent turn becomes idle. Use OrchestrationGet to inspect durable results.",
       ].join("\n");
       return textResult(message, {

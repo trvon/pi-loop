@@ -154,8 +154,17 @@ export interface OrchestrationState {
   pendingWake?: OrchestrationPendingWake;
   /** Present only for `pacing: "aimd"`; `concurrency` remains the hard ceiling. */
   window?: AckWindow;
+  /** Display link to the workflow phase this batch was started from; never consulted for dispatch or admission. */
+  phase?: OrchestrationPhaseLink;
   createdAt: number;
   updatedAt: number;
+}
+
+/** Names one visit to a workflow state: a state re-entered on rework is a different execution. */
+export interface OrchestrationPhaseLink {
+  workflowId: string;
+  executionId: string;
+  state: string;
 }
 
 export interface OrchestrationDefinitionInput {
@@ -166,6 +175,7 @@ export interface OrchestrationDefinitionInput {
   maxAttempts?: number;
   model?: string;
   maxTurns?: number;
+  phase?: OrchestrationPhaseLink;
   /** aimd only: start from a window an earlier batch in this session learned. */
   initialWindow?: WindowSeed;
 }

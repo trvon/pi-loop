@@ -71,6 +71,22 @@ describe("subagent orchestration reducer", () => {
     }
   });
 
+  it("K3: a phase link is stored as given, round-trips, is optional, and changes nothing else", () => {
+    const phase = { workflowId: "4", executionId: "exec-9", state: "audit" };
+    const linked = create(2, { phase });
+    expect(linked.phase).toEqual(phase);
+    expect(validatePersistedOrchestration(JSON.parse(JSON.stringify(linked))).phase).toEqual(phase);
+    // The link is display metadata: the batch is otherwise the one an unlinked caller would get.
+    const { phase: _phase, ...rest } = linked;
+    expect(rest).toEqual(create(2));
+    expect("phase" in create(2)).toBe(false);
+    for (const bad of [{ workflowId: "4" }, { workflowId: "", executionId: "e", state: "s" }, { workflowId: 4, executionId: "e", state: "s" }, "audit"]) {
+      const snapshot = JSON.parse(JSON.stringify(create(1)));
+      snapshot.phase = bad;
+      expect(() => validatePersistedOrchestration(snapshot)).toThrow("invalid phase link");
+    }
+  });
+
   it("rejects malformed nested persisted evidence before wake rendering", () => {
     const malformedResult = dispatch(create(1), "1", "dispatch-1", 110).state as any;
     malformedResult.work[0].dispatches[0].result = { unsafe: true };

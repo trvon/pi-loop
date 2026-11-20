@@ -161,6 +161,60 @@ describe("subagent orchestration tools", () => {
     expect(await h.text("OrchestrationGet", { id: "1", workId: "4" })).not.toContain("Label:");
   });
 
+  describe("workflow phase link", () => {
+    const me = { sessionId: "session-a", runtimeId: "runtime-a" };
+    const definition = {
+      version: 1 as const,
+      initialState: "audit",
+      states: { audit: { prompt: "Audit.", task: { subject: "Audit", description: "Audit it" }, on: { done: "done" } }, done: { prompt: "Done.", terminal: "completed" as const } },
+    };
+    const claim = (actor = me) => h.store.create({ type: "dynamic" }, "Audit the thing", { recurring: true, workflow: definition, actor });
+    const swarm = () => h.text("OrchestrationCreate", { goal: "Fan out", work: [{ prompt: "A" }, { prompt: "B" }] });
+    const lastPhase = () => h.store.list().filter((entry) => entry.orchestration).at(-1)?.orchestration?.phase;
+
+    it("K1: a swarm started while this session holds one workflow's claim is tied to that phase", async () => {
+      const workflow = claim();
+      const out = await swarm();
+      expect(lastPhase()).toEqual({ workflowId: workflow.id, executionId: workflow.workflow!.activeExecution!.id, state: "audit" });
+      expect(out).toContain(`Phase: workflow #${workflow.id} · audit`);
+      // The workflow itself is untouched by the link.
+      expect(h.store.get(workflow.id)).toEqual(workflow);
+    });
+
+    it("K2 (controls): no claim, another session's claim, an expired claim, a paused workflow or two claims leave the swarm unlinked", async () => {
+      expect(await swarm()).not.toContain("Phase:");
+      expect(lastPhase()).toBeUndefined();
+
+      const other = claim({ sessionId: "session-b", runtimeId: "runtime-b" });
+      await swarm();
+      expect(lastPhase()).toBeUndefined();
+      h.store.delete(other.id);
+
+      vi.useFakeTimers();
+      try {
+        claim();
+        vi.advanceTimersByTime(31 * 60_000);
+        await swarm();
+        expect(lastPhase()).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("K2b (controls): a paused workflow or two live claims leave the swarm unlinked", async () => {
+      const paused = claim();
+      h.store.pause(paused.id, "administrative", "hold");
+      await swarm();
+      expect(lastPhase()).toBeUndefined();
+      h.store.delete(paused.id);
+
+      claim();
+      claim();
+      expect(await swarm()).not.toContain("Phase:");
+      expect(lastPhase()).toBeUndefined();
+    });
+  });
+
   describe("default pacing", () => {
     it("paces a batch with aimd when neither pacing nor concurrency is given", async () => {
       h = setup();
