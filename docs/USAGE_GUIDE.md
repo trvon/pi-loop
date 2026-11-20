@@ -1,6 +1,6 @@
 # pi-loop usage guide
 
-`pi-loop` re-wakes a pi agent from schedules and events, runs self-paced goal loops, and monitors background commands. This guide covers the operational details; see the [README](../README.md) for installation and a quick start.
+`pi-loop` re-wakes a pi agent from schedules and events, runs self-paced goal loops, and monitors background commands. This guide covers the operational details. See the [README](../README.md) for installation and a quick start.
 
 ## Loops
 
@@ -16,7 +16,13 @@ LoopCreate trigger="0 9 * * 1-5" prompt="Review weekday alerts" maxFires=10
 
 Intervals such as `5m`, `2h`, and `1d` are converted to cron expressions. Full five-field cron expressions are also accepted. Cron and hybrid loops track their next fire time and deliver only when the agent is idle.
 
-Use `maxFires` for polling or other bounded work so a loop cannot run indefinitely. New loops expire after seven days by default. Set `PI_LOOP_EXPIRES_IN` (for example, `14d`) to change the runtime default, or pass `expiresIn` to `LoopCreate`, `WorkflowCreate`, or `OrchestrationCreate`; explicit durations may exceed seven days. Existing controllers retain their persisted absolute `expiresAt`. Values must be positive safe-integer durations whose resulting deadline fits JavaScript's valid date range; invalid runtime configuration fails extension activation instead of falling back. `LoopList` exposes each controller's exact boundary. Expiry and stale event/hybrid retirement during session recovery emit `loops:expired` and a hidden Pi wake that reports whether the controller was deleted or paused. Renewal is explicit: recreate the loop only when its schedule is still required.
+Use `maxFires` for polling or other bounded work so a loop cannot run indefinitely.
+
+New loops expire after seven days by default. Set `PI_LOOP_EXPIRES_IN` (for example, `14d`) to change the runtime default, or pass `expiresIn` to `LoopCreate`, `WorkflowCreate`, or `OrchestrationCreate`. Explicit durations may exceed seven days. Existing controllers retain their persisted absolute `expiresAt`. `LoopList` exposes each controller's exact boundary.
+
+Values must be positive safe-integer durations whose resulting deadline fits JavaScript's valid date range. Invalid runtime configuration fails extension activation instead of falling back.
+
+Expiry and stale event/hybrid retirement during session recovery emit `loops:expired` and a hidden Pi wake that reports whether the controller was deleted or paused. Renewal is explicit: recreate the loop only when its schedule is still required.
 
 ### Event loops
 
@@ -27,7 +33,7 @@ Event loops react to pi events instead of polling:
 LoopCreate trigger="tool_execution_end" prompt="Review the completed tool call" triggerType="event" recurring=true
 ```
 
-`LoopCreate` event loops are one-shot by default. Set `recurring=true` to keep listening. Prefer events when a relevant source exists; use hybrid triggers when an event needs a scheduled safety net.
+`LoopCreate` event loops are one-shot by default. Set `recurring=true` to keep listening. Prefer events when a relevant source exists. Use hybrid triggers when an event needs a scheduled safety net.
 
 ### Hybrid loops
 
@@ -41,13 +47,13 @@ LoopCreate trigger="cron:5m event:tasks:created" prompt="Process pending tasks" 
 
 Open `/loop` → `View loops` and select a controller. The detail view shows its kind, resolved storage scope, authority, expiry, reported next fire, fire budget, pause provenance, and supported next action. Workflow and orchestration details remain available below the lifecycle fields. Hybrid detail retains the event source and debounce window, not the event filter.
 
-Inspection does not claim work, resume a controller, or schedule a wake. A live workflow lease is not proof of execution; fire counts are accounting, not delivered-wake counts. Expired, terminal, and orchestration controllers do not offer generic resume. A `controller_limit` pause at an exhausted budget also blocks resume. Custom `PI_LOOP` files are labelled separately from session storage; paths and event filters are not displayed in the lifecycle fields.
+Inspection does not claim work, resume a controller, or schedule a wake. A live workflow lease is not proof of execution. Fire counts are accounting, not delivered-wake counts. Expired, terminal, and orchestration controllers do not offer generic resume. A `controller_limit` pause at an exhausted budget also blocks resume. Custom `PI_LOOP` files are labelled separately from session storage. Paths and event filters are not displayed in the lifecycle fields.
 
 ### Choosing one controller
 
 Choose one durable owner before decomposing work:
 
-- use `WorkflowCreate` when one goal has ordered phases, conditional outcomes, rework, or durable handoff—even if those phases are described as tasks;
+- use `WorkflowCreate` when one goal has ordered phases, conditional outcomes, rework, or durable handoff, even if those phases are described as tasks;
 - use multiple `TaskCreate` calls for independently completable items in a flat or manually assigned backlog;
 - use a dynamic `LoopCreate` for one evolving, self-paced goal that does not need named phase/outcome routing;
 - use `taskBacklog` only when autonomous processing of standalone tasks was explicitly requested.
@@ -62,7 +68,7 @@ Free text passed to `/loop` creates a self-paced dynamic goal:
 /loop finish the release
 ```
 
-The first wake is immediate when the agent is idle. Free-text dynamic goals have no implicit fire-count cap; they remain bounded by the recurring-loop lifetime and explicit completion or deletion. Use `LoopCreate maxFires=...` when a finite fire budget is required. After each iteration, the agent calls `LoopUpdate`:
+The first wake is immediate when the agent is idle. Free-text dynamic goals have no implicit fire-count cap. They remain bounded by the recurring-loop lifetime and explicit completion or deletion. Use `LoopCreate maxFires=...` when a finite fire budget is required. After each iteration, the agent calls `LoopUpdate`:
 
 ```text
 LoopUpdate id="1" status="continue" state="Tests pass; reviewing package"
@@ -106,7 +112,7 @@ WorkflowCreate goal="Fix the regression" definition='{
 }'
 ```
 
-The initial state must be non-terminal. Each wake presents the current state, state instructions, the active workflow execution (subject + lease owner/expiry), allowed outcomes, and — after the first transition — the last transition and its recorded evidence, so the next state can act on what the previous one found. The agent finishes the state by selecting one declared outcome:
+The initial state must be non-terminal. Each wake presents the current state, state instructions, the active workflow execution (subject + lease owner/expiry), and allowed outcomes. After the first transition, it also presents the last transition and its recorded evidence, so the next state can act on what the previous one found. The agent finishes the state by selecting one declared outcome:
 
 ```text
 WorkflowTransition id="1" outcome="root_cause_found" evidence="A null config reaches the parser."
@@ -114,9 +120,19 @@ WorkflowTransition id="1" outcome="tests_pass" evidence="Targeted and full test 
 WorkflowTransition id="1" outcome="blocked" evidence="Monitor #m1 failed." claim='{"class":"environmental","provider":"monitor","subject":"m1","fact":"status","expected":"error"}'
 ```
 
-`WorkflowTransition` validates the branch, settles the current execution, records evidence, and activates the next state's execution in the same locked write. A `paused` terminal target requires the typed claim shown above. The provider runs before the LoopStore lock, observations are scoped to the current workflow/state/revision/execution/workspace, and the final write uses the existing CAS. The built-in `monitor` provider exposes only `status`, `exitCode`, and `stopReason`; raw output is never admission evidence. Missing, stale, conflicting, contradicted, or unavailable evidence leaves every store unchanged. User-authority claims fail closed because machine evidence cannot manufacture consent.
+`WorkflowTransition` validates the branch, settles the current execution, records evidence, and activates the next state's execution in the same locked write. A `paused` terminal target requires the typed claim shown above.
 
-Newly entered task phases start unowned so another agent sharing project scope can claim the next phase immediately; whichever agent continues must call `WorkflowClaim id="1"` first. Workflow work is embedded in the loop controller — never call `TaskClaim` or `TaskUpdate` for it. `WorkflowClaim` also renews the current runtime's lease or takes over an expired lease after a restart. A self-loop requires `maxAttempts`, creates a fresh unowned attempt execution, and increments the displayed attempt count. Legacy unbounded self-loops fail closed at transition time until revised. When a target reaches `maxAttempts`, only outcomes leading to that target become unavailable; other declared outcomes remain selectable. Reaching a `completed` terminal state deletes the workflow loop; reaching an admitted `paused` terminal state preserves it with `semantic_terminal` pause provenance. Administrative, controller-limit, and orchestration-settlement pauses carry distinct provenance; legacy snapshots may be unattributed. Administrative and unattributed pauses require explicit resume, while self-transitions never bypass controller limits. Terminal workflow states cannot be resumed. Task status does not guess an outcome—the model selects one explicitly. LoopList and workflow wakes omit outcomes whose target state has exhausted `maxAttempts`.
+The provider runs before the LoopStore lock, observations are scoped to the current workflow/state/revision/execution/workspace, and the final write uses the existing CAS. The built-in `monitor` provider exposes only `status`, `exitCode`, and `stopReason`. Raw output is never admission evidence. Missing, stale, conflicting, contradicted, or unavailable evidence leaves every store unchanged. User-authority claims fail closed because machine evidence cannot manufacture consent.
+
+Newly entered task phases start unowned so another agent sharing project scope can claim the next phase immediately. Whichever agent continues must call `WorkflowClaim id="1"` first. Workflow work is embedded in the loop controller: never call `TaskClaim` or `TaskUpdate` for it. `WorkflowClaim` also renews the current runtime's lease or takes over an expired lease after a restart.
+
+A self-loop requires `maxAttempts`, creates a fresh unowned attempt execution, and increments the displayed attempt count. Legacy unbounded self-loops fail closed at transition time until revised. When a target reaches `maxAttempts`, only outcomes leading to that target become unavailable. Other declared outcomes remain selectable. LoopList and workflow wakes omit outcomes whose target state has exhausted `maxAttempts`.
+
+Reaching a `completed` terminal state deletes the workflow loop. Reaching an admitted `paused` terminal state preserves it with `semantic_terminal` pause provenance. Terminal workflow states cannot be resumed.
+
+Administrative, controller-limit, and orchestration-settlement pauses carry distinct provenance. Legacy snapshots may be unattributed. Administrative and unattributed pauses require explicit resume, while self-transitions never bypass controller limits.
+
+Task status does not guess an outcome: the model selects one explicitly.
 
 #### Verified outcomes
 
@@ -131,7 +147,7 @@ A state can require a command to exit 0 before an outcome is accepted, so the mo
 }
 ```
 
-`WorkflowTransition outcome="tests_pass"` runs `npm test` in the session cwd (same authority as `MonitorCreate`) before the transition is written. Exit 0 advances to `done` with the check recorded as admission evidence. A failure takes `onFail` with the exit status and output tail as evidence; without `onFail` the transition is rejected and the state is unchanged. The tool result shows the verdict and output tail either way. Verified outcomes cannot target a paused terminal, and `onFail` must be a different, unverified outcome. Details are in [REFERENCE.md](REFERENCE.md#verified-outcomes).
+`WorkflowTransition outcome="tests_pass"` runs `npm test` in the session cwd (same authority as `MonitorCreate`) before the transition is written. Exit 0 advances to `done` with the check recorded as admission evidence. A failure takes `onFail` with the exit status and output tail as evidence. Without `onFail`, the transition is rejected and the state is unchanged. The tool result shows the verdict and output tail either way. Verified outcomes cannot target a paused terminal, and `onFail` must be a different, unverified outcome. Details are in [REFERENCE.md](REFERENCE.md#verified-outcomes).
 
 When active work discovers a missing prerequisite or supersedes future instructions, inspect `LoopList` and submit one typed revision against its exact definition revision, state, and transition sequence:
 
@@ -151,13 +167,26 @@ WorkflowRevise id="1" expectedRevision=2 expectedState="open-pr" expectedTransit
 ]'
 ```
 
-Reissue atomically cancels the superseded execution into history, creates fresh current work under the still-valid lease, resets state timing, and queues a fresh wake without fabricating a transition. An administrative pause can be reissued in place: the replacement waits paused, and `/loop` resume wakes only the fresh instruction. `controller_limit` and other non-administrative pauses reject reissue because resuming them does not renew the exhausted controller; semantic terminals cannot be revised. Taskless work that gains a task starts unowned and requires `WorkflowClaim`. Stale revision, state, sequence, lease, and execution authority fail closed. Workflow revision never creates standalone tasks. See the [reference](./REFERENCE.md#adaptive-revision) for operation and graph rules.
+Reissue atomically cancels the superseded execution into history, creates fresh current work under the still-valid lease, resets state timing, and queues a fresh wake without fabricating a transition. An administrative pause can be reissued in place: the replacement waits paused, and `/loop` resume wakes only the fresh instruction. `controller_limit` and other non-administrative pauses reject reissue because resuming them does not renew the exhausted controller. Semantic terminals cannot be revised.
 
-A missing prerequisite, missing route, or exhausted route is a plan gap—not automatically a blocker. Persist an actionable recovery route with `WorkflowRevise`, then continue through the revised transition and claim while work remains actionable. Call `WorkflowTransition` only when an available declared outcome is supported by evidence; never fabricate one. Do not stop or move the controller to terminal `paused` merely to report progress. Environmental blockers require trusted admission. If user authority is required, report the exact decision needed; machine observations cannot authorize the transition.
+Taskless work that gains a task starts unowned and requires `WorkflowClaim`. Stale revision, state, sequence, lease, and execution authority fail closed. Workflow revision never creates standalone tasks. See the [reference](./REFERENCE.md#adaptive-revision) for operation and graph rules.
 
-To repeat a state until evidence supports an outcome, add a cron-only state policy: `"loop":{"schedule":"0 7 * * *","maxFires":10,"startImmediately":false}`. Only the active state's policy is armed. Scheduled wakes retain the active execution; `WorkflowTransition` remains the only operation that settles it and unlocks the destination execution and cadence. Below the fire cap, a no-change iteration leaves the workflow active; do not encode no change as an immediate self-transition. Persist material future-plan changes with `WorkflowRevise`. Reaching the state-local `maxFires` pauses the workflow and schedules no next cadence; an evidenced transition to a different state resumes atomically. A workflow-wide cap permits only a terminal transition. Otherwise revise in a bounded recovery state/route, then transition and claim it. State policies do not wake immediately unless `startImmediately` is `true`.
+A missing prerequisite, missing route, or exhausted route is a plan gap, not automatically a blocker. Persist an actionable recovery route with `WorkflowRevise`, then continue through the revised transition and claim while work remains actionable. Call `WorkflowTransition` only when an available declared outcome is supported by evidence. Never fabricate one. Do not stop or move the controller to terminal `paused` merely to report progress. Environmental blockers require trusted admission. If user authority is required, report the exact decision needed. Machine observations cannot authorize the transition.
 
-`LoopList` includes workflow state, active execution, transition evidence, valid outcomes, wall-clock workflow age, current-state age, and derived activity alongside ordinary loops. Activity is `claimed` while a task execution has a live lease (ownership, not observed execution), `waiting` while a monitor is attached, `paused` when the controller is durably paused, and otherwise `idle` while awaiting a claim, outcome, or non-task wake. Lease expiry returns claimed work to idle; these labels do not alter authority or scheduling. A completed transition reports an ephemeral `stopped` snapshot, then the workflow remains deleted rather than retaining a UI-only tombstone.
+To repeat a state until evidence supports an outcome, add a cron-only state policy: `"loop":{"schedule":"0 7 * * *","maxFires":10,"startImmediately":false}`. Only the active state's policy is armed. State policies do not wake immediately unless `startImmediately` is `true`. Scheduled wakes retain the active execution. `WorkflowTransition` remains the only operation that settles it and unlocks the destination execution and cadence.
+
+Below the fire cap, a no-change iteration leaves the workflow active. Do not encode no change as an immediate self-transition. Persist material future-plan changes with `WorkflowRevise`.
+
+Reaching the state-local `maxFires` pauses the workflow and schedules no next cadence. An evidenced transition to a different state resumes atomically. A workflow-wide cap permits only a terminal transition. Otherwise revise in a bounded recovery state/route, then transition and claim it.
+
+`LoopList` includes workflow state, active execution, transition evidence, valid outcomes, wall-clock workflow age, current-state age, and derived activity alongside ordinary loops. Activity is one of:
+
+- `claimed` while a task execution has a live lease (ownership, not observed execution);
+- `waiting` while a monitor is attached;
+- `paused` when the controller is durably paused;
+- `idle` otherwise, while awaiting a claim, outcome, or non-task wake.
+
+Lease expiry returns claimed work to idle. These labels do not alter authority or scheduling. A completed transition reports an ephemeral `stopped` snapshot, then the workflow remains deleted rather than retaining a UI-only tombstone.
 
 ### Inspecting and stopping loops
 
@@ -180,15 +209,29 @@ OrchestrationCreate goal="Review release readiness" work='[
 ]' concurrency=2 maxAttempts=2 maxTurns=12
 ```
 
-This surface requires the default file-backed session scope and a subagent provider: `@tintinweb/pi-subagents` (protocol v2) or the unscoped npm `pi-subagents` package (RPC v1). Its tools are registered only when one answers. With the npm `pi-subagents` package, work without an `agentType` runs as its generic `delegate` agent, `maxTurns` is not offered and is rejected if sent (that provider has no turn limit), and pacing reacts only to errors and timeouts; see the provider table in the reference. It rejects memory/project scope, `PI_LOOP=off`, and custom `PI_LOOP` paths. The batch is stored only in `LoopStore`; it does not create standalone tasks or delegate workflow states.
+This surface requires the default file-backed session scope and a subagent provider: `@tintinweb/pi-subagents` (protocol v2) or the unscoped npm `pi-subagents` package (RPC v1). Its tools are registered only when one of these providers answers. The surface rejects memory/project scope, `PI_LOOP=off`, and custom `PI_LOOP` paths. The batch is stored only in `LoopStore`. It does not create standalone tasks or delegate workflow states.
 
-A work item may carry a `label`: a display name of at most 40 characters that listings show in place of the prompt snippet. It is never sent to the worker; control characters are collapsed, a blank label is dropped, and a longer one is clipped. Work items must be independent. The controller does not model dependencies or protect overlapping filesystem writes. Each spawned worker is background, does not inherit parent context, and is isolated from extension tools, so it cannot call pi-loop task/workflow/controller tools. The optional `agentType`, `model`, and `maxTurns` fields are the only invocation overrides.
+With the npm `pi-subagents` package:
 
-Batches are paced adaptively by default (see below). Passing `concurrency` selects fixed pacing: it bounds spawning/queued/running dispatches to that many, while pi-subagents keeps its own global concurrency ceiling. A proved worker failure retries up to `maxAttempts`. An overload that struck before the worker ran any tool, or a spawn that failed on a dropped connection, is re-sent without spending an attempt (at most 3 times per item and once per item across the batch). A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
+- work without an `agentType` runs as its generic `delegate` agent;
+- `maxTurns` is not offered and is rejected if sent (that provider has no turn limit);
+- pacing reacts only to errors and timeouts.
+
+See the provider table in the reference.
+
+A work item may carry a `label`: a display name of at most 40 characters that listings show in place of the prompt snippet. It is never sent to the worker. Control characters are collapsed, a blank label is dropped, and a longer one is clipped.
+
+Work items must be independent. The controller does not model dependencies or protect overlapping filesystem writes. Each spawned worker is background, does not inherit parent context, and is isolated from extension tools, so it cannot call pi-loop task/workflow/controller tools. The optional `agentType`, `model`, and `maxTurns` fields are the only invocation overrides.
+
+Batches are paced adaptively by default (see below). Passing `concurrency` selects fixed pacing: it bounds spawning/queued/running dispatches to that many, while pi-subagents keeps its own global concurrency ceiling.
+
+A proved worker failure retries up to `maxAttempts`. An overload that struck before the worker ran any tool, or a spawn that failed on a dropped connection, is re-sent without spending an attempt (at most 3 times per item and once per item across the batch).
+
+A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
 
 #### Verified work and adaptive pacing
 
-A work item may declare `verify`, a shell command that must exit 0 before the item counts as complete. The worker is told the check; a failing check retries the item with the exit status and output tail in the next prompt:
+A work item may declare `verify`, a shell command that must exit 0 before the item counts as complete. The worker is told the check. A failing check retries the item with the exit status and output tail in the next prompt:
 
 ```text
 OrchestrationCreate goal="Port the parsers" work='[
@@ -199,7 +242,17 @@ OrchestrationCreate goal="Port the parsers" work='[
 
 `verify` runs in the session cwd with the same authority as `MonitorCreate`. While it runs, the dispatch shows as `verifying` and still holds capacity.
 
-Pacing defaults to `aimd`: a window that starts at three workers (or the batch size, if smaller; or where the session's last aimd batch for the same model settled, if it ran in the past 30 minutes), grows on verified completions, shrinks on overload errors or sustained slowdown (to 0.7 when the provider refused work before it ran, to half when work was lost), and collapses to one on timeouts. It is bounded by the batch size when every item declares `verify`, otherwise by 8 workers, so it finds the real limit (a local model server, a provider rate limit) without being told. Task failures do not shrink the window. Pass `concurrency=N` or `pacing="fixed"` for a fixed worker count, or set `PI_LOOP_PACING=fixed` to make fixed the default; an explicit `pacing` always wins. Batches created before this default keep the pacing they were stored with. Signal classification, the delay heuristic, and its limits are in [REFERENCE.md](REFERENCE.md#ack-clocked-pacing).
+Pacing defaults to `aimd`, which keeps a window of workers:
+
+- The window starts at three workers, or at the batch size if that is smaller, or where the session's last aimd batch for the same model settled if that batch ran in the past 30 minutes.
+- It grows on verified completions.
+- It shrinks on overload errors or sustained slowdown: to 0.7 when the provider refused work before it ran, and to half when work was lost.
+- It collapses to one on timeouts.
+- Task failures do not shrink it.
+
+The window is bounded by the batch size when every item declares `verify`, otherwise by 8 workers, so it finds the real limit (a local model server, a provider rate limit) without being told.
+
+Pass `concurrency=N` or `pacing="fixed"` for a fixed worker count, or set `PI_LOOP_PACING=fixed` to make fixed the default. An explicit `pacing` always wins. Batches created before this default keep the pacing they were stored with. Signal classification, the delay heuristic, and its limits are in [REFERENCE.md](REFERENCE.md#ack-clocked-pacing).
 
 Inspect compact progress with `LoopList` and durable evidence with:
 
@@ -208,11 +261,21 @@ OrchestrationGet id="1"
 OrchestrationGet id="1" workId="2"
 ```
 
-These surfaces call the controller an **orchestration**: `active`, `needs attention`, `complete`, or `cancelled`. Work is `pending` (undispatched), `reserved` (occupying local capacity), `complete`, `failed`, `uncertain`, or `cancelled`. While the controller is still dispatching, progress shows reserved work against what may be dispatched right now as `N/W in flight`: `W` is the current aimd window, or the fixed concurrency. Progress separately shows dispatch observations: `starting`, `queued`, or `reported running`. Observations may be stale and do not establish current liveness or quiescence; detailed attempts and provider-owned results remain available. The status line and progress panel show a batch only while it is `active` or `needs attention`, so the count drops when a batch completes or is cancelled. The `/loop` inspector, `LoopList` and `OrchestrationGet` keep completed and cancelled batches until explicit deletion. This durable batch is distinct from provider-native `SubagentWorkflow`, whose FleetView, conversations, and transcripts remain provider-owned.
+These surfaces call the controller an **orchestration**: `active`, `needs attention`, `complete`, or `cancelled`. Work is `pending` (undispatched), `reserved` (occupying local capacity), `complete`, `failed`, `uncertain`, or `cancelled`.
 
-The parent is not woken merely to refill capacity. Normal terminal results are persisted with provider-owned completion status, are not consumed, and do not also generate a pi-loop aggregate wake; the provider's native output is the sole completion path. A durable pi-loop wake remains for uncertain dispatches or failures with no provider-owned terminal result. Completed and attention batches pause for inspection; `LoopUpdate` cannot mutate them. `LoopDelete` first records cancellation and pauses the controller, then requests cancellation of known workers. A delete request retains the paused controller whenever any dispatch has unconfirmed execution; the tool reports this explicitly. Inspect retained agent/dispatch identities with `OrchestrationGet`. Protocol v2 cannot prove safe automatic cleanup; repeated deletion does not erase uncertainty.
+While the controller is still dispatching, progress shows reserved work against what may be dispatched right now as `N/W in flight`, where `W` is the current aimd window or the fixed concurrency. Progress separately shows dispatch observations: `starting`, `queued`, or `reported running`. Observations may be stale and do not establish current liveness or quiescence. Detailed attempts and provider-owned results remain available.
 
-Session shutdown/switch records uncertainty and requests cancellation before rebinding storage. Stop acknowledgement, `stopped` status, and lease expiry do not prove termination or safe replay. No automatic retry or consume follows those signals. Legacy stop/interruption records become uncertain on load; already consumed output or previously launched retries cannot be recovered or undone. A crashed runtime cannot safely reconstruct an upstream worker, so ownership-expiry recovery fails closed instead of redispatching it.
+The status line and progress panel show a batch only while it is `active` or `needs attention`, so the count drops when a batch completes or is cancelled. The `/loop` inspector, `LoopList` and `OrchestrationGet` keep completed and cancelled batches until explicit deletion.
+
+This durable batch is distinct from provider-native `SubagentWorkflow`, whose FleetView, conversations, and transcripts remain provider-owned.
+
+The parent is not woken merely to refill capacity. Normal terminal results are persisted with provider-owned completion status, are not consumed, and do not also generate a pi-loop aggregate wake. The provider's native output is the sole completion path. A durable pi-loop wake remains for uncertain dispatches or failures with no provider-owned terminal result.
+
+Completed and attention batches pause for inspection, and `LoopUpdate` cannot mutate them.
+
+`LoopDelete` first records cancellation and pauses the controller, then requests cancellation of known workers. A delete request retains the paused controller whenever any dispatch has unconfirmed execution, and the tool reports this explicitly. Inspect retained agent/dispatch identities with `OrchestrationGet`. Protocol v2 cannot prove safe automatic cleanup, and repeated deletion does not erase uncertainty.
+
+Session shutdown/switch records uncertainty and requests cancellation before rebinding storage. Stop acknowledgement, `stopped` status, and lease expiry do not prove termination or safe replay. No automatic retry or consume follows those signals. Legacy stop/interruption records become uncertain on load. Already consumed output or previously launched retries cannot be recovered or undone. A crashed runtime cannot safely reconstruct an upstream worker, so ownership-expiry recovery fails closed instead of redispatching it.
 
 ## Background monitors
 
@@ -227,9 +290,11 @@ Output is buffered and emitted as `monitor:output`. A monitor finishes as one of
 - clean exit: emits `monitor:done`
 - nonzero exit or spawn failure: emits `monitor:error`
 - inactivity timeout: stops the process after no output or structured progress, emits `monitor:error`, and wakes the agent after reaping when its callback controller is still unexpired
-- explicit `MonitorStop`: cancels the monitor without an `onDone` wake; workflow-owned monitors resume their current state with `status=stopped`
+- explicit `MonitorStop`: cancels the monitor without an `onDone` wake. Workflow-owned monitors resume their current state with `status=stopped`
 
-Pass `onDone` whenever the agent should resume work after success or failure. Its one-shot wake also fires on timeout; monitors without `onDone` send a timeout-only alert while that callback controller remains unexpired. `timeout` is an inactivity threshold, not a total-runtime limit: stdout/stderr bytes, JSONL progress, and `MonitorUpdate` renew it. The default is five quiet minutes; use `timeout=0` to disable stale detection.
+Pass `onDone` whenever the agent should resume work after success or failure. Its one-shot wake also fires on timeout. Monitors without `onDone` send a timeout-only alert while that callback controller remains unexpired.
+
+`timeout` is an inactivity threshold, not a total-runtime limit: stdout/stderr bytes, JSONL progress, and `MonitorUpdate` renew it. The default is five quiet minutes. Use `timeout=0` to disable stale detection.
 
 For a monitor launched from an active workflow, use `workflowId` instead of `onDone`:
 
@@ -237,9 +302,11 @@ For a monitor launched from an active workflow, use `workflowId` instead of `onD
 MonitorCreate command="npm test" description="Validate release" workflowId="29"
 ```
 
-The workflow pauses its cadence while the monitor runs. Monitor completion and timeout-alert loops use the same configured loop lifetime as every other new controller. If that boundary arrives before the monitor settles, expiry retirement wins and the completion wake is not delivered; choose an `expiresIn` that covers the expected monitor lifetime. While the same Pi runtime remains active, success, failure, timeout, or explicit `MonitorStop` resumes the same state once with status, stop reason, exit code, and output count; inspect the result and call `WorkflowTransition` with a declared outcome. At or after the controller's expiry boundary, monitor completion retires the workflow before clearing the wait, rearming, or waking it. Do not poll with `LoopUpdate` while it waits.
+The workflow pauses its cadence while the monitor runs. Do not poll with `LoopUpdate` while it waits. While the same Pi runtime remains active, success, failure, timeout, or explicit `MonitorStop` resumes the same state once with status, stop reason, exit code, and output count. Inspect the result and call `WorkflowTransition` with a declared outcome.
 
-A session shutdown or switch interrupts the monitor: its in-memory process and wait are discarded without a terminal workflow wake. In session or project scope, inspect the resumed workflow and start a new monitor if the work still needs to run; memory-scoped workflows are discarded.
+Monitor completion and timeout-alert loops use the same configured loop lifetime as every other new controller. If that boundary arrives before the monitor settles, expiry retirement wins and the completion wake is not delivered. Choose an `expiresIn` that covers the expected monitor lifetime. At or after the controller's expiry boundary, monitor completion retires the workflow before clearing the wait, rearming, or waking it.
+
+A session shutdown or switch interrupts the monitor: its in-memory process and wait are discarded without a terminal workflow wake. In session or project scope, inspect the resumed workflow and start a new monitor if the work still needs to run. Memory-scoped workflows are discarded.
 
 ```text
 MonitorList
@@ -256,7 +323,7 @@ When [@tintinweb/pi-tasks](https://github.com/tintinweb/pi-tasks) is available, 
 
 ### Native fallback
 
-If no `pi-tasks` has answered the startup ping by `session_start` (which runs after every extension has loaded), `pi-loop` registers the native tools right there, before the first request is built, so the tool set — and with it the provider's cached prompt prefix — is the same for every request of the session. A six-second timer remains as a backstop for hosts that never emit `session_start`. The native tools are:
+If no `pi-tasks` has answered the startup ping by `session_start` (which runs after every extension has loaded), `pi-loop` registers the native tools right there, before the first request is built. The tool set, and with it the provider's cached prompt prefix, is therefore the same for every request of the session. A six-second timer remains as a backstop for hosts that never emit `session_start`. The native tools are:
 
 ```text
 TaskCreate subject="Fix deploy polling" description="Replace polling with an event-driven loop"
@@ -269,7 +336,11 @@ TaskUpdate id="1" status="closed" claimId="<claim-id>"  # abandon without comple
 TaskDelete id="1"
 ```
 
-The native provider is selected for the session and exposes `/tasks`, compact status-line tracking, persisted task state, lifecycle events, and task RPC replies. Standalone tasks are for independently completable backlog items; use a workflow instead when related items are ordered phases of one evolving goal. `TaskClaim` provides one live owner per task, renewable heartbeats, and takeover only after lease expiry. It also moves the task to `in_progress`; a following `TaskUpdate status="in_progress"` is harmless but redundant. Claimed subject/description edits and terminal updates require the exact live claim token; an expired token must be replaced by reclaiming the task. Before handing off unfinished work, update its description with material progress, discovered dependencies, and the next action. `closed` is terminal like `completed`, is excluded from pending backlog work, and deliberately does not emit `tasks:completed`; use it when work is intentionally abandoned.
+The native provider is selected for the session and exposes `/tasks`, compact status-line tracking, persisted task state, lifecycle events, and task RPC replies. Standalone tasks are for independently completable backlog items. Use a workflow instead when related items are ordered phases of one evolving goal.
+
+`TaskClaim` provides one live owner per task, renewable heartbeats, and takeover only after lease expiry. It also moves the task to `in_progress`, so a following `TaskUpdate status="in_progress"` is harmless but redundant. Claimed subject/description edits and terminal updates require the exact live claim token. An expired token must be replaced by reclaiming the task. Before handing off unfinished work, update its description with material progress, discovered dependencies, and the next action.
+
+`closed` is terminal like `completed`, is excluded from pending backlog work, and deliberately does not emit `tasks:completed`. Use it when work is intentionally abandoned.
 
 See the [reference](./REFERENCE.md#mutation-guarantees) for ownership and mutation boundaries.
 
@@ -279,7 +350,7 @@ Set `taskBacklog=true` on a recurring `tasks:created` event loop to process unfi
 
 Each wake is action-first: call `TaskList`, inspect `TaskGet`, claim or resume one task, perform concrete work, run observable validation, and settle it in the same turn. Status prose and future-tense promises are not progress. Empty backlogs and verified live-owner blockers are the only no-work exits.
 
-Workers bootstrap existing work, coalesce repeated create events, resume eligible `in_progress` tasks before unrelated pending work, and delete themselves when the queue drains. They pause visibly at the default 25-fire cap. Prerequisites are a description convention (for example, “depends on #2”), not first-class TaskStore edges; use `TaskGet` to follow them. `autoTask` is separate and creates a new task on each ordinary loop fire.
+Workers bootstrap existing work, coalesce repeated create events, resume eligible `in_progress` tasks before unrelated pending work, and delete themselves when the queue drains. They pause visibly at the default 25-fire cap. Prerequisites are a description convention (for example, “depends on #2”), not first-class TaskStore edges. Use `TaskGet` to follow them. `autoTask` is separate and creates a new task on each ordinary loop fire.
 
 ## Events
 
@@ -293,7 +364,7 @@ Monitor events:
 
 Loop lifecycle events:
 
-- `loops:expired` — `{loopId, prompt, trigger, recurring, createdAt, expiresAt, expiredAt, disposition, source, reason}` where `reason` is `expires_at` or `resume_event_stale`
+- `loops:expired`: `{loopId, prompt, trigger, recurring, createdAt, expiresAt, expiredAt, disposition, source, reason}`, where `reason` is `expires_at` or `resume_event_stale`
 - `loops:autodeleted`
 
 Native task lifecycle events:
@@ -307,11 +378,11 @@ Native task lifecycle events:
 - `tasks:deleted`
 - `tasks:backlog_empty`
 
-Task event payloads include `previousStatus`. Transition events report the status before the transition; details-only `tasks:updated` events report the status current at edit time.
+Task event payloads include `previousStatus`. Transition events report the status before the transition. Details-only `tasks:updated` events report the status current at edit time.
 
 ## Cross-extension task RPC
 
-External consumers should import only from `@trevonistrevon/pi-loop/api`; deep `src/` imports are blocked by the package export map.
+External consumers should import only from `@trevonistrevon/pi-loop/api`. Deep `src/` imports are blocked by the package export map.
 
 ```ts
 import { TASKS_RPC, rpcCall } from "@trevonistrevon/pi-loop/api";
@@ -354,14 +425,61 @@ Scope behavior:
 - `memory`: keeps all state ephemeral
 - `project`: shares persisted automation across sessions in the repository
 
-Session files live under `.pi/loops/` and `.pi/tasks/`. Keep `session` as the normal default; use `project` only when shared automation is intentional.
+Session files live under `.pi/loops/` and `.pi/tasks/`. Keep `session` as the normal default. Use `project` only when shared automation is intentional.
 
 ## Status line and limits
 
-The TUI status line summarizes ordinary loops, workflows, orchestrations, running monitors, and native tasks. A single workflow shows its derived activity duration, current state and state age, and total wall-clock age; paused workflows remain visible. Use `LoopList`, `OrchestrationGet`, `MonitorList`, and `/tasks` for detail. Ordinary active-loop `age` is wall-clock time since creation; paused ordinary loops omit age and show available pause provenance. The status clears when no work is active.
+The TUI status line summarizes ordinary loops, workflows, orchestrations, running monitors, and native tasks. The status clears when no work is active. Use `LoopList`, `OrchestrationGet`, `MonitorList`, and `/tasks` for detail.
 
-Workflow tool cards, `LoopList`, and `TaskList` stay at two lines while collapsed: the summary, then one dense preview such as `✓plan ▸ [implement] ▸ review ▸ done │ CLAIMED 4m │ try 1/3 │ » pass|retry`. It shows the state trail (visited states marked, the current state bracketed), derived activity using the same status word as the summary, attempt, and available outcomes; idle work without a live lease is flagged `(unclaimed)`. Several workflows or tasks share a one-line roster. The preview is display metadata only and never changes model-facing tool text. Colors come from the active pi theme, so custom themes apply. The default glyphs are box-drawing, basic shapes, and Latin-1 characters that effectively every monospace font draws. A terminal cannot report its font and a missing icon renders blank, so Nerd Font icons are opt-in (`PI_LOOP_GLYPHS=nerd` or `NERD_FONT=1`) and are accents only: brackets and separators stay portable. A non-UTF-8 locale or `TERM=linux|dumb` selects ASCII. `/loop glyphs [nerd|unicode|ascii]` switches the set and prints a sample; it applies to cards created afterwards.
+- A single workflow shows its derived activity duration, current state and state age, and total wall-clock age. Paused workflows remain visible.
+- Ordinary active-loop `age` is wall-clock time since creation. Paused ordinary loops omit age and show available pause provenance.
 
-On terminals at least 110 columns wide, a narrow progress panel docks at the top-right while a workflow, orchestration, running monitor, or native task is in progress. It never takes keyboard focus and disappears when nothing is in progress. Each workflow is a vertical state trail (`✓` visited, `▶` current with derived activity and attempt, `○` not yet entered) followed by its available outcomes; workflows that are paused or unclaimed are listed first. A swarm started from a workflow phase is listed under that phase's row instead of on its own; a finished phase shows its latest swarm's `done/total`, and a `∑` line under the workflow title totals agents and reported tokens across its swarms. A swarm whose workflow is gone, or whose phase row is not on screen, is listed on its own. Each orchestration (at most two) is a header with its progress and in-flight count, followed by up to five work items named by `label` or prompt: `●` in flight with its last reported dispatch state, elapsed time and attempt; `✗` failed; `?` uncertain; `○` pending; `✓` complete with duration and token count when the provider reported them; `–` cancelled. In-flight items are listed first and finished ones last, and a final `… N more` line counts the items not shown. The reported state is the last one received, not proof a worker is running. Running monitors (at most three, oldest first) show id, elapsed time, description or command, and their last output line, with a `quiet` flag after five minutes without output; monitor state is process-local, so nothing is shown for monitors from a previous pi process. Native tasks show `done/total`, in-progress work first, and flag a claim whose lease has expired. The panel is presentation only: it reads the same LoopStore and TaskStore snapshots as the status line and never claims work, resumes a controller, or schedules a wake. Task rows come only from standalone tasks, monitor rows only from this process's MonitorManager, and workflow rows only from LoopStore. Monitor output is untrusted and stripped of control bytes before display. Durations refresh on state changes and the existing 30-second heartbeat, and every minute while a monitor runs. Because it overlays the transcript's right edge, hide it with `/loop panel off` (or `/loop panel` to toggle), or start pi with `PI_LOOP_PANEL=off`.
+Workflow tool cards, `LoopList`, and `TaskList` stay at two lines while collapsed: the summary, then one dense preview such as `✓plan ▸ [implement] ▸ review ▸ done │ CLAIMED 4m │ try 1/3 │ » pass|retry`. The preview shows:
 
-The runtime allows at most 25 loops and 25 running monitors. Completed and cancelled orchestrations kept for inspection do not count toward the 25; up to 100 of them are retained, after which a new orchestration is refused until some are deleted with `LoopDelete`. Each orchestration batch allows up to 32 work items, 8 local workers under fixed pacing (under `aimd`, the batch size when every item declares `verify`, otherwise 8), and 3 attempts per item, plus up to 3 overload re-sends per item that do not count as attempts.
+- the state trail (visited states marked, the current state bracketed);
+- derived activity, using the same status word as the summary;
+- the attempt;
+- the available outcomes.
+
+Idle work without a live lease is flagged `(unclaimed)`. Several workflows or tasks share a one-line roster. The preview is display metadata only and never changes model-facing tool text.
+
+Colors come from the active pi theme, so custom themes apply. The default glyphs are box-drawing, basic shapes, and Latin-1 characters that effectively every monospace font draws. A terminal cannot report its font and a missing icon renders blank, so Nerd Font icons are opt-in (`PI_LOOP_GLYPHS=nerd` or `NERD_FONT=1`). They are accents only: brackets and separators stay portable.
+
+A non-UTF-8 locale or `TERM=linux|dumb` selects ASCII. `/loop glyphs [nerd|unicode|ascii]` switches the set and prints a sample. It applies to cards created afterwards.
+
+On terminals at least 110 columns wide, a narrow progress panel docks at the top-right while a workflow, orchestration, running monitor, or native task is in progress. It never takes keyboard focus and disappears when nothing is in progress.
+
+Each workflow is a vertical state trail followed by its available outcomes. Workflows that are paused or unclaimed are listed first. The trail marks each state:
+
+- `✓` visited;
+- `▶` current, with derived activity and attempt;
+- `○` not yet entered.
+
+A swarm started from a workflow phase is listed under that phase's row instead of on its own. A finished phase shows its latest swarm's `done/total`, and a `∑` line under the workflow title totals agents and reported tokens across its swarms. A swarm whose workflow is gone, or whose phase row is not on screen, is listed on its own.
+
+Each orchestration (at most two) is a header with its progress and in-flight count, followed by up to five work items named by `label` or prompt:
+
+- `●` in flight, with its last reported dispatch state, elapsed time and attempt;
+- `✗` failed;
+- `?` uncertain;
+- `○` pending;
+- `✓` complete, with duration and token count when the provider reported them;
+- `–` cancelled.
+
+In-flight items are listed first and finished ones last, and a final `… N more` line counts the items not shown. The reported state is the last one received, not proof a worker is running.
+
+Running monitors (at most three, oldest first) show id, elapsed time, description or command, and their last output line, with a `quiet` flag after five minutes without output. Monitor state is process-local, so nothing is shown for monitors from a previous pi process. Monitor output is untrusted and stripped of control bytes before display.
+
+Native tasks show `done/total`, in-progress work first, and flag a claim whose lease has expired.
+
+The panel is presentation only: it reads the same LoopStore and TaskStore snapshots as the status line and never claims work, resumes a controller, or schedules a wake. Task rows come only from standalone tasks, monitor rows only from this process's MonitorManager, and workflow rows only from LoopStore. Durations refresh on state changes and the existing 30-second heartbeat, and every minute while a monitor runs.
+
+Because the panel overlays the transcript's right edge, hide it with `/loop panel off` (or `/loop panel` to toggle), or start pi with `PI_LOOP_PANEL=off`.
+
+The runtime allows at most 25 loops and 25 running monitors. Completed and cancelled orchestrations kept for inspection do not count toward the 25. Up to 100 of them are retained, after which a new orchestration is refused until some are deleted with `LoopDelete`.
+
+Each orchestration batch allows up to:
+
+- 32 work items;
+- 8 local workers under fixed pacing (under `aimd`, the batch size when every item declares `verify`, otherwise 8);
+- 3 attempts per item, plus up to 3 overload re-sends per item that do not count as attempts.

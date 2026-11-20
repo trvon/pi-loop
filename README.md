@@ -3,13 +3,15 @@
 <h6 align="center">Durable agent loops, workflows, tasks, subagent orchestration, and background monitoring for Pi.</h6>
 </p>
 
+pi-loop adds loops to Pi: prompts that wake the agent again on a schedule, on an event, or at its own pace toward a goal. It also provides workflows (one goal with ordered phases), tasks, subagent orchestration (a finite batch of independent subagent work, also called a "swarm"), and monitors (background commands that wake the agent when they succeed, fail, or become inactive).
+
 ## Install
 
 ```bash
 pi install npm:@trevonistrevon/pi-loop
 ```
 
-pi-loop runs only while Pi is active. Persisted controller intent is not an always-on worker; ordinary pending wakes and monitor handles/output are memory-only. See the [runtime continuity matrix](./docs/RUNTIME_CONTINUITY.md) before relying on restart or unattended operation.
+pi-loop runs only while Pi is active. Persisted controller intent is not an always-on worker. Ordinary pending wakes and monitor handles/output are memory-only. See the [runtime continuity matrix](./docs/RUNTIME_CONTINUITY.md) before relying on restart or unattended operation.
 
 ## Quick start
 
@@ -31,7 +33,9 @@ LoopList
 LoopDelete id="1"
 ```
 
-`/loop event tasks:created ...` is treated as an explicit task-backlog worker: it adopts existing unfinished tasks, coalesces task-creation bursts, and re-wakes after each agent turn until the backlog drains. Tool callers opt into the same behavior with `taskBacklog=true`. Worker wakes are action-first: `TaskList`, claim/resume, concrete same-turn work, validation, then evidence—not a state report or promise to start on a later wake.
+`/loop event tasks:created ...` is treated as an explicit task-backlog worker: it adopts existing unfinished tasks, coalesces task-creation bursts, and re-wakes after each agent turn until the backlog drains. Tool callers opt into the same behavior with `taskBacklog=true`.
+
+Worker wakes are action-first: `TaskList`, claim/resume, concrete same-turn work, validation, then evidence. A worker wake is not a state report or a promise to start on a later wake.
 
 Run work in the background and wake the agent when it succeeds, fails, or becomes inactive:
 
@@ -72,7 +76,13 @@ OrchestrationGet id="1"
 | `MonitorCreate`, `MonitorList`, `MonitorStop` | Run and inspect background commands |
 | `TaskCreate`, `TaskList`, `TaskClaim`, `TaskHeartbeat`, `TaskUpdate`, `TaskDelete` | Native fallback task management |
 
-Choose one owner: workflows for one goal with ordered phases/outcomes/rework/handoff, standalone tasks for independently completable backlog items, and dynamic loops for a self-paced goal without phase routing. Persist unfinished task/loop progress or workflow plan changes in that owner, then continue while work remains actionable.
+Choose one owner:
+
+- workflows for one goal with ordered phases/outcomes/rework/handoff
+- standalone tasks for independently completable backlog items
+- dynamic loops for a self-paced goal without phase routing
+
+Persist unfinished task/loop progress or workflow plan changes in that owner, then continue while work remains actionable.
 
 See the [usage guide](./docs/USAGE_GUIDE.md) for operator workflows and the [reference](./docs/REFERENCE.md) for authority, persistence, mutation, RPC, and recovery boundaries.
 
@@ -82,8 +92,8 @@ See the [usage guide](./docs/USAGE_GUIDE.md) for operator workflows and the [ref
 PI_LOOP_CONTEXT=compact pi
 ```
 
-Compact mode shortens tool metadata and retains controller/ownership guidance.
-`LoopHelp` retrieves original contracts without executing or activating tools.
+Compact mode shortens tool metadata and keeps the controller/ownership guidance.
+`LoopHelp` retrieves the original contracts without executing or activating tools.
 Default behavior is unchanged. See [compact context](./docs/REFERENCE.md#compact-context)
 for native code-mode settings and measurement limits.
 
@@ -102,4 +112,4 @@ See [testing](./docs/TESTING.md) for local, property, package, benchmark, and li
 
 ## License
 
-MIT — [LICENSE](./LICENSE)
+MIT. See [LICENSE](./LICENSE).
