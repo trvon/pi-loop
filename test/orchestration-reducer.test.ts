@@ -9,6 +9,7 @@ import {
   MAX_CONGESTION_RETRIES_PER_ITEM,
   MAX_ORCHESTRATION_CONCURRENCY,
   MAX_ORCHESTRATION_ERROR_CHARS,
+  MAX_ORCHESTRATION_LABEL_CHARS,
   MAX_ORCHESTRATION_RESULT_CHARS,
   validateOrchestrationDefinition,
   validatePersistedOrchestration,
@@ -45,6 +46,29 @@ describe("subagent orchestration reducer", () => {
     expect(validateOrchestrationDefinition({ goal: "batch", work: [] })).toContain("work");
     expect(validatePersistedOrchestration(create())).toEqual(create());
     expect(() => validatePersistedOrchestration({ version: 1, status: "active" })).toThrow("Malformed orchestration state");
+  });
+
+  it("N1: a work item's label is stored, survives dispatch and a persisted round trip, and is optional", () => {
+    const labelled = create(2, { work: [{ prompt: "Inspect sandbox", label: "seatbelt" }, { prompt: "Inspect paths" }] });
+    expect(labelled.work.map((item) => item.label)).toEqual(["seatbelt", undefined]);
+    expect("label" in labelled.work[1]!).toBe(false);
+    const dispatched = dispatch(labelled, "1", "dispatch-1", 110).state;
+    expect(dispatched.work[0]?.label).toBe("seatbelt");
+    expect(validatePersistedOrchestration(JSON.parse(JSON.stringify(dispatched))).work[0]?.label).toBe("seatbelt");
+    // Control: a snapshot written before labels existed still loads.
+    expect(validatePersistedOrchestration(JSON.parse(JSON.stringify(create()))).work[0]?.label).toBeUndefined();
+  });
+
+  it("N2: rejects a blank, oversized or non-string label at creation and in a persisted snapshot", () => {
+    for (const label of ["  ", "x".repeat(MAX_ORCHESTRATION_LABEL_CHARS + 1)]) {
+      expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect", label }] })).toContain("label");
+    }
+    expect(validateOrchestrationDefinition({ goal: "batch", work: [{ prompt: "inspect", label: "x".repeat(MAX_ORCHESTRATION_LABEL_CHARS) }] })).toBeUndefined();
+    for (const label of [7, "", "x".repeat(MAX_ORCHESTRATION_LABEL_CHARS + 1)]) {
+      const snapshot = JSON.parse(JSON.stringify(create(1)));
+      snapshot.work[0].label = label;
+      expect(() => validatePersistedOrchestration(snapshot)).toThrow("invalid work item label");
+    }
   });
 
   it("rejects malformed nested persisted evidence before wake rendering", () => {

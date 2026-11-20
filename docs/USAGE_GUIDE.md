@@ -175,14 +175,14 @@ LoopDelete id="1" action="delete"
 
 ```text
 OrchestrationCreate goal="Review release readiness" work='[
-  {"prompt":"Inspect API compatibility","agentType":"Explore"},
+  {"prompt":"Inspect API compatibility","label":"api","agentType":"Explore"},
   {"prompt":"Review rollout risks","agentType":"Plan"}
 ]' concurrency=2 maxAttempts=2 maxTurns=12
 ```
 
 This surface requires the default file-backed session scope and a subagent provider: `@tintinweb/pi-subagents` (protocol v2) or the unscoped npm `pi-subagents` package (RPC v1). Its tools are registered only when one answers. With the npm `pi-subagents` package, work without an `agentType` runs as its generic `delegate` agent, `maxTurns` is not offered and is rejected if sent (that provider has no turn limit), and pacing reacts only to errors and timeouts; see the provider table in the reference. It rejects memory/project scope, `PI_LOOP=off`, and custom `PI_LOOP` paths. The batch is stored only in `LoopStore`; it does not create standalone tasks or delegate workflow states.
 
-Work items must be independent. The controller does not model dependencies or protect overlapping filesystem writes. Each spawned worker is background, does not inherit parent context, and is isolated from extension tools, so it cannot call pi-loop task/workflow/controller tools. The optional `agentType`, `model`, and `maxTurns` fields are the only invocation overrides.
+A work item may carry a `label`: a display name of at most 40 characters that listings show in place of the prompt snippet. It is never sent to the worker; control characters are collapsed, a blank label is dropped, and a longer one is clipped. Work items must be independent. The controller does not model dependencies or protect overlapping filesystem writes. Each spawned worker is background, does not inherit parent context, and is isolated from extension tools, so it cannot call pi-loop task/workflow/controller tools. The optional `agentType`, `model`, and `maxTurns` fields are the only invocation overrides.
 
 Batches are paced adaptively by default (see below). Passing `concurrency` selects fixed pacing: it bounds spawning/queued/running dispatches to that many, while pi-subagents keeps its own global concurrency ceiling. A proved worker failure retries up to `maxAttempts`. An overload that struck before the worker ran any tool, or a spawn that failed on a dropped connection, is re-sent without spending an attempt (at most 3 times per item and once per item across the batch). A spawn RPC timeout becomes `uncertain` and requires parent review because upstream has no status/list query or idempotent dispatch key.
 

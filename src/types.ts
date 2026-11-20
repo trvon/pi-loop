@@ -116,6 +116,8 @@ export interface OrchestrationVerification {
 export interface OrchestrationWorkItem {
   id: string;
   prompt: string;
+  /** Short display name for progress rows; never sent to the worker. */
+  label?: string;
   agentType?: string;
   /** Shell command run after the worker completes; exit 0 is the ACK. */
   verify?: string;
@@ -158,7 +160,7 @@ export interface OrchestrationState {
 
 export interface OrchestrationDefinitionInput {
   goal: string;
-  work: Array<{ prompt: string; agentType?: string; verify?: string }>;
+  work: Array<{ prompt: string; label?: string; agentType?: string; verify?: string }>;
   concurrency?: number;
   pacing?: OrchestrationPacing;
   maxAttempts?: number;

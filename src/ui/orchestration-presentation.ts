@@ -95,7 +95,7 @@ function compactPrompt(prompt: string): string {
 export function orchestrationWorkSummary(item: OrchestrationWorkItem): string {
   const dispatch = item.dispatches.at(-1);
   const label = item.agentType ?? "general-purpose";
-  let line = `#${item.id} [${orchestrationWorkStatusLabel(item.status)}] ${label} · ${compactPrompt(item.prompt)}`;
+  let line = `#${item.id} [${orchestrationWorkStatusLabel(item.status)}] ${label} · ${item.label ?? compactPrompt(item.prompt)}`;
   if (dispatch?.agentId) line += ` · agent=${dispatch.agentId}`;
   if (item.attemptCount > 0) line += ` · attempts=${item.attemptCount}`;
   return line;
@@ -128,6 +128,7 @@ export function orchestrationWorkText(entry: LoopEntry, item: OrchestrationWorkI
   const lines = [
     `Orchestration #${entry.id} · Work #${item.id} · ${orchestrationWorkStatusLabel(item.status)}`,
     `Agent type: ${item.agentType ?? "general-purpose"}`,
+    ...(item.label ? [`Label: ${item.label}`] : []),
     `Prompt: ${item.prompt}`,
     `Attempts: ${item.attemptCount - (item.congestionRetries ?? 0)}/${state.maxAttempts}${item.congestionRetries ? ` (+${item.congestionRetries} congestion re-send${item.congestionRetries === 1 ? "" : "s"})` : ""}`,
   ];

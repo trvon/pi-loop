@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { learnWindowSeed, MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
+import { learnWindowSeed, MAX_ORCHESTRATION_LABEL_CHARS, MAX_ORCHESTRATION_VERIFY_CHARS } from "../orchestration-reducer.js";
 import type { LoopScope } from "../runtime/scope.js";
 import type { LoopStore } from "../store.js";
 import type { OrchestrationActor, OrchestrationDefinitionInput, OrchestrationPacing } from "../types.js";
@@ -34,7 +34,7 @@ interface OrchestrationToolsOptions {
 
 interface CreateParams {
   goal: string;
-  work: Array<{ prompt: string; agentType?: string; verify?: string }>;
+  work: Array<{ prompt: string; label?: string; agentType?: string; verify?: string }>;
   agentType?: string;
   model?: string;
   maxTurns?: number;
@@ -92,11 +92,18 @@ function resolvePacing(params: CreateParams, defaultPacing: OrchestrationPacing)
   return { ...params, pacing: params.concurrency !== undefined ? "fixed" : defaultPacing };
 }
 
+/** A label is a display name: tidy it instead of rejecting the batch over it. */
+function labelFrom(raw: string | undefined): { label?: string } {
+  const label = typeof raw === "string" ? raw.replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, " ").trim().slice(0, MAX_ORCHESTRATION_LABEL_CHARS).trim() : "";
+  return label ? { label } : {};
+}
+
 function definitionFrom(params: CreateParams, defaultAgentType: string): OrchestrationDefinitionInput {
   return {
     goal: params.goal.trim(),
     work: params.work.map((item) => ({
       prompt: item.prompt.trim(),
+      ...labelFrom(item.label),
       agentType: item.agentType ?? params.agentType ?? defaultAgentType,
       ...(item.verify !== undefined ? { verify: item.verify.trim() } : {}),
     })),
@@ -134,17 +141,18 @@ export function registerSubagentOrchestrationTools(options: OrchestrationToolsOp
       goal: Type.String({ description: "Shared batch goal", maxLength: MAX_GOAL_CHARS }),
       work: Type.Array(Type.Object({
         prompt: Type.String({ description: "Bounded independent work prompt", maxLength: MAX_PROMPT_CHARS }),
-        agentType: Type.Optional(Type.String({ description: "Per-item subagent type override" })),
+        label: Type.Optional(Type.String({ description: "Short display name" })),
+        agentType: Type.Optional(Type.String({ description: "Per-item subagent type" })),
         verify: Type.Optional(Type.String({ description: "Shell, exit 0=ok" })),
       }), { minItems: 1, maxItems: MAX_WORK_ITEMS }),
       agentType: Type.Optional(Type.String({ description: `Default subagent type (default: ${defaultAgentType})` })),
-      model: Type.Optional(Type.String({ description: "Optional model override forwarded through protocol v2" })),
+      model: Type.Optional(Type.String({ description: "Model override" })),
       // Typed as always present so the executor's parameter type does not depend on the provider.
       ...((offersMaxTurns ? { maxTurns: maxTurnsSchema } : {}) as { maxTurns: typeof maxTurnsSchema }),
       concurrency: Type.Optional(Type.Integer({ description: "Sets fixed pacing: 1-8 workers", minimum: 1 })),
       pacing: Type.Optional(Type.String({ description: `Omitted: ${defaultPacing} (PI_LOOP_PACING)`, enum: ["fixed", "aimd"] })),
       maxAttempts: Type.Optional(Type.Integer({ description: "Attempts per item after proved failures (default: 1)", minimum: 1, maximum: MAX_ATTEMPTS, default: 1 })),
-      expiresIn: Type.Optional(Type.String({ description: "Lifetime for this new batch, e.g. 12h or 14d; overrides PI_LOOP_EXPIRES_IN" })),
+      expiresIn: Type.Optional(Type.String({ description: "Lifetime, e.g. 12h; overrides PI_LOOP_EXPIRES_IN" })),
     }),
     async execute(_toolCallId, input: CreateParams) {
       const params = resolvePacing(input, defaultPacing);

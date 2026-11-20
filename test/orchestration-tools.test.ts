@@ -137,6 +137,30 @@ describe("subagent orchestration tools", () => {
     expect(h.store.list()).toHaveLength(1);
   });
 
+  it("N3: stores a tidy label per item and shows it in place of the prompt snippet", async () => {
+    await h.text("OrchestrationCreate", {
+      goal: "Audit",
+      work: [
+        { prompt: "Inspect the sandbox profile in depth", label: "  seat\u001b[31mbelt\n " },
+        { prompt: "Inspect paths", label: "   " },
+        { prompt: "Inspect services", label: "s".repeat(90) },
+        { prompt: "Inspect tests" },
+      ],
+    });
+    const work = h.store.get("1")!.orchestration!.work;
+    // Obvious mistakes are recovered, not rejected: controls collapse, blanks drop, long names clip.
+    expect(work.map((item) => item.label)).toEqual(["seat [31mbelt", undefined, "s".repeat(40), undefined]);
+    const listing = await h.text("OrchestrationGet", { id: "1" });
+    expect(listing).toContain("#1 [pending] general-purpose · seat [31mbelt");
+    expect(listing).not.toContain("Inspect the sandbox profile");
+    // Control: an unlabelled item keeps its prompt snippet.
+    expect(listing).toContain("#4 [pending] general-purpose · Inspect tests");
+    const detail = await h.text("OrchestrationGet", { id: "1", workId: "1" });
+    expect(detail).toContain("Label: seat [31mbelt");
+    expect(detail).toContain("Prompt: Inspect the sandbox profile in depth");
+    expect(await h.text("OrchestrationGet", { id: "1", workId: "4" })).not.toContain("Label:");
+  });
+
   describe("default pacing", () => {
     it("paces a batch with aimd when neither pacing nor concurrency is given", async () => {
       h = setup();
